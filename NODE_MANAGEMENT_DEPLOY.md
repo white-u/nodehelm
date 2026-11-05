@@ -201,6 +201,8 @@ sudo python3 /opt/node-manager/install.py uninstall
 本地工具使用 Python 3.10+、SQLite 和 Linux systemd。保留发行包目录结构，`scripts/hub-install.py`、`scripts/hub-lifecycle.py` 与 `scripts/hub_health.py` 必须在同一目录，不能只复制一个脚本。以下命令针对独立安装器的默认路径和端口；定制部署需在子命令前指定 `--unit`、`--binary`、`--db`、`--health` 及必要的 `--backups`。后台服务的 `ExecStart` 须显式配置实际数据库和回环监听路径。工具核实实际加载的 systemd 单元，拒绝覆盖配置或原 `monitor-hub` 服务。
 
 ```sh
+# 更新到本发布包的程序
+sudo sh update-hub.sh
 sudo python3 scripts/hub-lifecycle.py backup
 sudo python3 scripts/hub-lifecycle.py upgrade --candidate /absolute/path/monitor-hub --sha256 RELEASE_SHA256
 sudo python3 scripts/hub-lifecycle.py restore --backup /var/backups/node-manager-hub/backup-EXAMPLE

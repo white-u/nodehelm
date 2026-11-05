@@ -593,12 +593,18 @@ def exclusive_lock(path):
         yield
 
 
+def service_listen(unit):
+    # An installation with a custom --port needs no extra argument for maintenance.
+    match = re.search(r'--listen\s+(\S+)', ctl('show', '--property=ExecStart', unit))
+    return match[1] if match else '127.0.0.1:9911'
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--unit', default=UNIT)
     parser.add_argument('--binary', type=pathlib.Path, default=BINARY)
     parser.add_argument('--db', type=pathlib.Path, default=DATABASE)
-    parser.add_argument('--health', default='http://127.0.0.1:9911/api/me')
+    parser.add_argument('--health', help='默认按服务实际的 --listen 地址')
     parser.add_argument('--backups', type=pathlib.Path, default=pathlib.Path('/var/backups/node-manager-hub'))
     actions = parser.add_subparsers(dest='action', required=True)
     actions.add_parser('backup')
@@ -619,6 +625,8 @@ def main(argv=None):
     if os.geteuid() != 0 or not pathlib.Path('/run/systemd/system').is_dir():
         raise ValueError('请在 Linux systemd 后台主机上使用 root 执行')
     os.umask(0o077)
+    if args.health is None:
+        args.health = f'http://{service_listen(args.unit)}/api/me'
     hub = Hub(args)
     if hub.workspace == hub.database.parent.resolve() or hub.database.parent.resolve() in hub.workspace.parents:
         raise ValueError('后台备份工作目录须位于活动数据目录外')

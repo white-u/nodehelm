@@ -356,6 +356,8 @@ export function Data() {
 }
 
 // Hub and agent are published from different accounts; the hub entry matches HUB_REPO in main.rs.
+const hubUpdate = `curl -fsSL https://github.com/white-u/nodehelm/releases/latest/download/node-manager-$(uname -m)-unknown-linux-musl.tar.gz | tar xz
+sudo sh node-manager/update-hub.sh`
 const releaseUrl = (repo: string, version: string) => `https://github.com/${repo}/releases/tag/v${version}`
 
 /** `v1.2.0 → v1.3.0` when something is published, the running version alone otherwise. */
@@ -383,8 +385,8 @@ function byVersion(nodes: Node[]): [string, Node[]][] {
  * banner on the node list; the dot in the navigation is what says there is
  * something here.
  *
- * The hub card names the release alone: how to take it depends on how the hub
- * was installed, script or container, which the hub cannot tell.
+ * The hub card gives the installer's command and names the container's way too:
+ * how to take a release depends on how the hub was installed, which it cannot tell.
  */
 export function Update({ versions, reload, nodes, site, refusal }: {
   versions: Versions | null
@@ -423,10 +425,9 @@ export function Update({ versions, reload, nodes, site, refusal }: {
         </Card>
       )}
 
-      <p className="text-sm text-muted-foreground">当前运行 NodeHelm 开发分支。请用本项目构建更新后台，不要用 monitor 上游安装器覆盖管理功能。</p>
       <Card className="gap-4 p-5">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h3 className="text-sm font-medium">hub（monitor 基础版本）</h3>
+          <h3 className="text-sm font-medium">后台</h3>
           <div className="flex items-center gap-3">
             <VersionPair current={versions.hub} latest={versions.hub_latest} />
             {behind(versions.hub, versions.hub_latest) && (
@@ -438,6 +439,19 @@ export function Update({ versions, reload, nodes, site, refusal }: {
             )}
           </div>
         </div>
+        {behind(versions.hub, versions.hub_latest) && (
+          <>
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              在后台服务器上执行，失败会自动回退。Docker 部署请更新镜像。升级后如提示组件版本不一致，再到各节点升级管理组件。
+            </p>
+            <Command>{hubUpdate}</Command>
+            <div>
+              <Button size="sm" variant="secondary" onClick={() => copy(hubUpdate)}>
+                <Copy className="size-4" /> 复制命令
+              </Button>
+            </div>
+          </>
+        )}
       </Card>
 
       <Card className="gap-4 p-5">

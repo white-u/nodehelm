@@ -46,7 +46,16 @@ systemctl status node-manager-hub --no-pager
 journalctl -u node-manager-hub -n 100 --no-pager
 ```
 
-首次安装器不会覆盖已有程序。更新使用随包的 `scripts/hub-lifecycle.py upgrade`，它创建一致性备份并检查新程序；失败会回退。切换中断使用同一工具 `recover`，不能删除恢复记录绕过检查。管理组件用 `/opt/node-manager/install.py upgrade` 单独维护；完整参数见部署说明。
+首次安装器不会覆盖已有程序。更新时在服务器上下载最新发布包并运行其中的脚本，它校验包内文件、创建一致性备份并检查新程序；失败会回退：
+
+```sh
+curl -fsSL https://github.com/white-u/nodehelm/releases/latest/download/node-manager-$(uname -m)-unknown-linux-musl.tar.gz | tar xz
+sudo sh node-manager/update-hub.sh
+```
+
+连不上 GitHub 时，把发布包传到服务器后运行同一脚本。校验文件与程序来自同一发布，只能发现下载损坏；要防发布被篡改，需另行核对来源。
+
+切换中断使用同一工具 `recover`，不能删除恢复记录绕过检查。管理组件用 `/opt/node-manager/install.py upgrade` 单独维护；完整参数见部署说明。
 
 hub 与 agent 分别更新。后台显示 monitor 基础版本与上游 Agent 版本；NodeHelm 更新使用本项目独立构建，不以原 monitor 版本提示替换本项目。自建镜像时 [Dockerfile](Dockerfile) 使用预编译的两个架构二进制，不会从 Rust 源码构建；镜像使用 UID/GID `65534`，数据挂载必须可写，默认数据库路径为 `/data/monitor.db`。
 

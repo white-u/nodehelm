@@ -248,6 +248,17 @@ class ComponentLifecycleTests(unittest.TestCase):
         install.check_current(self.before_manifest)
 
 
+class HubListenTests(unittest.TestCase):
+    def test_follows_the_port_the_service_was_installed_with(self):
+        shown = 'ExecStart={ path=/opt/x/monitor-hub ; argv[]=/opt/x/monitor-hub --listen 127.0.0.1:39911 --db /d ; }\n'
+        with patch.object(hub_lifecycle, 'ctl', return_value=shown):
+            self.assertEqual(hub_lifecycle.service_listen('node-manager-hub.service'), '127.0.0.1:39911')
+
+    def test_falls_back_to_the_default_port_before_installation(self):
+        with patch.object(hub_lifecycle, 'ctl', return_value='ExecStart=\n'):
+            self.assertEqual(hub_lifecycle.service_listen('node-manager-hub.service'), '127.0.0.1:9911')
+
+
 class HubPurgeTests(unittest.TestCase):
     def hub(self, root):
         hub = object.__new__(hub_lifecycle.Hub)

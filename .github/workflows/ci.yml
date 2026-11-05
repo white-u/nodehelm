@@ -52,7 +52,7 @@ jobs:
       # Both installers run as root on the user's machine. Notes below warning
       # level are all SC2015 on `[ a ] && [ b ] || die`, which is meant to die
       # when either test fails.
-      - run: shellcheck -S warning install.sh install-hub.sh scripts/*.sh
+      - run: shellcheck -S warning install.sh install-hub.sh update-hub.sh scripts/*.sh
 
       # This commit's hub against the latest released agent: the field contract
       # between the two repositories, and what the public view withholds.

@@ -63,7 +63,7 @@ try {
   await section('数据','/admin/data');await page.getByRole('heading',{name:'数据库',exact:true}).waitFor()
   await page.getByRole('heading',{name:'备份',exact:true}).waitFor()
   await section('主题','/admin/themes');await page.getByRole('heading',{name:'安装主题',exact:true}).waitFor()
-  await section('更新','/admin/update');await page.getByRole('heading',{name:'hub（monitor 基础版本）',exact:true}).waitFor()
+  await section('更新','/admin/update');await page.getByRole('heading',{name:'后台',exact:true}).waitFor()
   await section('服务管理','/admin/manage');await page.getByRole('heading',{name:'节点服务管理',exact:true}).waitFor()
   await page.getByTestId(`node-card-${nodes[0].id}`).waitFor()
   await section('节点','/admin/nodes');await page.reload()
