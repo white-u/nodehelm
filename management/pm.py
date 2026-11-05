@@ -1,0 +1,601 @@
+"""Owned IPv4 port policies, with nftables transactions and reboot checkpoints."""
+import calendar
+from contextlib import ExitStack, contextmanager
+import datetime as dt
+import fcntl
+import json
+import os
+import pathlib
+import re
+import secrets
+import subprocess
+import sys
+import time
+
+from model import Rejected, resource, revision
+from port_monitor import snapshot as legacy_snapshot
+from snell import atomic, command
+from storage import private_directory, read, remove, write
+
+ROOT = pathlib.Path('/var/lib/node-manager/pm')
+SYSTEMD = pathlib.Path('/etc/systemd/system')
+SERVICE_NAME = 'node-manager-pm.service'
+TIMER_NAME = 'node-manager-pm.timer'
+SERVICE_UNIT = """[Unit]
+Description=Node Manager port policy maintenance
+After=nftables.service
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/node-manager/pm.py
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/node-manager/pm
+"""
+TIMER_UNIT = """[Unit]
+Description=Maintain Node Manager port policies
+[Timer]
+OnBootSec=1s
+OnUnitInactiveSec=60s
+AccuracySec=1s
+Unit=node-manager-pm.service
+[Install]
+WantedBy=timers.target
+"""
+TABLE = 'ip node_manager_pm'
+GIB = 1073741824
+BYTES_PER_MEGABIT = 125000
+MAX_COUNTER = (1 << 63) - 1
+
+
+def period_start(today, day):
+    if not day:
+        return ''
+    candidate = today.replace(day=min(day, calendar.monthrange(today.year, today.month)[1]))
+    if candidate > today:
+        previous = today.replace(day=1) - dt.timedelta(days=1)
+        candidate = previous.replace(day=min(day, previous.day))
+    return candidate.isoformat()
+
+
+def plan(state, today, suspended=()):
+    return {
+        str(rule['port']): {
+            'suspended': rule['port'] in suspended,
+            'period': period_start(today, rule['reset_day']),
+            'expired': bool(rule['expiry_date'] and today.isoformat() > rule['expiry_date']),
+            'quota_bytes': rule['quota_gb'] * GIB,
+            'mode': rule['quota_mode'],
+            'rate': rule['egress_mbps'] * BYTES_PER_MEGABIT,
+        } for rule in state['resources']
+    }
+
+
+def counted(values, mode):
+    return values['tx'] if mode == 'out_only' else values['tx'] + values['rx']
+
+
+def nft(*args, script=None):
+    try:
+        result = subprocess.run(
+            ['nft', *args], input=script, text=True, capture_output=True, timeout=15,
+            env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C'},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise Rejected('无法执行 nftables，请检查软件包、内核和权限', 'pm_nft') from None
+    if result.returncode:
+        print('PM nftables: ' + result.stderr.strip()[:512], file=sys.stderr, flush=True)
+        raise Rejected('nftables 检查或应用失败，请查看本机日志', 'pm_nft')
+    return result.stdout
+
+
+def entries(*args):
+    try:
+        return json.loads(nft('-j', '-n', *args))['nftables']
+    except (ValueError, KeyError, TypeError):
+        raise Rejected('无法识别 nftables 状态', 'pm_nft') from None
+
+
+def batch(owner, generation, old, new, values, reset_ports, exists):
+    """Keep counters and unchanged quota objects in place across rule edits."""
+    lines = []
+    if exists:
+        lines.extend(f'flush chain {TABLE} {direction}' for direction in ('input', 'output'))
+        lines.append(f'delete chain {TABLE} epoch_{exists}')
+    else:
+        lines.append(f'create table {TABLE} {{ comment "{owner}"; }}')
+        for direction in ('input', 'output'):
+            lines.append(f'add chain {TABLE} {direction} {{ type filter hook {direction} priority 10; policy accept; }}')
+    lines.append(f'add chain {TABLE} epoch_{generation}')
+    for port in sorted(set(old) | set(new), key=int):
+        previous, current = old.get(port), new.get(port)
+        reset = port in reset_ports
+        old_quota = previous and previous['quota_bytes']
+        new_quota = current and current['quota_bytes']
+        keep_quota = old_quota and new_quota and not reset and all(
+            previous[key] == current[key] for key in ('quota_bytes', 'mode')
+        ) and (not previous['expired'] or current['expired'])
+        if previous and (not current or reset):
+            for kind in ('rx', 'tx'):
+                lines.append(f'delete counter {TABLE} {kind}_{port}')
+        if old_quota and not keep_quota:
+            lines.append(f'delete quota {TABLE} quota_{port}')
+        if not current:
+            continue
+        value = values[port]
+        if not previous or reset:
+            for kind in ('rx', 'tx'):
+                lines.append(f'add counter {TABLE} {kind}_{port} {{ packets 0 bytes {value[kind]}; }}')
+        if new_quota and not keep_quota:
+            used = min(new_quota, counted(value, current['mode']))
+            lines.append(f'add quota {TABLE} quota_{port} {{ over {new_quota} bytes used {used} bytes; }}')
+        if current['suspended']:
+            continue
+        for chain, iface, direction, field, counter in (
+            ('input', 'iifname', 'original', 'dport', 'rx'),
+            ('output', 'oifname', 'reply', 'sport', 'tx'),
+        ):
+            match = f'{iface} != "lo" ct direction {direction} meta l4proto {{ tcp, udp }} th {field} {port}'
+            rule = f'add rule {TABLE} {chain} {match} counter name "{counter}_{port}"'
+            if current['expired']:
+                rule += ' drop'
+            elif new_quota and (counter == 'tx' or current['mode'] == 'in_out'):
+                rule += f' quota name "quota_{port}" drop'
+            lines.append(rule)
+            if counter == 'tx' and current['rate'] and not current['expired']:
+                lines.append(f'add rule {TABLE} {chain} {match} limit rate over {current["rate"]} bytes/second drop')
+    return '\n'.join(lines) + '\n'
+
+
+class Driver:
+    def __init__(self, root=ROOT, units=SYSTEMD):
+        self.root = private_directory(root)
+        self.units = units
+        self.checkpoint = self.root / 'checkpoint.json'
+        self.transition = self.root / 'nft-transition.json'
+        self.boot_id = pathlib.Path('/proc/sys/kernel/random/boot_id')
+        self.owner = read(self.root / 'owner.json')
+
+    def unit_files(self):
+        return ((self.units / SERVICE_NAME, SERVICE_UNIT), (self.units / TIMER_NAME, TIMER_UNIT))
+
+    def inspect(self):
+        tables = entries('list', 'tables')
+        if not any(row.get('table', {}).get('family') == 'ip' and
+                   row['table'].get('name') == 'node_manager_pm' for row in tables):
+            return None
+        fingerprint, values, quotas, epochs = [], {}, {}, []
+        owned = False
+        for row in entries('list', 'table', *TABLE.split()):
+            kind, value = next(iter(row.items()))
+            if kind == 'metainfo':
+                continue
+            if kind == 'table':
+                owned = bool(self.owner and value.get('comment') == self.owner)
+            if kind == 'chain' and re.fullmatch(r'epoch_[0-9a-f]{16}', value['name']):
+                epochs.append(value['name'][6:])
+            if kind == 'counter':
+                match = re.fullmatch(r'(rx|tx)_([1-9][0-9]{0,4})', value['name'])
+                if match:
+                    counter, port = match.groups()
+                    values.setdefault(port, {})[counter] = min(value['bytes'], MAX_COUNTER)
+            ignored = {'handle'}
+            if kind == 'counter':
+                ignored.update(('packets', 'bytes'))
+            if kind == 'quota':
+                ignored.add('used')
+                match = re.fullmatch(r'quota_([1-9][0-9]{0,4})', value['name'])
+                if match:
+                    quotas[match[1]] = value.get('used', 0)
+            fingerprint.append({kind: {key: v for key, v in value.items() if key not in ignored}})
+        if not owned or len(epochs) != 1:
+            raise Rejected('存在无法确认归属的 nftables 表，已拒绝修改', 'pm_conflict')
+        return {'fingerprint': revision(fingerprint), 'epoch': epochs[0], 'values': values, 'quotas': quotas}
+
+    def sample(self, live, checkpoint):
+        if not live or not checkpoint or live['fingerprint'] != checkpoint['fingerprint']:
+            raise Rejected('PM 表缺失或被外部修改，请先核实本机规则', 'pm_drift')
+        if set(live['values']) != set(checkpoint['plan']) or any(
+            set(value) != {'rx', 'tx'} for value in live['values'].values()
+        ):
+            raise Rejected('PM 计数对象不完整', 'pm_drift')
+        if any(value[key] < checkpoint['values'][port][key]
+               for port, value in live['values'].items() for key in ('rx', 'tx')):
+            raise Rejected('PM 计数器被外部重置，请先核实本机规则', 'pm_drift')
+        limits = {port: rule['quota_bytes'] for port, rule in checkpoint['plan'].items() if rule['quota_bytes']}
+        if set(live['quotas']) != set(limits) or any(
+            type(used) is not int or not checkpoint.get('quotas', {}).get(port, 0) <= used <= limits[port]
+            for port, used in live['quotas'].items()
+        ):
+            raise Rejected('PM 配额用量被外部重置，请先核实本机规则', 'pm_drift')
+        return {**checkpoint, 'values': live['values'], 'quotas': live['quotas'], 'sampled_at': int(time.time())}
+
+    def settle(self, live):
+        """Finish an interrupted nft transaction only if its generation committed."""
+        pending = read(self.transition)
+        saved = read(self.checkpoint)
+        if pending:
+            if live and live['epoch'] == pending['epoch']:
+                if set(live['values']) != set(pending['plan']) or any(
+                    set(value) != {'rx', 'tx'} for value in live['values'].values()
+                ):
+                    raise Rejected('PM 新规则的计数对象不完整', 'pm_drift')
+                saved = {**pending, **live, 'sampled_at': int(time.time())}
+                write(self.checkpoint, saved)
+            elif live and (not saved or live['fingerprint'] != saved['fingerprint']):
+                raise Rejected('PM 待恢复事务与当前 nftables 表不一致', 'pm_drift')
+            remove(self.transition)
+        return saved
+
+    def replace(self, live, saved, target, rebuild=(), zero=(), rollback_of=None):
+        if not isinstance(self.owner, str) or not re.fullmatch(r'node-manager/pm/[0-9a-f]{32}', self.owner):
+            raise Rejected('PM 表的本机所有权记录缺失或损坏', 'pm_drift')
+        old = saved['plan'] if live else {}
+        values = {
+            port: {'rx': 0, 'tx': 0} if port in zero else
+            (saved['values'].get(port, {'rx': 0, 'tx': 0}) if saved else {'rx': 0, 'tx': 0})
+            for port in target
+        }
+        generation = secrets.token_hex(8)
+        script = batch(self.owner, generation, old, target, values, rebuild, live and live['epoch'])
+        nft('-c', '-f', '-', script=script)
+        write(self.transition, {'epoch': generation, 'plan': target, 'values': values,
+                                'boot': self.boot_id.read_text().strip(), 'rollback_of': rollback_of})
+        nft('-f', '-', script=script)
+        applied = self.inspect()
+        if not applied or applied['epoch'] != generation:
+            raise Rejected('无法核实 PM 新规则已应用', 'pm_drift')
+        return self.settle(applied)
+
+    def reconcile(self, state, reset_port=None, keep_period_port=None, allow_missing=False, bootstrap=False):
+        live = self.inspect()
+        saved = self.settle(live)
+        boot = self.boot_id.read_text().strip()
+        if live:
+            saved = self.sample(live, saved)
+        elif saved:
+            if saved['boot'] == boot and not allow_missing:
+                raise Rejected('本次开机期间 PM 表被删除，请先核实本机规则', 'pm_drift')
+            self.check_saved_state(state, saved)
+        elif not bootstrap:
+            raise Rejected('PM 检查点缺失，禁止以零用量重建', 'pm_drift')
+        previous = saved['plan'] if saved else {}
+        target = self.expected_plan(state, previous)
+        resets = {
+            port for port in previous.keys() & target.keys()
+            if previous[port]['period'] != target[port]['period'] and port != keep_period_port
+        }
+        if reset_port is not None:
+            resets.add(str(reset_port))
+        if not live or previous != target or resets:
+            return self.replace(live, saved, target, resets, resets)
+        write(self.checkpoint, saved)
+        return saved
+
+    @staticmethod
+    def expected_plan(state, previous):
+        legacy = legacy_snapshot()
+        if legacy['status'] in ('ready', 'not_installed'):
+            conflicts = {row['port'] for row in legacy['rows']}
+        else:
+            # An unavailable reader is not evidence that a known conflict was removed.
+            conflicts = {int(port) for port, rule in previous.items() if rule['suspended']}
+        return plan(state, dt.datetime.now(dt.timezone.utc).date(), conflicts)
+
+    @staticmethod
+    def unit_info(name):
+        keys = 'LoadState,FragmentPath,DropInPaths,ActiveState'
+        result = command('systemctl', 'show', '--all', f'--property={keys}', name, check=False)
+        info = dict(line.split('=', 1) for line in result.stdout.decode().splitlines() if '=' in line)
+        if any(key not in info for key in keys.split(',')):
+            raise Rejected('无法核实 PM 定时单元归属', 'pm_timer')
+        return info
+
+    @staticmethod
+    def complete(item, _existing):
+        return item
+
+    def prepare(self, action, before, after, payload):
+        if action == 'install':
+            for path, _ in self.unit_files():
+                info = self.unit_info(path.name)
+                if (path.exists() or path.is_symlink() or info['LoadState'] != 'not-found'
+                        or info['FragmentPath'] or info['DropInPaths']):
+                    raise Rejected('检测到同名 PM 单元，已拒绝接管', 'pm_conflict')
+            if self.inspect() or read(self.checkpoint) or read(self.transition):
+                raise Rejected('检测到已有 PM 状态，已拒绝接管', 'pm_conflict')
+            return {'installed': False}
+        saved = self.verify(before, {})
+        if action == 'core_uninstall' and (before['resources'] or saved['plan']):
+            raise Rejected('请先删除所有受管 PM 规则', 'core_in_use')
+        return {'installed': True, 'state': before, 'checkpoint': saved,
+                'uninstall': action == 'core_uninstall',
+                'reset_port': str(payload['port']) if action == 'reset' else None}
+
+    def apply(self, action, before, after, payload):
+        if action == 'install':
+            if self.owner is None:
+                self.owner = 'node-manager/pm/' + secrets.token_hex(16)
+                write(self.root / 'owner.json', self.owner)
+            self.reconcile(after, bootstrap=True)
+            for path, content in self.unit_files():
+                atomic(path, content.encode(), 0o644)
+            command('systemctl', 'daemon-reload')
+            # The oneshot waits on write.lock. Do not synchronously start it here.
+            command('systemctl', 'enable', '--now', TIMER_NAME)
+            return
+        if action == 'core_uninstall':
+            self.restore({'installed': False})
+            return
+        port = payload['port']
+        old = next((rule for rule in before['resources'] if rule['port'] == port), None)
+        new_period = action == 'apply' and old and old['reset_day'] != payload['reset_day']
+        self.reconcile(after, port if action == 'reset' else None, str(port) if new_period else None)
+
+    def verify(self, state, _payload):
+        if not state['installed']:
+            if self.inspect() or read(self.checkpoint) or read(self.transition):
+                raise Rejected('PM 规则表或检查点仍然存在', 'pm_conflict')
+            for path, _ in self.unit_files():
+                info = self.unit_info(path.name)
+                if (path.exists() or path.is_symlink() or info['LoadState'] != 'not-found'
+                        or info['FragmentPath'] or info['DropInPaths']):
+                    raise Rejected('PM 定时单元仍然存在', 'pm_conflict')
+            return
+        if not self.units_match() or not self.timer_active():
+            raise Rejected('PM 定时单元未正常启用，请查看本机服务', 'pm_timer')
+        return self.sample(self.inspect(), read(self.checkpoint))
+
+    def refresh(self, state):
+        if not state['installed']:
+            return
+        stale = [(path, content) for path, content in self.unit_files()
+                 if not path.exists() or path.read_text() != content]
+        for path, content in stale:
+            atomic(path, content.encode(), 0o644)
+        if stale:
+            command('systemctl', 'daemon-reload')
+        # Rebuilds the table to the current layout; counters carry over as on any rule edit.
+        self.reconcile(state)
+
+    def units_match(self):
+        try:
+            for path, content in self.unit_files():
+                if path.is_symlink() or path.read_text() != content:
+                    return False
+                info = self.unit_info(path.name)
+                if (info['LoadState'] != 'loaded' or info['FragmentPath'] != str(path)
+                        or info['DropInPaths']):
+                    return False
+            return True
+        except OSError:
+            return False
+
+    def recover_committed(self, state):
+        checkpoint = read(self.checkpoint)
+        if checkpoint and checkpoint['boot'] != self.boot_id.read_text().strip() and not self.inspect():
+            self.reconcile(state)
+        self.verify(state, {})
+
+    @staticmethod
+    def timer_active():
+        return all(command('systemctl', action, '--quiet', TIMER_NAME, check=False).returncode == 0
+                   for action in ('is-active', 'is-enabled'))
+
+    def restore(self, backup):
+        live = self.inspect()
+        saved = self.settle(live)
+        if not backup['installed']:
+            if live:
+                self.sample(live, saved)
+            for path, content in self.unit_files():
+                if path.is_symlink() or (path.exists() and path.read_text() != content):
+                    raise Rejected('PM 定时单元已被外部修改', 'pm_conflict')
+            for path, _ in self.unit_files():
+                info = self.unit_info(path.name)
+                if info['DropInPaths'] or (info['FragmentPath'] and info['FragmentPath'] != str(path)):
+                    raise Rejected('PM 定时单元的实际加载路径不匹配', 'pm_conflict')
+            if (self.units / TIMER_NAME).exists():
+                command('systemctl', 'disable', '--now', TIMER_NAME)
+            if (self.units / SERVICE_NAME).exists():
+                # A queued oneshot may be waiting for our writer lock.
+                command('systemctl', 'stop', SERVICE_NAME)
+            for path, _ in self.unit_files():
+                remove(path)
+            command('systemctl', 'daemon-reload')
+            if live:
+                # The epoch must still exist in the same atomic teardown transaction.
+                nft('-f', '-', script=f'delete chain {TABLE} epoch_{live["epoch"]}\ndelete table {TABLE}\n')
+            remove(self.checkpoint)
+            return
+        prior = backup['checkpoint']
+        if backup.get('uninstall'):
+            self.restore_empty_runtime(live, saved, prior)
+            self.verify(backup['state'], {})
+            return
+        target = prior['plan']
+        reset_port = backup.get('reset_port')
+        if saved and saved.get('rollback_of') == prior['epoch']:
+            if not live and saved['boot'] != self.boot_id.read_text().strip():
+                self.replace(None, saved, target, rollback_of=prior['epoch'])
+            self.verify(backup['state'], {})
+            return
+        if live:
+            saved = self.sample(live, saved)
+            if (not reset_port or saved['epoch'] == prior['epoch']) and saved['plan'] == target and all(
+                port in saved['values'] and
+                all(saved['values'][port][key] >= value[key] for key in ('rx', 'tx'))
+                for port, value in prior['values'].items()
+            ):
+                self.verify(backup['state'], {})
+                return
+        else:
+            saved = None
+        # A failed delete or reset can remove counters. Restore their durable pre-change values.
+        changed = set()
+        merged = dict(saved['values']) if saved else {}
+        for port, value in prior['values'].items():
+            if not saved or port not in saved['plan'] or saved['plan'][port]['period'] != target[port]['period']:
+                merged[port] = value
+                changed.add(port)
+            elif port == reset_port and saved['epoch'] != prior['epoch']:
+                merged[port] = {key: min(MAX_COUNTER, merged[port][key] + value[key]) for key in ('rx', 'tx')}
+                changed.add(port)
+            elif any(merged[port][key] < value[key] for key in ('rx', 'tx')):
+                merged[port] = {key: max(merged[port][key], value[key]) for key in ('rx', 'tx')}
+                changed.add(port)
+        self.replace(live, {'plan': saved['plan'] if saved else {}, 'values': merged}, target, changed,
+                     rollback_of=prior['epoch'])
+        self.verify(backup['state'], {})
+
+    def restore_empty_runtime(self, live, saved, prior):
+        for path, content in self.unit_files():
+            info = self.unit_info(path.name)
+            if (path.is_symlink() or (path.exists() and path.read_text() != content)
+                    or info['DropInPaths'] or (info['FragmentPath'] and info['FragmentPath'] != str(path))):
+                raise Rejected('PM 定时单元归属发生变化，禁止自动恢复', 'pm_conflict')
+        if live:
+            if self.sample(live, saved)['plan']:
+                raise Rejected('存在非空 PM 规则，禁止自动恢复', 'pm_conflict')
+        else:
+            self.replace(None, prior, {})
+        for path, content in self.unit_files():
+            if not path.exists():
+                atomic(path, content.encode(), 0o644)
+        command('systemctl', 'daemon-reload')
+        if not self.units_match():
+            raise Rejected('PM 定时单元恢复后归属不一致', 'pm_conflict')
+        if not self.timer_active():
+            command('systemctl', 'enable', '--now', TIMER_NAME)
+
+    def status(self, state):
+        if not state['installed']:
+            return False, {}
+        try:
+            if not self.units_match() or not self.timer_active():
+                raise Rejected('PM 定时单元不可用', 'pm_timer')
+            saved = read(self.checkpoint)
+            data = self.sample(self.inspect(), saved)
+            failed = self.unit_info(SERVICE_NAME)['ActiveState'] == 'failed'
+        except (Rejected, OSError, ValueError, subprocess.TimeoutExpired):
+            return True, {}
+        usage = {}
+        expected = self.expected_plan(state, data['plan'])
+        for port, values in data['values'].items():
+            rule = data['plan'][port]
+            used = data['quotas'].get(port, 0)
+            quota = rule['quota_bytes']
+            if expected.get(port, {}).get('suspended') or rule['suspended']:
+                alert = 'legacy_conflict' if rule['suspended'] else 'legacy_pending'
+            elif expected.get(port) != rule:
+                alert = 'maintenance_pending'
+            elif rule['expired']:
+                alert = 'expired'
+            elif quota and used >= quota:
+                alert = 'quota_reached'
+            elif quota and used * 100 >= quota * 80:
+                alert = 'quota_warning'
+            else:
+                alert = 'normal'
+            usage[port] = {**values, 'sampled_at': data['sampled_at'], 'period_start': rule['period'], 'alert': alert}
+        return failed or time.time() - saved['sampled_at'] > 150, usage
+
+    @staticmethod
+    def check_saved_state(state, saved):
+        try:
+            policies = plan({'resources': [resource(rule, 'pm') for rule in state['resources']]},
+                            dt.datetime.now(dt.timezone.utc).date())
+            if set(policies) != set(saved['plan']) or set(policies) != set(saved['values']):
+                raise ValueError()
+            if not re.fullmatch(r'[0-9a-f]{64}', saved['fingerprint']):
+                raise ValueError()
+            for port, policy in policies.items():
+                if any(saved['plan'][port][key] != policy[key] for key in ('mode', 'quota_bytes', 'rate')):
+                    raise ValueError()
+                values = saved['values'][port]
+                if set(values) != {'rx', 'tx'} or any(type(n) is not int or not 0 <= n <= MAX_COUNTER for n in values.values()):
+                    raise ValueError()
+        except (KeyError, TypeError, ValueError):
+            raise Rejected('PM 检查点与确认的规则不一致，禁止自动恢复', 'pm_drift') from None
+
+    @contextmanager
+    def local_lock(self, *, lock_writer=True):
+        from install import LIFECYCLE_LOCK, PURGE_JOURNAL, lock, present
+
+        with ExitStack() as locks:
+            if self.root == ROOT:
+                locks.enter_context(lock(LIFECYCLE_LOCK))
+                if present(PURGE_JOURNAL):
+                    raise Rejected('组件清理尚未完成，请使用相同安装器重试 uninstall --purge')
+            locks.enter_context(lock(self.root.parent / 'lifecycle.lock'))
+            if lock_writer:
+                writer = locks.enter_context((self.root / 'write.lock').open('a'))
+                fcntl.flock(writer, fcntl.LOCK_EX)
+            if (self.root.parent / 'component-recovery.json').exists():
+                raise Rejected('组件升级或卸载尚未恢复，请先执行 install.py recover')
+            if (self.root / 'recovery.json').exists():
+                raise Rejected('PM 有未完成的操作，请先执行 agent.py recover')
+            yield
+
+    def disable_empty(self):
+        from controller import Controller
+
+        # The controller takes the writer lock. Keep the outer lifecycle locks
+        # here so local uninstall cannot run during component maintenance.
+        with self.local_lock(lock_writer=False):
+            state = read(self.root / 'state.json', {'installed': False, 'resources': []})
+            if not state['installed']:
+                if any(path.exists() or path.is_symlink() for path, _ in self.unit_files()):
+                    raise Rejected('存在无法确认归属的 PM 单元，请核实本机状态')
+                return
+            controller = Controller(self.root, self, 'pm')
+            result = controller.execute({'id': secrets.token_hex(16), 'module': 'pm',
+                                         'action': 'core_uninstall', 'revision': revision(state),
+                                         'payload': {}}, local=True)
+            if result['status'] != 'succeeded':
+                raise Rejected(result['message'], result.get('code', 'pm_conflict'))
+
+    def repair_missing(self):
+        with self.local_lock():
+            state = read(self.root / 'state.json')
+            saved = read(self.checkpoint)
+            if not state or not state['installed'] or not saved or self.transition.exists():
+                raise Rejected('没有可安全恢复的 PM 已确认状态，或有待核实的规则事务')
+            if self.inspect():
+                raise Rejected('PM 表仍然存在，请核实外部修改；此操作只重建完全缺失的表', 'pm_drift')
+            if not self.units_match() or not self.timer_active():
+                raise Rejected('PM 定时单元归属或运行状态异常', 'pm_timer')
+            self.reconcile(state, allow_missing=True)
+            self.verify(state, {})
+
+    def maintain(self):
+        with (self.root / 'write.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if read(self.root.parent / 'component-recovery.json', {}).get('phase') == 'switching':
+                raise Rejected('组件文件正在切换，暂停 PM 维护直至升级恢复')
+            if (self.root / 'recovery.json').exists():
+                print('PM 等待恢复，请执行 agent.py recover', file=sys.stderr)
+                return
+            state = read(self.root / 'state.json')
+            if state and state['installed']:
+                self.reconcile(state)
+
+
+if __name__ == '__main__':
+    try:
+        if os.geteuid() != 0:
+            raise Rejected('PM 操作需要 root 权限')
+        if sys.argv[1:] == ['disable-empty']:
+            Driver().disable_empty()
+            print('PM 独立定时单元和空规则表已移除。')
+        elif sys.argv[1:] == ['repair', '--confirm-checkpoint-loss']:
+            Driver().repair_missing()
+            print('PM 表已从最近一次持久检查点恢复；检查点之后的用量可能丢失。')
+        elif len(sys.argv) == 1:
+            Driver().maintain()
+        else:
+            raise Rejected('未知 PM 操作')
+    except (Rejected, OSError, ValueError, subprocess.TimeoutExpired) as error:
+        print(f'PM 维护失败：{error}', file=sys.stderr)
+        sys.exit(1)

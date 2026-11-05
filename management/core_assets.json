@@ -1,0 +1,78 @@
+{
+  "snell": {
+    "6.0.0": {
+      "x86_64": {
+        "url": "https://dl.nssurge.com/snell/snell-server-v6.0.0-linux-amd64.zip",
+        "archive_sha256": "8a9c4463ca87cfa5eaa37c6af0d37ab93ea275aa12391985bb2a375ca3abd7f2",
+        "member": "snell-server",
+        "sha256": "27d8bead8dd7a33f2207b58c7bb6b4c274f67f537b621dcbee7112ffd22e23e6"
+      },
+      "aarch64": {
+        "url": "https://dl.nssurge.com/snell/snell-server-v6.0.0-linux-aarch64.zip",
+        "archive_sha256": "a0b2915cbc77dc3baf8fa069e741c20808d8a10c3a8a93e709a0a580645c3bd7",
+        "member": "snell-server",
+        "sha256": "316c924cb2f7bea75278303265cf004c66379244e101c64ab672a1c987bf8041"
+      }
+    }
+  },
+  "sb": {
+    "1.14.3": {
+      "x86_64": {
+        "url": "https://github.com/SagerNet/sing-box/releases/download/v1.14.3/sing-box-1.14.3-linux-amd64.tar.gz",
+        "archive_sha256": "e2bdf179c15a3652955dc44867e33ca0965c9c9b91b34267dcc5a5d639a5feee",
+        "member": "sing-box-1.14.3-linux-amd64/sing-box",
+        "sha256": "768d31fa7f68debc067bb4626539498a1e8751d36a7b99e1a54bee6a23815f93"
+      },
+      "aarch64": {
+        "url": "https://github.com/SagerNet/sing-box/releases/download/v1.14.3/sing-box-1.14.3-linux-arm64.tar.gz",
+        "archive_sha256": "29dae24d76bea3bc62d07dd3e60cfc12003de7debbd6b768df9be9c68360174e",
+        "member": "sing-box-1.14.3-linux-arm64/sing-box",
+        "sha256": "299f9f6080d9c43504714ddddae6aa9b853d430ccfc816c456a73613b5455689"
+      }
+    },
+    "1.14.4": {
+      "x86_64": {
+        "url": "https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-linux-amd64.tar.gz",
+        "archive_sha256": "699a1b510aa4396b2176d32d1181920399ebf1e267835da6f3b598d0f7c24968",
+        "member": "sing-box-1.14.4-linux-amd64/sing-box",
+        "sha256": "1264361b5f8868c8768f7555d3e77e20118bf503c41ac08bb290a0d99056aa3a"
+      },
+      "aarch64": {
+        "url": "https://github.com/SagerNet/sing-box/releases/download/v1.14.4/sing-box-1.14.4-linux-arm64.tar.gz",
+        "archive_sha256": "436441f76ee2f7fe21b5b2d426d3cb261a480455a704865789ad533e4273ec26",
+        "member": "sing-box-1.14.4-linux-arm64/sing-box",
+        "sha256": "d953af885f11d6b547c21a3c0ffe70796963afc802fab959d548311002b4908a"
+      }
+    }
+  },
+  "fw": {
+    "2.9.5": {
+      "x86_64": {
+        "url": "https://github.com/zhboner/realm/releases/download/v2.9.5/realm-x86_64-unknown-linux-gnu.tar.gz",
+        "archive_sha256": "e8b509c64d3ebb22d0d8f53c623e23579fbf8fb0436d51ce0bb9c513d7ce4e92",
+        "member": "realm",
+        "sha256": "dc9d5491defe2644c045e0a769f91277a8682190d074872e4a908f49c79608c8"
+      },
+      "aarch64": {
+        "url": "https://github.com/zhboner/realm/releases/download/v2.9.5/realm-aarch64-unknown-linux-gnu.tar.gz",
+        "archive_sha256": "525f51ca455b6c8ada603747193982b770a820ffe2cdcdadd860f203358630a9",
+        "member": "realm",
+        "sha256": "ee83fb1584bceeffc71702ec35b1fbbf7891aba9738d506b1f72e8877ea10cd6"
+      }
+    },
+    "2.9.6": {
+      "x86_64": {
+        "url": "https://github.com/zhboner/realm/releases/download/v2.9.6/realm-x86_64-unknown-linux-gnu-glibc2.28.tar.gz",
+        "archive_sha256": "a85652b940fa23bf08fd29582e33e87ea9c940a71bcc7d21df9c0bd03f351149",
+        "member": "realm",
+        "sha256": "74fd5f9ecd6ece01d20ced0d5b8e0ed42e7e5afc142616b674c74d24940199c3"
+      },
+      "aarch64": {
+        "url": "https://github.com/zhboner/realm/releases/download/v2.9.6/realm-aarch64-unknown-linux-gnu-glibc2.28.tar.gz",
+        "archive_sha256": "0e277d58df7a9ee9eaca1277223b54b29b1af27a1fad04ae83c7b938d451c5f8",
+        "member": "realm",
+        "sha256": "d628f3949e3fa59eb0121234944d7b2dab75f3c19bc16f8a67b53365b8798fc1"
+      }
+    }
+  }
+}
