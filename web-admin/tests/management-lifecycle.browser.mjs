@@ -62,21 +62,27 @@ try {
     return fixture?route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(fixture)}):route.continue()
   })
   await page.goto(base+'/admin/manage')
-  const maintenance=page.getByTestId('node-maintenance'),instances=page.getByTestId('instance-config'),progress=page.getByTestId('lifecycle-progress')
+  const maintenance=page.getByTestId('node-maintenance'),moduleMaintenance=page.getByTestId('module-maintenance'),instances=page.getByTestId('instance-config'),progress=maintenance.getByTestId('lifecycle-progress')
+  const panel=page.getByRole('dialog')
+  async function closePanel(){if(await panel.count()){await panel.getByRole('button',{name:'关闭',exact:true}).click();await panel.waitFor({state:'detached'})}}
   async function completedHistory(message){
-    const history=maintenance.getByTestId('lifecycle-history')
-    await history.waitFor()
+    const history=maintenance.getByTestId('operation-history')
+    await history.waitFor();await progress.waitFor({state:'detached'})
     assert.equal(await progress.count(),0,'completed uninstall remained in the current progress area')
     assert.equal(await history.evaluate(element=>element.open),false,'completed history was expanded by default')
     await history.locator('summary').click()
     await history.getByText(message,{exact:true}).waitFor()
     await history.locator('summary').click()
   }
-  async function select(node,module='snell'){
-    const card=page.getByTestId(`node-card-${node.id}`),entry=card.getByRole('button',{name:'接入管理',exact:true})
-    if(await entry.count())await entry.click();else await card.getByTestId(`node-module-${node.id}-${module}`).click()
-    await page.waitForFunction(id=>document.querySelector('[data-testid="node-detail"]')?.getAttribute('data-node-id')===String(id),node.id)
-    await page.getByRole('tab',{name:'管理',exact:true}).click()
+  async function select(node,module='snell',kind='node'){
+    await closePanel()
+    const card=page.getByTestId(`node-card-${node.id}`),entry=card.getByTestId(`node-module-${node.id}-${module}`)
+    if(await entry.count()){
+      await entry.click()
+      await page.waitForFunction(id=>document.querySelector('[data-testid="node-detail"]')?.getAttribute('data-node-id')===String(id),node.id)
+    }
+    if(kind==='module')await page.getByTestId('node-detail').getByRole('button',{name:'模块维护',exact:true}).click()
+    else if(kind==='node')await page.getByTestId(`node-manage-${node.id}`).click()
   }
   async function refresh(){await page.getByRole('button',{name:'刷新此节点',exact:true}).click()}
   const revisions=snapshot=>({snell:snapshot.revision,sb:snapshot.modules.sb.revision,fw:snapshot.modules.fw.revision,pm:snapshot.modules.pm.revision})
@@ -97,7 +103,7 @@ try {
   await select(legacy)
   assert(await maintenance.getByRole('button',{name:'全部卸载此节点',exact:true}).isDisabled())
   assert(await page.getByRole('alert').filter({hasText:'管理组件与后台版本不一致'}).isVisible())
-  assert.equal(await maintenance.getByRole('button',{name:'卸载 Snell',exact:true}).isEnabled(),false)
+  await select(legacy,'snell','module');assert.equal(await moduleMaintenance.getByRole('button',{name:'卸载 Snell',exact:true}).isEnabled(),false)
   // The Hub accepts a destructive request but its response never reaches the
   // browser. Read back the real durable job rather than suggesting a fresh retry.
   await poll(lost);await select(lost)
@@ -118,17 +124,17 @@ try {
   await poll(lost,null,{id:lostRequest.id,attempt:1,status:'paused',stage:'preflight',message:'lifecycle_preflight'})
   await refresh();await progress.getByText('卸载已暂停 · 此节点全部受管服务',{exact:true}).waitFor()
   // Non-empty module removal uses the real lifecycle API and all four revisions.
-  await select(single)
-  assert(await maintenance.getByRole('button',{name:'卸载 Snell',exact:true}).isEnabled(),'non-empty module could not use cascade lifecycle')
-  await maintenance.getByText('卸载会先清理关联受管 PM 规则，再删除此模块的实例和核心；其他模块保留。',{exact:true}).waitFor()
-  const job=await submit(maintenance.getByRole('button',{name:'卸载 Snell',exact:true}),single,'snell')
-  await progress.waitFor();const actual=await api(`/api/management/${single.id}`);assert.equal(actual.lifecycle.id,job.id)
+  await select(single,'snell','module')
+  assert(await moduleMaintenance.getByRole('button',{name:'卸载 Snell',exact:true}).isEnabled(),'non-empty module could not use cascade lifecycle')
+  await moduleMaintenance.getByText('卸载会先清理关联受管 PM 规则，再删除此模块的实例和核心；其他模块保留。',{exact:true}).waitFor()
+  const job=await submit(moduleMaintenance.getByRole('button',{name:'卸载 Snell',exact:true}),single,'snell')
+  await panel.getByRole('button',{name:'查看进度',exact:true}).click();await progress.waitFor();const actual=await api(`/api/management/${single.id}`);assert.equal(actual.lifecycle.id,job.id)
   const running={...actual,online:true,lifecycle:{...actual.lifecycle,status:'running',stage:'delete_related_pm',message:'fixture running',attempt:1}}
   fixtures.set(single.id,running);await refresh();await progress.getByText('fixture running',{exact:true}).waitFor()
-  await page.getByRole('tab',{name:'配置',exact:true}).click()
+  await closePanel()
   assert(await instances.getByRole('button',{name:'新增实例',exact:true}).isDisabled())
   assert(await instances.getByTestId('instance-12345').getByRole('button',{name:'显示配置',exact:true}).isDisabled())
-  await page.getByRole('tab',{name:'管理',exact:true}).click()
+  await page.getByTestId(`node-manage-${single.id}`).click()
   assert(await maintenance.getByRole('button',{name:'全部卸载此节点',exact:true}).isDisabled())
   const pausedSnapshot=structuredClone(actual.snapshot);pausedSnapshot.modules.pm.resources=pausedSnapshot.modules.pm.resources.filter(rule=>rule.port!==12345);pausedSnapshot.modules.pm.revision='e'.repeat(64)
   const paused={...running,snapshot:pausedSnapshot,lifecycle:{...running.lifecycle,status:'paused',stage:'delete_snell',message:'fixture paused after PM cleanup',attempt:3}}
@@ -150,10 +156,10 @@ try {
   const singleDone=structuredClone(pausedSnapshot);singleDone.installed=false;singleDone.resources=[];singleDone.runtime={};singleDone.core=structuredClone(emptyCore);singleDone.revision='f'.repeat(64)
   fixtures.set(single.id,{...running,snapshot:singleDone,lifecycle:{...running.lifecycle,status:'succeeded',stage:'completed',attempt:4,message:'fixture module completed'}})
   await refresh();await completedHistory('fixture module completed')
-  await page.getByRole('tab',{name:'配置',exact:true}).click()
-  assert.equal(await maintenance.getByTestId('lifecycle-history').isVisible(),false,'old uninstall result leaked into configuration')
-  await select(single,'sb');await page.getByRole('tab',{name:'配置',exact:true}).click();await instances.getByTestId('instance-34567').waitFor()
-  await select(single,'fw');await page.getByRole('tab',{name:'配置',exact:true}).click();await instances.getByTestId('instance-23456').waitFor()
+  await closePanel()
+  assert.equal(await page.getByTestId('node-detail').getByTestId('lifecycle-summary').isVisible(),false,'old uninstall result leaked into configuration')
+  await select(single,'sb');await closePanel();await instances.getByTestId('instance-34567').waitFor()
+  await select(single,'fw');await closePanel();await instances.getByTestId('instance-23456').waitFor()
   // Whole-node cleanup stays locked even after credentials have been removed.
   await poll(all);await select(all);await page.clock.install()
   const whole=await submit(maintenance.getByRole('button',{name:'全部卸载此节点',exact:true}),all,'all')
@@ -161,7 +167,7 @@ try {
   const wholeRunning={...allActual,online:true,lifecycle:{...allActual.lifecycle,status:'running',stage:'delete_modules',message:'fixture whole-node running',attempt:1}}
   fixtures.set(all.id,wholeRunning);await refresh();await progress.getByText('fixture whole-node running',{exact:true}).waitFor()
   await page.clock.fastForward(121000)
-  await page.getByText('自动确认已达两分钟，结果尚未确认。请手动刷新配置查看结果，勿重复提交。',{exact:true}).waitFor()
+  await panel.getByText('自动确认已达两分钟，结果尚未确认。请手动刷新配置查看结果，勿重复提交。',{exact:true}).waitFor()
   await assertIdle('unconfirmed lifecycle exceeded automatic confirmation limit')
   for(const stage of ['cleaning','finalizing']){
     fixtures.set(all.id,{...wholeRunning,bound:false,lifecycle:{...wholeRunning.lifecycle,status:stage,stage,message:`fixture ${stage}`}})
@@ -182,7 +188,7 @@ try {
   assert.equal(await progress.getByText('卸载已确认完成 · 此节点全部受管服务',{exact:true}).count(),0,'revocation was displayed as successful cleanup')
   fixtures.set(all.id,{...wholeRunning,bound:false,online:false,lifecycle:{...wholeRunning.lifecycle,status:'succeeded',stage:'completed',message:'fixture whole-node completed'}})
   await refresh();await completedHistory('fixture whole-node completed')
-  await maintenance.getByTestId('lifecycle-history').getByText('上次卸载已完成 · 此节点全部受管服务',{exact:true}).waitFor()
+  await maintenance.getByTestId('operation-history').locator('summary').waitFor()
   assert(await maintenance.getByRole('button',{name:'安装并接入此节点',exact:true}).isEnabled())
   await assertIdle('completed lifecycle kept polling')
   assert.deepEqual(errors,[])
@@ -191,6 +197,7 @@ try {
   await refresh();await page.getByTestId('component-outdated').waitFor()
   let abandoned
   await page.route(`**/api/management/${all.id}/abandon`,route=>{abandoned=route.request().postDataJSON();fixtures.delete(all.id);return route.fulfill({status:200,contentType:'application/json',body:'{"message":"ok"}'})})
+  await maintenance.getByTestId('abandon-node').locator('summary').click()
   page.once('dialog',dialog=>dialog.dismiss())
   await page.getByRole('button',{name:'确认节点已失效'}).click();await page.waitForTimeout(100)
   assert.equal(abandoned,undefined)

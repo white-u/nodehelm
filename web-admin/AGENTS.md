@@ -13,7 +13,7 @@
 | 节点控件与安装 | [nodes/NodeControls.tsx](src/features/nodes/NodeControls.tsx)：地址、筛选与节点选择；[AgentInstall.tsx](src/features/nodes/AgentInstall.tsx)：监控 Agent 安装、注册及命令辅助 |
 | 延迟探测 | [monitoring/Ping.tsx](src/features/monitoring/Ping.tsx)：探测列表、表单、节点关联与视图切换 |
 | 服务总览 | [services/Management.tsx](src/features/services/Management.tsx)：节点卡片、状态读取、选择和结果确认调度 |
-| 服务配置与维护 | [services/ServiceDetail.tsx](src/features/services/ServiceDetail.tsx)：详情页签、Snell／SB／FW 表单、配置弹窗、节点和核心维护及操作记录 |
+| 服务配置与维护 | [services/ServiceDetail.tsx](src/features/services/ServiceDetail.tsx)：模块配置、Snell／SB／FW 表单抽屉、配置弹窗、独立节点管理和模块维护抽屉及操作记录 |
 | PM 与管理模型 | [services/PortPolicies.tsx](src/features/services/PortPolicies.tsx)：端口策略；[model.ts](src/features/services/model.ts)：类型、固定文案和数据辅助 |
 | 常规设置 | [settings/GeneralSettings.tsx](src/features/settings/GeneralSettings.tsx)：站点设置、图标及共享设置状态逻辑 |
 | 通知与主题 | [settings/Notifications.tsx](src/features/settings/Notifications.tsx)：通知配置与离线策略；[Themes.tsx](src/features/settings/Themes.tsx)：主题安装、选择和配置 |
@@ -29,7 +29,7 @@
 | [index.html](index.html)、[src/main.tsx](src/main.tsx) | HTML 入口与 React 挂载 |
 | [src/App.tsx](src/App.tsx)、[src/components/Admin.tsx](src/components/Admin.tsx) | 身份、主题、路径切换及后台导航组合 |
 | [src/components/TrafficHistory.tsx](src/components/TrafficHistory.tsx) | 分时流量历史展示 |
-| [src/components/ui/](src/components/ui/) | Button、Dialog、Input 等基础组件 |
+| [src/components/ui/](src/components/ui/) | Button、Dialog、DialogDrawerContent、Input 等基础组件 |
 | [src/lib/api.ts](src/lib/api.ts) | API、数据类型、监控帧订阅及安装辅助逻辑 |
 | [src/lib/format.ts](src/lib/format.ts)、[src/lib/utils.ts](src/lib/utils.ts)、[src/index.css](src/index.css) | 格式化、样式辅助及主题样式 |
 | [vite.config.ts](vite.config.ts) | `/admin/` 基路径、`@` 别名与开发代理 |
@@ -40,6 +40,8 @@
 
 ## 服务管理页面定位
 
-节点卡片内每个模块独占一行，名称和状态横向排列；卡片保留读取时间，选择后在下方同一张详情卡片内使用“配置”和“管理”页签。组件最后通信时间及默认折叠的已完成卸载记录放在“管理”页签，未完成或异常的卸载进度在两页签中持续可见。Snell／SB 的实例行通过弹窗展示配置，FW 展示转发目标，PM 使用端口策略面板。状态读取与结果确认在 `Management.tsx`，表单与维护在 `ServiceDetail.tsx`，页面布局与交互由两者组合。
+节点卡片内每个模块独占一行，名称和状态横向排列；卡片保留读取时间，并提供独立的“节点管理”入口。下方配置区直接展示所选模块的实例、转发或 PM 规则，未安装时可直接安装；新增和编辑表单使用抽屉，保留未保存修改、版本过期和重新载入保护。
+
+“节点管理”抽屉由 `Management.tsx` 单独选择目标，不改变当前模块配置区；`ServiceDetail.tsx` 中的 `NodeManagement` 负责该节点的接入、全部卸载、紧急撤销授权、失效节点处理及卸载进度恢复。“模块维护”只负责当前模块的核心升级、回退和卸载。未完成或异常的卸载在配置区提供简短提示与进度入口；完整进度在节点管理中查看，卸载结果和操作记录默认折叠。Snell／SB 的客户端配置仍使用独立弹窗，PM 表单和用量逻辑位于 `PortPolicies.tsx`。状态读取及结果确认调度继续由 `Management.tsx` 负责。
 
 字段与动作对应 [management/mod.rs](../src/management/mod.rs)、[models.rs](../src/management/models.rs) 和 [Python 模型](../management/AGENTS.md)。页面功能及交互变化时，同步这些实际消费者与对应文档入口。

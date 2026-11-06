@@ -1,22 +1,24 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
-import { api, ApiError } from "@/lib/api"
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react"
+import { api, ApiError, type Node } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogDescription, DialogDrawerContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Plus, RefreshCw, X } from "lucide-react"
 import { PmPanel } from "./PortPolicies"
 import { type Module, type ApplyIntent, type Resource, type CoreAction, type Snapshot, type Status, type NodeStatus, names, modules, moduleView, lifecycleActive, lifecycleLabels, runtimeLabels, actionLabels, labels, sniChoices, quote, newResource, editable, confirmDiscard } from "./model"
 
-export function ManagementDetail({ node, module, selectedName, record, defaultAddress, notice, onSubmitted, onDirtyChange, enabled, settingsError, reload }: {
-  node: number; module: Module; selectedName: string; record?: NodeStatus; defaultAddress: string; notice?: string; onSubmitted: (operation: string) => void; onDirtyChange: (dirty: boolean) => void; enabled: boolean | null; settingsError: string; reload: (manual?: boolean) => Promise<void>
+export function ManagementDetail({ node, module, selectedName, record, defaultAddress, notice, onSubmitted, onDirtyChange, onNodeManagement, enabled, settingsError, reload }: {
+  node: number; module: Module; selectedName: string; record?: NodeStatus; defaultAddress: string; notice?: string; onSubmitted: (operation: string) => void; onDirtyChange: (dirty: boolean) => void; onNodeManagement: (trigger: HTMLElement) => void; enabled: boolean | null; settingsError: string; reload: (manual?: boolean) => Promise<void>
 }) {
   const status = record?.status
   const fetchError = record?.error ?? ""
-  const [detailTab, setDetailTab] = useState<"config" | "manage">("config")
+  const [maintenanceOpen, setMaintenanceOpen] = useState(false)
+  const maintenanceTrigger = useRef<HTMLButtonElement>(null)
+  const formTrigger = useRef<HTMLElement | null>(null)
   const [error, setError] = useState("")
   const [message, setMessage] = useState("")
   const [submittedOperation, setSubmittedOperation] = useState("")
   const [busy, setBusy] = useState(false)
-  const [command, setCommand] = useState("")
   const configReading = useRef(false)
   const [configLoading, setConfigLoading] = useState(false)
   const [configError, setConfigError] = useState("")
@@ -43,7 +45,7 @@ export function ManagementDetail({ node, module, selectedName, record, defaultAd
   const submittedResult = status?.operations?.find(operation => operation.id === submittedOperation && !["queued", "delivered"].includes(operation.status))
   const draftStale = form !== null && baseRevision !== view?.revision
   const active = lifecycleActive(status?.lifecycle) || status?.operations?.some(o => ["queued", "delivered"].includes(o.status))
-  const writable = enabled && !settingsError && !fetchError && status?.online && status.compatible && view && !status.snapshot?.blocked && !view.blocked && !active && !busy
+  const writable = enabled && !settingsError && !fetchError && status?.bound && status.online && status.compatible && view && !status.snapshot?.blocked && !view.blocked && !active && !busy
   async function submit(action: string, payload: object, revision = view?.revision, intent?: ApplyIntent) {
     if (!writable || !revision) throw new Error("当前配置不可写，请刷新并核实节点状态")
     const id = crypto.randomUUID().replaceAll("-", "")
@@ -51,34 +53,18 @@ export function ManagementDetail({ node, module, selectedName, record, defaultAd
     onSubmitted(id)
     if (mounted.current) { setSubmittedOperation(id); setMessage("操作已提交，正在确认结果。") }
   }
-  async function uninstall(scope: Module | "all", resume = false) {
-    if (!status?.online || !status.compatible) throw new Error("节点离线或组件版本不一致，请上线并升级组件后重试。")
+  async function uninstall() {
     if (!confirmDiscard(dirty || pmDirty.current)) return
-    const target = scope === "all" ? "全部受管业务、配置和管理组件" : `${names[scope]} 全部实例、关联受管 PM 规则及核心`
-    if (!confirm(`${resume ? "继续" : "确认"}卸载「${selectedName}」的${target}？已删除内容不会自动恢复。原 monitor 和其他节点不受影响。`)) return
-    const id = resume ? status.lifecycle!.id : crypto.randomUUID().replaceAll("-", "")
-    const revisions = Object.fromEntries(modules.map(name => [name, moduleView(status, name)?.revision ?? ""]))
-    try {
-      await api(`/management/${node}/lifecycle`, { method: "POST", signal: AbortSignal.timeout(15_000), body: JSON.stringify({ id, scope, revisions, resume, ...(resume ? { attempt: status.lifecycle!.attempt } : {}) }) })
-    } catch (e) {
-      if ((e instanceof ApiError && (e.status === 0 || e.status >= 500 || (e.status >= 200 && e.status < 300))) || (e as Error).name === "AbortError") {
-        onSubmitted(id)
-        await reload()
-        throw new Error(`卸载请求结果未确认，已尝试读取节点进度；请核实结果，勿重复提交。${String(e)}`)
-      }
-      throw e
+    const operation = await requestUninstall(node, selectedName, status, module, false, onSubmitted, reload)
+    if (operation && mounted.current) {
+      setForm(null); onDirtyChange(false)
+      setSubmittedOperation(operation)
+      setMessage("卸载请求已提交；以节点实际确认结果为准。")
     }
-    setForm(null); onDirtyChange(false); onSubmitted(id)
-    setMessage("卸载请求已提交；以节点实际确认结果为准。")
   }
-  async function enroll() {
-    const data = await api<{ site: string; node: number; enrollment: string }>(`/management/${node}/enrollment`, { method: "POST" })
-    const res = await fetch("/management-files/manifest.json", { cache: "no-store" })
-    if (!res.ok) throw new Error("无法读取安装校验信息")
-    const manifest = await res.json()
-    const server = data.site.replace(/\/$/, "")
-    if (!mounted.current) return
-    setCommand(`(set -eu\numask 077\nd=$(mktemp -d)\ntrap 'rm -rf "$d"' EXIT\ncurl --proto '=https' --tlsv1.2 -fsS ${quote(server + "/management-files/install.py")} -o "$d/install.py"\nprintf '%s  %s\\n' ${quote(manifest["install.py"])} "$d/install.py" | sha256sum -c -\npython3 "$d/install.py" --server ${quote(server)} --node ${data.node} <<'NODE_MANAGER_ENROLLMENT'\n${JSON.stringify({ enrollment: data.enrollment })}\nNODE_MANAGER_ENROLLMENT\n)`)
+  async function install() {
+    const prompt = module === "pm" ? `在 ${selectedName} 启用 PM？目标 VPS 需预装 nftables，启用会创建独立的规则表和定时任务。` : `在 ${selectedName} 安装独立的 ${names[module]} 核心？不接管旧服务、不修改防火墙。`
+    if (confirm(prompt)) await submit("install", {})
   }
   const configTrigger = useRef<HTMLElement | null>(null)
   async function showConfiguration(port: number) {
@@ -102,9 +88,12 @@ export function ManagementDetail({ node, module, selectedName, record, defaultAd
     const next = item ? editable(module, item) : newResource(module, defaultAddress)
     setEditing(!!item); setBaseRevision(view?.revision ?? ""); setInitialForm(JSON.stringify(next)); setForm(next); setAdvanced(module !== "fw" && !next.host)
   }
-  function edit(item?: Resource) {
-    if (confirmDiscard(dirty)) loadDraft(item)
+  function edit(item?: Resource, trigger?: HTMLElement) {
+    if (confirmDiscard(dirty)) { formTrigger.current = trigger ?? null; loadDraft(item) }
   }
+  function closeForm() { if (!busy && confirmDiscard(dirty)) setForm(null) }
+  function showNodeManagement(trigger: HTMLElement) { setMaintenanceOpen(false); onNodeManagement(trigger) }
+
   function reloadDraft() {
     if (!view || !form || !confirm("重新载入最新配置将替换当前草稿，是否继续？")) return
     const latest = editing ? view.resources.find(item => item.port === form.port) : undefined
@@ -116,71 +105,57 @@ export function ManagementDetail({ node, module, selectedName, record, defaultAd
     if (!form) return
     setForm({ ...form, port, ...(module === "fw" ? { target_port: form.target_port === form.port ? port : form.target_port } : { public_port: form.public_port === form.port ? port : form.public_port }) })
   }
-  return <div className="space-y-4" data-testid={`management-selection-${node}-${module}`}>
-    {configError && <p role="alert" className="text-sm text-destructive">{configError}</p>}
+  const feedback = <>
     {error && <p role="alert" className="text-sm text-destructive">操作失败：{error}</p>}
     {fetchError && <p role="alert" className="text-sm text-destructive">配置读取失败：{fetchError}{status ? " · 显示上次读取的配置，已暂停写入和配置查看。" : ""}</p>}
     {settingsError && <p role="alert" className="text-sm text-destructive">管理设置读取失败：{settingsError} · 已暂停写入和配置查看。</p>}
     {notice && <p role="status" className="text-sm text-muted-foreground">{notice}</p>}
-    {message && <p role="status" className="text-sm">{submittedResult ? `${labels[submittedResult.status] ?? submittedResult.status} · ${submittedResult.message || "请展开操作记录查看详情。"}` : submittedOperation && notice ? "操作已提交，结果尚未确认，请手动刷新。" : message}</p>}
-    <div className="space-y-4 rounded-xl border p-4" data-testid="service-card">
-    <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="font-medium">{selectedName ? `${selectedName} · ${names[module]}` : "管理设置"}</h2><div className="flex flex-wrap gap-2">
-      <Button variant="outline" className="min-w-28" disabled={busy || record?.loading} onClick={() => { void reload(true) }}>{record?.loading ? "正在刷新…" : "刷新此节点"}</Button>
-    </div></div>
+    {message && !(submittedOperation && status?.lifecycle?.id === submittedOperation && status.lifecycle.status === "succeeded") && <p role="status" className="text-sm">{submittedResult ? `${labels[submittedResult.status] ?? submittedResult.status} · ${submittedResult.message || "请展开操作记录查看详情。"}` : submittedOperation && notice ? "操作已提交，结果尚未确认，请手动刷新。" : message}</p>}
+  </>
+  const availability = <>
     {enabled === false && <p className="text-sm text-muted-foreground">尚未启用管理写入。后台需要配置 HTTPS 公网地址；现有监控不受此开关控制。</p>}
-      {status?.bound && status.online && !status.compatible && <p role="alert" className="text-destructive">管理组件与后台版本不一致，已暂停写入。节点服务不受影响，请升级组件后继续。</p>}
-      {status?.bound && !writable && <p className="text-sm text-muted-foreground">{busy ? "正在提交或刷新，请稍候。" : fetchError || settingsError ? "读取失败，刷新成功后才能修改配置。" : !enabled ? "启用管理写入后才能修改配置。" : !status.online ? "管理组件离线，配置只读。请检查 VPS 上的管理组件。" : active ? "节点有待完成操作，核实结果后可继续修改。" : status.snapshot?.blocked || view?.blocked ? "配置需要核实，已暂停写入。" : !status.snapshot ? "等待管理组件首次上报配置，请稍后手动刷新配置。" : !view ? "该模块尚未上报，升级管理组件后再试。" : ""}</p>}
-      {status?.snapshot?.blocked && <p role="alert" className="text-destructive">配置漂移或有未完成恢复，已暂停写入及配置查看。请在 VPS 执行 python3 /opt/node-manager/agent.py status；有恢复记录时执行 recover，外部修改需先人工核实。</p>}
-    {status?.lifecycle && status.lifecycle.status !== "succeeded" && <div className="space-y-2 rounded border p-3" role="status" data-testid="lifecycle-progress"><h3 className="text-sm font-medium">{lifecycleLabels[status.lifecycle.status] ?? "卸载结果待确认"} · {status.lifecycle.scope === "all" ? "此节点全部受管服务" : names[status.lifecycle.scope]}</h3><p className="text-sm">{status.lifecycle.message}</p>{["paused", "interrupted"].includes(status.lifecycle.status) && <><p className="text-xs text-muted-foreground">已完成步骤保留，不会自动恢复已删除业务。请先排除错误；失联不代表卸载成功。</p>{(status.lifecycle.status === "paused" || status.lifecycle.underlying_status === "paused") ? <Button variant="outline" disabled={busy || !!fetchError || !status.online || !status.bound} onClick={() => run(() => uninstall(status.lifecycle!.scope, true))}>继续卸载</Button> : <p className="text-xs text-muted-foreground">等待节点恢复连接后核实进度；请勿重复发起卸载。</p>}</>}</div>}
-    <div role="tablist" aria-label="节点详情" className="flex gap-1 border-b" onKeyDown={e => {
-      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return
-      e.preventDefault()
-      const next = e.key === "Home" ? "config" : e.key === "End" ? "manage" : detailTab === "config" ? "manage" : "config"
-      setDetailTab(next)
-      document.getElementById(`detail-tab-${next}`)?.focus()
-    }}>{(["config", "manage"] as const).map(tab => <button key={tab} type="button" role="tab" id={`detail-tab-${tab}`} aria-selected={detailTab === tab} aria-controls={`detail-panel-${tab}`} tabIndex={detailTab === tab ? 0 : -1} onClick={() => setDetailTab(tab)} className={`min-h-11 border-b-2 px-5 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring ${detailTab === tab ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}>{tab === "config" ? "配置" : "管理"}</button>)}</div>
-    <section hidden={detailTab !== "manage"} role="tabpanel" id="detail-panel-manage" aria-labelledby="detail-tab-manage" className="space-y-4" data-testid="node-maintenance">
-      {status?.last_seen ? <p className="text-xs tabular-nums text-muted-foreground">组件最后通信：{new Date(status.last_seen * 1000).toLocaleString()}</p> : null}
-      {status?.lifecycle?.status === "succeeded" && <details className="space-y-2 rounded border p-3" data-testid="lifecycle-history"><summary className="cursor-pointer text-sm text-muted-foreground">上次卸载已完成 · {status.lifecycle.scope === "all" ? "此节点全部受管服务" : names[status.lifecycle.scope]}</summary><p className="text-sm">{status.lifecycle.message}</p></details>}
-    {!!node && <div className="space-y-4">
-      {status && !status.bound ? <Button disabled={!enabled || !!settingsError || !!fetchError || busy || !!active} onClick={() => run(enroll)}>安装并接入此节点</Button> : status?.bound && <div className="rounded border p-3"><h3 className="text-sm font-medium">节点接入</h3><p className="my-2 text-xs text-muted-foreground">安装时自动完成授权。全部卸载只清理此节点由本项目管理的业务与组件。</p><Button variant="outline" disabled={!writable || !status.compatible} onClick={() => run(() => uninstall("all"))}>全部卸载此节点</Button>{!status.compatible && <p className="mt-2 text-xs text-muted-foreground">管理组件与后台版本不一致，请先升级组件。</p>}{status.component_current === false && <p className="mt-2 text-xs text-muted-foreground" data-testid="component-outdated">此节点的管理组件与后台版本不一致或未上报版本。请先升级后台，再在 VPS 执行 sudo python3 /opt/node-manager/install.py upgrade。</p>}{!status.online && <p className="mt-2 text-sm text-destructive">节点离线，无法执行卸载；已有请求保持未确认，恢复在线后继续。</p>}<details className="mt-3"><summary className="cursor-pointer text-xs text-muted-foreground">紧急撤销授权</summary><p className="my-2 text-xs text-muted-foreground">仅应急撤销凭据，不卸载服务；正常移除请用上方全部卸载。</p><Button variant="outline" disabled={busy || !!active || !!fetchError} onClick={() => run(async () => {
-        if (!confirm(`撤销 ${selectedName} 的管理绑定？业务服务保留，重新绑定前须在 VPS 执行 unlink。`)) return
-        await api(`/management/${node}`, { method: "DELETE" })
-      })}>撤销管理绑定</Button></details></div>}
-      {status?.abandonable && <div className="space-y-2 rounded border p-3" data-testid="abandon-node"><h3 className="text-sm font-medium">节点已不存在？</h3><p className="text-xs text-muted-foreground">此节点已离线超过 10 分钟。仅在 VPS 已销毁、已重装或确定不再恢复时使用：后台放弃待确认的任务和卸载进度并撤销授权，之后可重新接入或删除节点。此操作不会清理 VPS 上的任何内容；若 VPS 之后恢复，需在本机执行 python3 /opt/node-manager/agent.py unlink 才能重新接入。</p><Button variant="outline" disabled={busy || !!fetchError} onClick={() => run(async () => {
-        const typed = prompt(`放弃对该节点的管理？请输入节点名称确认：${selectedName}`)
-        if (typed === null) return
-        await api(`/management/${node}/abandon`, { method: "POST", body: JSON.stringify({ name: typed }) })
-      })}>确认节点已失效</Button></div>}
-      {command && !status?.bound && !active && <div className="space-y-2"><p className="text-sm">在目标 VPS 以 root 执行，需要 Python 3.10+、curl、sha256sum 和 systemd。命令十分钟内有效，包含一次性凭据，请勿分享。安装与授权一次完成。仅生成命令不代表已安装；执行后点击「刷新此节点」确认接入和首次上报。</p><pre className="overflow-auto rounded bg-muted p-3 text-xs">{command}</pre><Button variant="outline" onClick={() => run(async () => { await navigator.clipboard.writeText(command); if (mounted.current) setMessage("安装命令已复制") })}>复制命令</Button></div>}
-      {view?.installed && <CorePanel
-        key={`${node}/${module}`}
-        node={selectedName}
-        module={module}
-        view={view}
-        writable={Boolean(writable)}
-        run={run}
-        submit={submit}
-        uninstall={() => run(() => uninstall(module))}
-      />}
-      {status?.bound && view && !view.installed && <Button disabled={!writable} onClick={() => run(async () => {
-        const prompt = module === "pm" ? `在 ${selectedName} 启用 PM？目标 VPS 需预装 nftables，启用会创建独立的规则表和定时任务。` : `在 ${selectedName} 安装独立的 ${names[module]} 核心？不接管旧服务、不修改防火墙。`
-        if (confirm(prompt)) await submit("install", {})
-      })}>{module === "pm" ? "启用 PM" : `安装 ${names[module]}`}</Button>}
-    </div>}
-    </section>
-    {!!node && <section hidden={detailTab !== "config"} role="tabpanel" id="detail-panel-config" aria-labelledby="detail-tab-config" className="space-y-4" data-testid="instance-config">
-      <div><h2 className="font-medium">{module === "pm" ? "端口规则" : module === "fw" ? "转发配置" : "实例配置"} · {names[module]}</h2><p className="mt-1 text-sm text-muted-foreground">{selectedName} · 配置仅应用到此节点</p></div>
-      {status && !status.bound && <p className="text-sm text-muted-foreground">请先在“管理”页接入管理组件。</p>}
-      {status?.bound && (module === "pm" ?
-        <PmPanel key={`${node}/${status.lifecycle?.id ?? ""}`} node={selectedName} snapshot={status?.snapshot} view={view} writable={Boolean(writable)} busy={busy} onDirtyChange={reportPmDirty} run={run} submit={submit} />
-        : status?.bound && <div className="space-y-3">
-        {!status.snapshot ? <p>等待管理组件首次上报配置，请稍后手动刷新配置。</p> : !view ? <p>此管理组件尚未支持 {names[module]}，请升级组件。不会把未支持状态当作未安装。</p> : !view.installed ? <p className="text-sm text-muted-foreground">请先在“管理”页安装 {names[module]}。</p> : <Button disabled={!writable} onClick={() => edit()}>新增{module === "fw" ? "转发规则" : "实例"}</Button>}
-        {view?.resources.map(item => <div key={item.port} data-testid={`instance-${item.port}`} className="flex flex-wrap items-center justify-between gap-3 rounded border p-3"><div><strong>{item.name}</strong><span className="ml-2 text-xs">{runtimeLabels[view.runtime?.[String(item.port)] ?? "unknown"]}</span>{module === "fw" && <p className="break-all text-sm text-muted-foreground">{item.port} → {item.target_host}:{item.target_port} · TCP/UDP</p>}</div><div className="flex flex-wrap gap-2">{(module === "snell" || module === "sb") && <Button variant="outline" disabled={busy || !!active || !!fetchError || !!settingsError || status.snapshot?.blocked || view.blocked} aria-busy={configLoading} onClick={e => { if (configReading.current) return; configTrigger.current = e.currentTarget; void showConfiguration(item.port) }}>显示配置</Button>}{module === "fw" && <Button variant="outline" disabled={!writable} onClick={() => run(async () => { await submit("check", { port: item.port }) })}>测试目标 TCP</Button>}<Button variant="outline" disabled={!writable} onClick={() => edit(item)}>编辑</Button><Button variant="outline" disabled={!writable} onClick={() => run(async () => { if (confirm(`删除 ${selectedName} 上的 ${item.name}（${item.port}）？将停止对应服务。`)) await submit("delete", { port: item.port }) })}>删除</Button></div>
-          {clientConfig?.port === item.port && clientConfig.revision === view.revision && !active && !fetchError && !settingsError && !status.snapshot?.blocked && !view.blocked && <ConfigurationDialog name={item.name} text={clientConfig.text} onClose={() => setClientConfig(null)} restoreFocus={() => { if (configTrigger.current?.isConnected) configTrigger.current.focus() }} />}
+    {status?.bound && status.online && !status.compatible && <p role="alert" className="text-sm text-destructive">管理组件与后台版本不一致，已暂停写入。节点服务不受影响，请升级组件后继续。</p>}
+    {status?.bound && !status.online && <p className="text-sm text-muted-foreground">管理组件离线，配置只读。请检查 VPS 上的管理组件。</p>}
+    {status?.snapshot?.blocked && <p role="alert" className="text-sm text-destructive">配置漂移或有未完成恢复，已暂停写入及配置查看。请在 VPS 执行 python3 /opt/node-manager/agent.py status；有恢复记录时执行 recover，外部修改需先人工核实。</p>}
+    {view?.blocked && !status?.snapshot?.blocked && <p role="alert" className="text-sm text-destructive">此模块配置需要核实，已暂停写入和配置查看。</p>}
+    {status?.lifecycle && status.lifecycle.status !== "succeeded" ? <div role="status" className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-muted/50 px-3 py-2 text-sm" data-testid="lifecycle-summary"><span>{lifecycleLabels[status.lifecycle.status] ?? "卸载结果待确认"} · {status.lifecycle.scope === "all" ? "此节点全部受管服务" : names[status.lifecycle.scope]}</span><Button variant="ghost" onClick={event => showNodeManagement(event.currentTarget)}>查看进度</Button></div> : active && <p role="status" className="text-sm text-muted-foreground">节点有待完成操作，核实结果后可继续修改。</p>}
+  </>
+  const installButton = <Button className="min-h-11" disabled={!writable} onClick={() => { void run(install) }}>{module === "pm" ? "启用 PM" : `安装 ${names[module]}`}</Button>
+  return <div className="space-y-4" data-testid={`management-selection-${node}-${module}`}>
+    {configError && <p role="alert" className="text-sm text-destructive">{configError}</p>}
+    <div className="overflow-hidden rounded-xl border" data-testid="service-card">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b p-4"><h2 className="min-w-0 break-words font-medium">{selectedName ? `${selectedName} · ${names[module]}` : "管理设置"}</h2><div className="flex flex-wrap gap-2">
+        <Button variant="ghost" className="min-h-11" aria-label="刷新此节点" disabled={busy || record?.loading} onClick={() => { void reload(true) }}><RefreshCw aria-hidden="true" />{record?.loading ? "正在刷新…" : "刷新"}</Button>
+        <Button ref={maintenanceTrigger} variant="outline" className="min-h-11" disabled={!node} onClick={() => setMaintenanceOpen(true)}>模块维护</Button>
+      </div></div>
+      <div className="space-y-3 p-4" data-testid="instance-config">
+        {/* An open drawer shows these itself; one copy keeps screen readers from announcing them twice. */}
+        {!maintenanceOpen && !form && <>{feedback}{availability}</>}
+        {!status && !fetchError && <p role="status" className="text-sm text-muted-foreground">正在读取配置…</p>}
+        {status && !status.bound && <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-muted/40 p-4"><p className="text-sm text-muted-foreground">节点尚未接入管理。</p><Button onClick={event => showNodeManagement(event.currentTarget)}>接入管理</Button></div>}
+        {status?.bound && !status.snapshot && <p className="text-sm text-muted-foreground">等待管理组件首次上报配置，请稍后手动刷新配置。</p>}
+        {status?.bound && status.snapshot && !view && <p className="text-sm text-muted-foreground">此管理组件尚未支持 {names[module]}，请升级组件。不会把未支持状态当作未安装。</p>}
+        {status?.bound && view && !view.installed && <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg bg-muted/40 p-4"><div><h3 className="text-sm font-medium">{module === "pm" ? "尚未启用" : "尚未安装"}</h3><p className="mt-1 text-xs text-muted-foreground">{module === "pm" ? "启用后可配置端口计量、配额和到期策略。" : `安装后即可新增${module === "fw" ? "转发规则" : "实例"}。`}</p></div>{installButton}</div>}
+        {status?.bound && view?.installed && (module === "pm" ?
+          <PmPanel key={`${node}/${status.lifecycle?.id ?? ""}`} node={selectedName} snapshot={status.snapshot} view={view} writable={Boolean(writable)} busy={busy} feedback={feedback} refreshing={Boolean(record?.loading)} reload={() => reload(true)} onDirtyChange={reportPmDirty} run={run} submit={submit} />
+          : <div className="space-y-3"><div className="flex flex-wrap items-center justify-between gap-3"><span className="text-xs text-muted-foreground">{module === "fw" ? "转发规则" : "实例"} · {view.resources.length}</span><Button className="min-h-11" disabled={!writable} onClick={event => edit(undefined, event.currentTarget)}><Plus aria-hidden="true" />新增{module === "fw" ? "转发规则" : "实例"}</Button></div>
+        {view.resources.map(item => <div key={item.port} data-testid={`instance-${item.port}`} className="flex flex-wrap items-center justify-between gap-3 rounded border p-3"><div><strong className="font-medium">{item.name}</strong><span className="ml-2 text-xs text-muted-foreground">{status?.online ? runtimeLabels[view.runtime?.[String(item.port)] ?? "unknown"] : "运行状态待确认"}</span>{module !== "fw" && <p className="mt-1 text-xs text-muted-foreground">{module === "sb" ? item.protocol === "reality" ? "VLESS Reality · " : "Shadowsocks 2022 · " : ""}端口 {item.port}</p>}{module === "fw" && <p className="break-all text-sm text-muted-foreground">{item.port} → {item.target_host}:{item.target_port} · TCP/UDP</p>}</div><div className="flex flex-wrap gap-2">{(module === "snell" || module === "sb") && <Button variant="outline" disabled={busy || !!active || !!fetchError || !!settingsError || status?.snapshot?.blocked || view.blocked} aria-busy={configLoading} onClick={e => { if (configReading.current) return; configTrigger.current = e.currentTarget; void showConfiguration(item.port) }}>显示配置</Button>}{module === "fw" && <Button variant="outline" disabled={!writable} onClick={() => run(async () => { await submit("check", { port: item.port }) })}>测试目标 TCP</Button>}<Button variant="outline" disabled={!writable} onClick={event => edit(item, event.currentTarget)}>编辑</Button><Button variant="outline" disabled={!writable} onClick={() => run(async () => { if (confirm(`删除 ${selectedName} 上的 ${item.name}（${item.port}）？将停止对应服务。`)) await submit("delete", { port: item.port }) })}>删除</Button></div>
+          {clientConfig?.port === item.port && clientConfig.revision === view.revision && !active && !fetchError && !settingsError && !status?.snapshot?.blocked && !view.blocked && <ConfigurationDialog name={item.name} text={clientConfig.text} onClose={() => setClientConfig(null)} restoreFocus={() => { if (configTrigger.current?.isConnected) configTrigger.current.focus() }} />}
         </div>)}
-        {form && <form className="space-y-3 rounded border p-4" onInvalidCapture={e => { const details = (e.target as HTMLElement).closest("details"); if (details) { details.open = true; setAdvanced(true) } }} onSubmit={e => { e.preventDefault(); run(async () => { if (draftStale) throw new Error("配置已更新，请先重新载入最新配置。"); if (editing && !confirm(`保存并应用到 ${selectedName} 的 ${form.port}？该实例将重启。`)) return; await submit("apply", form, baseRevision, editing ? "update" : "create"); setForm(null) }) }}>
-          <h2 className="font-medium">{editing ? "编辑" : "新增"}{names[module]} · {selectedName}</h2>
+
+          {!view.resources.length && <p className="text-sm text-muted-foreground">暂无配置，可从右上方新增。</p>}
+        </div>)}
+      </div>
+      <OperationHistory status={status} />
+    </div>
+    {maintenanceOpen && <ManagementDrawer title={`${selectedName} · ${names[module]} 维护`} description="当前模块的核心版本、升级、回退与卸载" onClose={() => setMaintenanceOpen(false)} restoreFocus={() => maintenanceTrigger.current?.focus()} footer={<><Button variant="outline" disabled={busy || record?.loading} onClick={() => { void reload(true) }}>刷新此节点</Button><Button onClick={() => setMaintenanceOpen(false)}>关闭</Button></>}>
+      <div className="space-y-4" data-testid="module-maintenance">{feedback}{availability}
+        {!status?.bound ? <Button onClick={event => showNodeManagement(event.currentTarget)}>接入管理</Button> : !view ? <p className="text-sm text-muted-foreground">等待此模块配置上报。</p> : view.installed ? <CorePanel node={selectedName} module={module} view={view} writable={Boolean(writable)} run={run} submit={submit} uninstall={() => { void run(uninstall) }} /> : installButton}
+      </div>
+    </ManagementDrawer>}
+    {form && <ManagementDrawer title={`${editing ? "编辑" : "新增"}${names[module]} · ${selectedName}`} description="配置仅应用到当前节点" onClose={closeForm} restoreFocus={() => { if (formTrigger.current?.isConnected) formTrigger.current.focus(); else maintenanceTrigger.current?.focus() }} footer={<><Button variant="ghost" disabled={busy || record?.loading} onClick={() => { void reload(true) }}>刷新此节点</Button><Button variant="outline" disabled={busy} onClick={closeForm}>取消</Button><Button type="submit" form="service-instance-form" disabled={!writable || draftStale}>保存并应用</Button></>}>
+      <div className="space-y-4">{feedback}
+        <form id="service-instance-form" className="space-y-4" onInvalidCapture={e => { const details = (e.target as HTMLElement).closest("details"); if (details) { details.open = true; setAdvanced(true) } }} onSubmit={e => { e.preventDefault(); run(async () => { if (draftStale) throw new Error("配置已更新，请先重新载入最新配置。"); if (editing && !confirm(`保存并应用到 ${selectedName} 的 ${form.port}？该实例将重启。`)) return; await submit("apply", form, baseRevision, editing ? "update" : "create"); setForm(null) }) }}>
           {draftStale && <div role="alert" className="space-y-2 text-sm"><p>服务器配置已更新，当前草稿已保留。请先重新载入最新配置，再修改并保存。</p><Button type="button" variant="outline" disabled={busy || !!fetchError || !view || record?.loading} onClick={reloadDraft}>重新载入最新配置</Button></div>}
           <div className="grid gap-3 sm:grid-cols-2">
             <label>名称／备注<Input required maxLength={48} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /><span className="text-xs text-muted-foreground">文字、数字、空格、横线和下划线</span></label>
@@ -199,13 +174,113 @@ export function ManagementDetail({ node, module, selectedName, record, defaultAd
           </div></details>}
           {module === "fw" && <p className="text-xs text-muted-foreground">FW 不提供访问认证，转发本机或内网服务前请确认目标认证或入口限制。</p>}
           <p className="text-xs text-muted-foreground">保存会重启此实例；监听 IPv4。域名需自行解析，业务端口需自行放行。后台 HTTPS 反代不转发业务端口；本机应用成功不代表公网已连通。</p>
-          <Button type="submit" disabled={!writable || draftStale}>保存并应用</Button>{" "}<Button variant="outline" type="button" disabled={busy} onClick={() => { if (confirmDiscard(dirty)) setForm(null) }}>取消</Button>
-        </form>}
-      </div>)}
-    </section>}
-    </div>
-    {!!status?.operations?.length && <details className="space-y-2 rounded border p-3" data-testid="operation-history"><summary className="cursor-pointer text-sm">操作记录 · {status.operations.length} 条 · 最近{labels[status.operations[0].status] ?? status.operations[0].status}</summary>{status.operations.map(o => <OperationRow key={o.id} operation={o} />)}</details>}
+        </form>
+      </div>
+    </ManagementDrawer>}
   </div>
+}
+
+function ManagementDrawer({ title, description, children, footer, onClose, restoreFocus }: { title: string; description: string; children: ReactNode; footer?: ReactNode; onClose: () => void; restoreFocus: () => void }) {
+  return <Dialog open onOpenChange={open => { if (!open) onClose() }}>
+    <DialogDrawerContent showCloseButton={false} onCloseAutoFocus={event => { event.preventDefault(); restoreFocus() }}>
+      <DialogHeader className="shrink-0 border-b p-4 text-left"><div className="flex items-center justify-between gap-3"><DialogTitle className="min-w-0 break-words text-base leading-normal font-medium">{title}</DialogTitle><Button variant="ghost" size="icon" className="size-11" aria-label="关闭面板" onClick={onClose}><X aria-hidden="true" /></Button></div><DialogDescription className="sr-only">{description}</DialogDescription></DialogHeader>
+      <div className="min-h-0 flex-1 overflow-y-auto p-4">{children}</div>
+      {footer && <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t p-4 [&_button]:min-h-11">{footer}</div>}
+    </DialogDrawerContent>
+  </Dialog>
+}
+
+async function requestUninstall(node: number, name: string, status: Status | undefined, scope: Module | "all", resume: boolean, onSubmitted: (operation: string) => void, reload: () => Promise<void>) {
+  if (!status?.bound || !status.online || !status.compatible) throw new Error("节点离线或组件版本不一致，请上线并升级组件后重试。")
+  if (resume && (!status.lifecycle || status.lifecycle.scope !== scope)) throw new Error("卸载进度已更新，请刷新后重试。")
+  const target = scope === "all" ? "全部受管业务、配置和管理组件" : `${names[scope]} 全部实例、关联受管 PM 规则及核心`
+  if (!confirm(`${resume ? "继续" : "确认"}卸载「${name}」的${target}？已删除内容不会自动恢复。原 monitor 和其他节点不受影响。`)) return
+  const id = resume ? status.lifecycle!.id : crypto.randomUUID().replaceAll("-", "")
+  const revisions = Object.fromEntries(modules.map(module => [module, moduleView(status, module)?.revision ?? ""]))
+  try {
+    await api(`/management/${node}/lifecycle`, { method: "POST", signal: AbortSignal.timeout(15_000), body: JSON.stringify({ id, scope, revisions, resume, ...(resume ? { attempt: status.lifecycle!.attempt } : {}) }) })
+  } catch (error) {
+    if ((error instanceof ApiError && (error.status === 0 || error.status >= 500 || (error.status >= 200 && error.status < 300))) || (error as Error).name === "AbortError") {
+      onSubmitted(id)
+      await reload()
+      throw new Error(`卸载请求结果未确认，已尝试读取节点进度；请核实结果，勿重复提交。${String(error)}`)
+    }
+    throw error
+  }
+  onSubmitted(id)
+  return id
+}
+
+function LifecycleProgress({ status, busy, fetchError, resume }: { status?: Status; busy: boolean; fetchError: boolean; resume: () => void }) {
+  const lifecycle = status?.lifecycle
+  if (!lifecycle || lifecycle.status === "succeeded") return null
+  return <div className="space-y-2 rounded-lg bg-muted/40 p-3" role="status" data-testid="lifecycle-progress"><h3 className="text-sm font-medium">{lifecycleLabels[lifecycle.status] ?? "卸载结果待确认"} · {lifecycle.scope === "all" ? "此节点全部受管服务" : names[lifecycle.scope]}</h3><p className="text-sm">{lifecycle.message}</p>{["paused", "interrupted"].includes(lifecycle.status) && <><p className="text-xs text-muted-foreground">已完成步骤保留，不会自动恢复已删除业务。请先排除错误；失联不代表卸载成功。</p>{lifecycle.status === "paused" || lifecycle.underlying_status === "paused" ? <Button variant="outline" disabled={busy || fetchError || !status?.online || !status.bound || !status.compatible} onClick={resume}>继续卸载</Button> : <p className="text-xs text-muted-foreground">等待节点恢复连接后核实进度；请勿重复发起卸载。</p>}</>}</div>
+}
+
+function OperationHistory({ status }: { status?: Status }) {
+  const count = (status?.operations?.length ?? 0) + (status?.lifecycle ? 1 : 0)
+  if (!count) return null
+  return <details className="mx-4 space-y-2 border-t py-3" data-testid="operation-history"><summary className="cursor-pointer text-xs text-muted-foreground">节点操作记录 · {count} 条</summary>
+    {status?.lifecycle && <div className="space-y-1 border-b py-2 text-sm" data-testid="lifecycle-history"><p>{lifecycleLabels[status.lifecycle.status] ?? "卸载结果待确认"} · {status.lifecycle.scope === "all" ? "此节点全部受管服务" : names[status.lifecycle.scope]}</p><p className="text-xs text-muted-foreground">{status.lifecycle.message}</p></div>}
+    {status?.operations?.map(operation => <OperationRow key={operation.id} operation={operation} />)}
+  </details>
+}
+
+export function NodeManagement({ node: target, record, notice, enabled, settingsError, onSubmitted, onClose, restoreFocus, reload }: { node: Node; record?: NodeStatus; notice?: string; enabled: boolean | null; settingsError: string; onSubmitted: (operation: string) => void; onClose: () => void; restoreFocus: () => void; reload: (manual?: boolean) => Promise<void> }) {
+  const node = target.id
+  const selectedName = target.name
+  const status = record?.status
+  const fetchError = record?.error ?? ""
+  const [error, setError] = useState("")
+  const [message, setMessage] = useState("")
+  const [command, setCommand] = useState("")
+  const [submittedLifecycle, setSubmittedLifecycle] = useState("")
+  const [busy, setBusy] = useState(false)
+  const running = useRef(false)
+  const mounted = useRef(true)
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+  const active = lifecycleActive(status?.lifecycle) || status?.operations?.some(operation => ["queued", "delivered"].includes(operation.status))
+  const blocked = status?.snapshot?.blocked || Object.values(status?.snapshot?.modules ?? {}).some(view => view.blocked)
+  const writable = enabled && !settingsError && !fetchError && status?.bound && status.online && status.compatible && !active && !blocked && !busy
+  async function run(action: () => Promise<void>) {
+    if (running.current) return
+    running.current = true; setBusy(true); setError(""); setMessage(""); setSubmittedLifecycle("")
+    try { await action(); await reload() } catch (failure) { if (mounted.current) setError(String(failure)) } finally { running.current = false; if (mounted.current) setBusy(false) }
+  }
+  async function uninstall(resume = false) {
+    const operation = await requestUninstall(node, selectedName, status, resume ? status!.lifecycle!.scope : "all", resume, onSubmitted, reload)
+    if (operation && mounted.current) { setSubmittedLifecycle(operation); setMessage("卸载请求已提交；以节点实际确认结果为准。") }
+  }
+  async function enroll() {
+    const data = await api<{ site: string; node: number; enrollment: string }>(`/management/${node}/enrollment`, { method: "POST" })
+    const response = await fetch("/management-files/manifest.json", { cache: "no-store" })
+    if (!response.ok) throw new Error("无法读取安装校验信息")
+    const manifest = await response.json()
+    const server = data.site.replace(/\/$/, "")
+    if (!mounted.current) return
+    setCommand(`(set -eu\numask 077\nd=$(mktemp -d)\ntrap 'rm -rf "$d"' EXIT\ncurl --proto '=https' --tlsv1.2 -fsS ${quote(server + "/management-files/install.py")} -o "$d/install.py"\nprintf '%s  %s\\n' ${quote(manifest["install.py"])} "$d/install.py" | sha256sum -c -\npython3 "$d/install.py" --server ${quote(server)} --node ${data.node} <<'NODE_MANAGER_ENROLLMENT'\n${JSON.stringify({ enrollment: data.enrollment })}\nNODE_MANAGER_ENROLLMENT\n)`)
+  }
+  return <ManagementDrawer title={`${selectedName} · 节点管理`} description="此节点的管理绑定、卸载进度和授权管理" onClose={onClose} restoreFocus={restoreFocus} footer={<><Button variant="outline" disabled={busy || record?.loading} onClick={() => { void reload(true) }}>{record?.loading ? "正在刷新…" : "刷新此节点"}</Button><Button onClick={onClose}>关闭</Button></>}>
+    <div className="space-y-5" data-testid="node-maintenance" data-node-id={node}>
+      {error && <p role="alert" className="text-sm text-destructive">操作失败：{error}</p>}
+      {fetchError && <p role="alert" className="text-sm text-destructive">配置读取失败：{fetchError} · 刷新成功后才能继续操作。</p>}
+      {settingsError && <p role="alert" className="text-sm text-destructive">管理设置读取失败：{settingsError}</p>}
+      {notice && <p role="status" className="text-sm text-muted-foreground">{notice}</p>}
+      {message && !(submittedLifecycle && status?.lifecycle?.id === submittedLifecycle && status.lifecycle.status === "succeeded") && <p role="status" className="text-sm">{message}</p>}
+      <dl className="space-y-3 text-sm"><div className="flex justify-between gap-3"><dt className="text-muted-foreground">节点地址</dt><dd className="min-w-0 break-all">{target.ipv4 || target.ip || target.hostname || "暂无地址"}</dd></div><div className="flex justify-between gap-3"><dt className="text-muted-foreground">管理绑定</dt><dd>{!status ? "正在读取…" : status.bound ? "已绑定" : "未绑定"}</dd></div><div className="flex justify-between gap-3"><dt className="text-muted-foreground">状态</dt><dd>{fetchError ? "读取失败" : !status ? "正在读取…" : !status.bound ? "未接入" : status.online ? "上次读取在线" : "上次读取离线"}</dd></div>{status?.last_seen ? <div className="flex flex-wrap justify-between gap-3 text-xs"><dt className="text-muted-foreground">组件最后通信</dt><dd className="tabular-nums">{new Date(status.last_seen * 1000).toLocaleString()}</dd></div> : null}</dl>
+      <LifecycleProgress status={status} busy={busy} fetchError={!!fetchError || !!settingsError} resume={() => { void run(() => uninstall(true)) }} />
+      {status && !status.bound && <div className="space-y-3"><p className="text-xs text-muted-foreground">若此前撤销过授权，重新接入前请先在 VPS 执行 python3 /opt/node-manager/agent.py unlink。</p><Button disabled={!enabled || !!settingsError || !!fetchError || busy || !!active} onClick={() => { void run(enroll) }}>安装并接入此节点</Button></div>}
+      {command && !status?.bound && !active && <div className="space-y-3"><p className="text-sm">在目标 VPS 以 root 执行，需要 Python 3.10+、curl、sha256sum 和 systemd。命令十分钟内有效，包含一次性凭据，请勿分享。安装与授权一次完成。执行后点击“刷新此节点”确认接入和首次上报。</p><pre className="max-h-72 overflow-auto rounded bg-muted p-3 text-xs">{command}</pre><Button variant="outline" onClick={() => { void run(async () => { await navigator.clipboard.writeText(command); if (mounted.current) setMessage("安装命令已复制") }) }}>复制命令</Button></div>}
+      {status?.bound && <>
+        {status.component_current === false && <p className="text-xs text-muted-foreground" data-testid="component-outdated">此节点的管理组件与后台版本不一致或未上报版本。请先升级后台，再在 VPS 执行 sudo python3 /opt/node-manager/install.py upgrade。</p>}
+        {!status.compatible && <p role="alert" className="text-sm text-destructive">管理组件与后台版本不一致，请先升级组件。</p>}
+        <div className="space-y-3 border-t pt-4"><h3 className="text-sm font-medium">全部卸载</h3><p className="text-xs text-muted-foreground">清理此节点全部受管服务、配置及管理组件。</p><Button variant="outline" className="text-destructive" disabled={!writable} onClick={() => { void run(() => uninstall()) }}>全部卸载此节点</Button>{!status.online && <p className="text-sm text-muted-foreground">节点离线，无法执行卸载；已有请求保持未确认，恢复在线后继续。</p>}</div>
+        <details className="space-y-3 border-t pt-3"><summary className="cursor-pointer text-sm text-muted-foreground">紧急撤销授权</summary><p className="text-xs text-muted-foreground">仅应急撤销凭据，不卸载服务；重新接入前须在 VPS 执行 unlink。</p><Button variant="outline" className="text-destructive" disabled={busy || !!active || !!fetchError || !!settingsError} onClick={() => { void run(async () => { if (!confirm(`撤销 ${selectedName} 的管理绑定？业务服务保留，重新绑定前须在 VPS 执行 unlink。`)) return; await api(`/management/${node}`, { method: "DELETE" }) }) }}>撤销管理绑定</Button></details>
+      </>}
+      {status?.abandonable && <details className="space-y-3 border-t pt-3" data-testid="abandon-node"><summary className="cursor-pointer text-sm text-muted-foreground">节点已不存在？</summary><p className="text-xs text-muted-foreground">此节点已离线超过 10 分钟。仅在 VPS 已销毁、已重装或确定不再恢复时使用：后台放弃待确认的任务和卸载进度并撤销授权。此操作不会清理 VPS 上的任何内容；若 VPS 之后恢复，需在本机执行 python3 /opt/node-manager/agent.py unlink 才能重新接入。</p><Button variant="outline" className="text-destructive" disabled={busy || !!fetchError || !!settingsError} onClick={() => { void run(async () => { const typed = prompt(`放弃对该节点的管理？请输入节点名称确认：${selectedName}`); if (typed === null) return; await api(`/management/${node}/abandon`, { method: "POST", body: JSON.stringify({ name: typed }) }) }) }}>确认节点已失效</Button></details>}
+      <OperationHistory status={status} />
+    </div>
+  </ManagementDrawer>
 }
 
 function ConfigurationDialog({ name, text, onClose, restoreFocus }: { name: string; text: string; onClose: () => void; restoreFocus: () => void }) {
@@ -263,7 +338,7 @@ function CorePanel({ node, module, view, writable, run, submit, uninstall }: {
   }
 
   return <div className="space-y-3 rounded border p-3" data-testid="core-maintenance">
-    <h3 className="text-sm font-medium">{module === "pm" ? "PM 模块维护" : `${title} 核心维护 · ${core.version ?? "版本未知"}`}</h3>
+    <h3 className="text-sm font-medium">{module === "pm" ? "PM 模块维护" : `${title} 核心维护`}</h3>
     {module !== "pm" && <>
       <p className="text-sm">当前版本 {core.version ?? "未知"} · 上一版 {previous ?? "暂无"}</p>
       {version ? <div className="flex flex-wrap items-center gap-2">

@@ -3,7 +3,7 @@ import { api, type Node } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Server, ArrowDownRight, RefreshCw, Search } from "lucide-react"
-import { ManagementDetail } from "./ServiceDetail"
+import { ManagementDetail, NodeManagement } from "./ServiceDetail"
 import { type Module, type Status, type NodeStatus, names, modules, moduleView, lifecycleActive, confirmDiscard, defaultHost, readManagement } from "./model"
 
 export function Management({ nodes }: { nodes: Node[] }) {
@@ -11,6 +11,8 @@ export function Management({ nodes }: { nodes: Node[] }) {
   const node = nodes.some(n => n.id === selectedNode) ? selectedNode : nodes[0]?.id ?? 0
   const [module, setModule] = useState<Module>("snell")
   const [search, setSearch] = useState("")
+  const [managedNode, setManagedNode] = useState(0)
+  const nodeManagementTrigger = useRef<HTMLElement | null>(null)
   const dirty = useRef(false)
   const onDirtyChange = useCallback((value: boolean) => { dirty.current = value }, [])
   const [records, setRecords] = useState<Record<number, NodeStatus>>({})
@@ -139,6 +141,12 @@ export function Management({ nodes }: { nodes: Node[] }) {
   const bound = nodes.filter(n => records[n.id]?.status?.bound).length
   const online = nodes.filter(n => records[n.id]?.status?.online && !records[n.id]?.error).length
   const record = records[node]
+  const managementTarget = nodes.find(n => n.id === managedNode)
+  function openNodeManagement(id: number, trigger: HTMLElement) {
+    nodeManagementTrigger.current = trigger
+    setManagedNode(id)
+    void refreshNode(id)
+  }
 
   return <section className="space-y-5">
     <div className="flex flex-wrap items-start justify-between gap-4">
@@ -155,14 +163,16 @@ export function Management({ nodes }: { nodes: Node[] }) {
         {shown.map(n => {
           const row = records[n.id]
           const status = row?.status
+          const working = lifecycleActive(status?.lifecycle) || status?.operations?.some(operation => ["queued", "delivered"].includes(operation.status))
           return <article key={n.id} data-testid={`node-card-${n.id}`} className={`min-w-0 space-y-4 rounded-xl border bg-background p-4 transition-colors motion-reduce:transition-none ${node === n.id ? "border-primary/60 ring-1 ring-primary/10" : "border-border"}`}>
-            <div className="flex items-start justify-between gap-2"><div className="flex min-w-0 items-start gap-3"><Server aria-hidden="true" className="mt-0.5 size-5 shrink-0 text-muted-foreground" /><div className="min-w-0"><h3 className="break-words font-medium">{n.name}</h3><p className="break-all text-xs text-muted-foreground">{[n.group, n.ipv4 || n.ip || n.hostname].filter(Boolean).join(" · ") || `节点 #${n.id}`}</p></div></div><span className={`shrink-0 rounded px-2 py-1 text-xs ${row?.error ? "bg-destructive/10 text-destructive" : status?.online ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"}`}>{row?.error ? "读取失败" : !status ? "读取中" : !status.bound ? "未绑定" : status.online ? "上次读取在线" : "上次读取离线"}</span></div>
+            <div className="flex items-start justify-between gap-2"><div className="flex min-w-0 items-start gap-3"><Server aria-hidden="true" className="mt-0.5 size-5 shrink-0 text-muted-foreground" /><div className="min-w-0"><h3 className="break-words font-medium">{n.name}</h3><p className="break-all text-xs text-muted-foreground">{[n.group, n.ipv4 || n.ip || n.hostname].filter(Boolean).join(" · ") || `节点 #${n.id}`}</p></div></div><span className={`shrink-0 rounded px-2 py-1 text-xs ${row?.error ? "bg-destructive/10 text-destructive" : status?.online ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"}`}>{row?.error ? "读取失败" : !status ? "读取中" : !status.bound ? (working ? "操作待确认" : "未绑定") : `${status.online ? "上次读取在线" : "上次读取离线"}${working ? " · 操作待确认" : ""}`}</span></div>
             {row?.error && <p className="text-xs text-destructive">{status ? "显示上次配置；刷新成功后可操作。" : row.error}</p>}
             {status?.snapshot?.blocked && <p className="text-xs text-destructive">配置待核实，已暂停写入</p>}
-            {status && !status.bound ? <Button variant="outline" onClick={() => select(n.id)}>接入管理</Button> : <div className="grid gap-2" aria-label={`${n.name}的模块`}>{modules.map(id => {
+            {status && !status.bound ? <Button variant="outline" onClick={event => openNodeManagement(n.id, event.currentTarget)}>接入管理</Button> : <div className="grid gap-2" aria-label={`${n.name}的模块`}>{modules.map(id => {
               const view = moduleView(status, id)
               const active = status?.operations?.some(o => o.module === id && ["queued", "delivered"].includes(o.status))
-              const state = !status ? "读取中" : !status.bound ? "待绑定" : !view ? "未上报" : view.blocked ? "待核实" : active ? "执行中" : !view.installed ? "未安装" : `${view.resources.length} 项配置`
+              const removing = lifecycleActive(status?.lifecycle) && (status?.lifecycle?.scope === id || status?.lifecycle?.scope === "all")
+              const state = !status ? "读取中" : !status.bound ? "待绑定" : !view ? "未上报" : view.blocked ? "待核实" : removing ? "卸载待确认" : active ? "执行中" : !view.installed ? "未安装" : `${view.resources.length} 项配置`
               const selected = node === n.id && module === id
               return <button key={id} type="button" data-testid={`node-module-${n.id}-${id}`} aria-label={`${n.name} · ${names[id]} · ${state}`} aria-pressed={selected} aria-controls="service-detail" onClick={() => select(n.id, id)} className={`flex min-h-11 min-w-0 items-center gap-2 whitespace-nowrap rounded-lg border px-3 py-2.5 text-left text-sm transition-colors motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${selected ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background hover:bg-muted"}`}>
                 <span className="flex-1 font-medium">{names[id]}</span>
@@ -170,15 +180,26 @@ export function Management({ nodes }: { nodes: Node[] }) {
                 <ArrowDownRight aria-hidden="true" className={`size-4 shrink-0 ${selected ? "" : "invisible"}`} />
               </button>
             })}</div>}
-            {row?.updatedAt && <p className="text-xs tabular-nums text-muted-foreground">读取于 {new Date(row.updatedAt).toLocaleTimeString()}</p>}
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              {row?.updatedAt && <p className="text-xs tabular-nums text-muted-foreground">读取于 {new Date(row.updatedAt).toLocaleTimeString()}</p>}
+              <Button id={`node-manage-${n.id}`} variant="ghost" className="ml-auto min-h-11 text-xs" data-testid={`node-manage-${n.id}`} onClick={event => openNodeManagement(n.id, event.currentTarget)}>节点管理</Button>
+            </div>
           </article>
         })}
       </div>}
     </div>
     <p className="text-xs text-muted-foreground">显示上次读取的状态；按需刷新，仅操作待确认时自动查询。仅管理本后台创建的服务。</p>
-    <div ref={detail} id="service-detail" tabIndex={-1} aria-label={`${nodes.find(n => n.id === node)?.name ?? "节点"} · ${names[module]}配置`} className="scroll-mt-24 space-y-4 border-t pt-6 focus:outline-none" data-testid="node-detail" data-node-id={node}>
-      <ManagementDetail key={`${node}/${module}`} node={node} module={module} selectedName={nodes.find(n => n.id === node)?.name ?? ""} record={record} defaultAddress={defaultHost(nodes.find(n => n.id === node))} notice={notices[node]} onSubmitted={operation => submitted(node, operation)} onDirtyChange={onDirtyChange} enabled={enabled} settingsError={settingsError} reload={async (manual = false) => { await Promise.all([refreshSettings(), node ? refreshNode(node, true, manual) : Promise.resolve()]) }} />
+    <div ref={detail} id="service-detail" tabIndex={-1} aria-label={`${nodes.find(n => n.id === node)?.name ?? "节点"} · ${names[module]}配置`} className="scroll-mt-24 focus:outline-none" data-testid="node-detail" data-node-id={node}>
+      <ManagementDetail key={`${node}/${module}`} node={node} module={module} selectedName={nodes.find(n => n.id === node)?.name ?? ""} record={record} defaultAddress={defaultHost(nodes.find(n => n.id === node))} notice={notices[node]} onSubmitted={operation => submitted(node, operation)} onDirtyChange={onDirtyChange} onNodeManagement={trigger => openNodeManagement(node, trigger)} enabled={enabled} settingsError={settingsError} reload={async (manual = false) => { await Promise.all([refreshSettings(), node ? refreshNode(node, true, manual) : Promise.resolve()]) }} />
     </div>
+    {managementTarget && <NodeManagement key={managementTarget.id} node={managementTarget} record={records[managementTarget.id]} notice={notices[managementTarget.id]} enabled={enabled} settingsError={settingsError} onSubmitted={operation => submitted(managementTarget.id, operation)} onClose={() => setManagedNode(0)} restoreFocus={() => {
+      if (nodeManagementTrigger.current?.isConnected) nodeManagementTrigger.current.focus()
+      else {
+        const trigger = document.getElementById(`node-manage-${managementTarget.id}`)
+        if (trigger) trigger.focus()
+        else detail.current?.focus({ preventScroll: true })
+      }
+    }} reload={async (manual = false) => { await Promise.all([refreshSettings(), refreshNode(managementTarget.id, true, manual)]) }} />}
   </section>
 }
 

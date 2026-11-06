@@ -90,6 +90,13 @@ function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
   )
 }
 
+function DialogDrawerContent({ className, ...props }: React.ComponentProps<typeof DialogContent>) {
+  return <DialogContent
+    className={cn("top-0 right-0 bottom-0 left-auto flex h-dvh max-h-dvh w-full max-w-full translate-x-0 translate-y-0 flex-col gap-0 rounded-none border-y-0 border-r-0 p-0 sm:max-w-lg data-[state=open]:zoom-in-100 data-[state=closed]:zoom-out-100 motion-reduce:animate-none", className)}
+    {...props}
+  />
+}
+
 function DialogFooter({
   className,
   showCloseButton = false,
@@ -148,6 +155,7 @@ export {
   DialogClose,
   DialogContent,
   DialogDescription,
+  DialogDrawerContent,
   DialogFooter,
   DialogHeader,
   DialogOverlay,
