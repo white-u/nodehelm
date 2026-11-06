@@ -77,6 +77,7 @@ class NodeLifecycleTests(unittest.TestCase):
         self.stack = contextlib.ExitStack()
         self.addCleanup(self.stack.close)
         self.stack.enter_context(patch.object(install, 'ROOT', self.root))
+        self.stack.enter_context(patch.object(install, 'COMMAND', self.base / 'nodehelm'))
         self.stack.enter_context(patch.object(install, 'PURGE_JOURNAL', self.base / 'purge.json'))
         self.stack.enter_context(patch.object(lifecycle, 'RECOVERY', self.base / 'helper'))
         self.stack.enter_context(patch('port_monitor.snapshot', return_value={'status': 'not_installed', 'rows': []}))
@@ -436,7 +437,8 @@ class CleanupWorkerTests(unittest.TestCase):
         self.purge = self.base / 'purge.json'
         self.stack = contextlib.ExitStack()
         self.addCleanup(self.stack.close)
-        self.stack.enter_context(patch.multiple(install, ROOT=self.root, CODE=self.code, UNITS=self.units, PURGE_JOURNAL=self.purge))
+        self.stack.enter_context(patch.multiple(install, ROOT=self.root, CODE=self.code, UNITS=self.units, PURGE_JOURNAL=self.purge,
+                                                       COMMAND=self.base / 'nodehelm'))
         self.stack.enter_context(patch.object(lifecycle, 'RECOVERY', self.recovery))
         self.stack.enter_context(patch.object(install, 'ctl', return_value=types.SimpleNamespace(stdout='', returncode=0)))
         self.stack.enter_context(patch.object(install, 'unit_info', return_value={'LoadState': 'loaded', 'ActiveState': 'inactive'}))
