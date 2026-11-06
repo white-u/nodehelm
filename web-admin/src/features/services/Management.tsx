@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input"
 import { Server, ArrowDownRight, RefreshCw, Search } from "lucide-react"
 import { ManagementDetail, NodeManagement } from "./ServiceDetail"
 import { useServiceConfirmation } from "./ServiceInteractions"
-import { type Module, type Status, type NodeStatus, names, modules, moduleView, lifecycleActive, defaultHost, readManagement } from "./model"
+import { type FollowUp, type Module, type PmDraft, type Status, type NodeStatus, names, modules, moduleView, lifecycleActive, defaultHost, readManagement } from "./model"
 
 export function Management({ nodes }: { nodes: Node[] }) {
   const { discard, confirmation } = useServiceConfirmation()
@@ -28,13 +28,33 @@ export function Management({ nodes }: { nodes: Node[] }) {
   const stopped = useRef(new Set<number>())
   const refreshRef = useRef<(id: number) => Promise<void>>(async () => {})
   const [notices, setNotices] = useState<Record<number, string>>({})
+  // Two-step changes by node: the step after the watched operation, waiting for
+  // its result (`next`), or the second step itself, submitted (`final`).
+  const chains = useRef(new Map<number, { next?: FollowUp; final?: FollowUp; waitUntil?: number }>())
+  // What the page shows of a chain; "1/2" or "2/2" while it runs, which keeps writes locked.
+  const [progress, setProgress] = useState<Record<number, string>>({})
+  // PM drafts whose step did not go through, by "node:port", for "添加 PM".
+  const keptDrafts = useRef(new Map<string, PmDraft>())
+  const [pmOpening, setPmOpening] = useState<{ node: number; port: number; draft?: PmDraft; seq: number } | null>(null)
+  const endChain = useCallback((id: number, text: string, failed = true) => {
+    const chain = chains.current.get(id)
+    chains.current.delete(id)
+    const step = chain?.next ?? chain?.final
+    if (failed && step?.draft) keptDrafts.current.set(`${id}:${step.draft.port}`, step.draft)
+    const resume = failed && step?.draft ? "可在实例行点击“添加 PM”继续，已保留填写的参数。" : ""
+    setProgress(previous => ({ ...previous, [id]: text + resume }))
+  }, [])
   const stopWatching = useCallback((id: number, notice = "", suspend = false) => {
     const watch = watches.current.get(id)
     if (watch?.timer) clearTimeout(watch.timer)
     watches.current.delete(id)
     if (suspend) stopped.current.add(id)
+    if (suspend && chains.current.has(id)) {
+      const { next, final } = chains.current.get(id)!
+      endChain(id, next ? `已停止自动确认，未${next.steps[1]}。` : `${final?.steps[1]}结果尚未确认，请手动刷新查看。`)
+    }
     setNotices(previous => ({ ...previous, [id]: notice }))
-  }, [])
+  }, [endChain])
   const schedule = useCallback((id: number) => {
     const watch = watches.current.get(id)
     if (!watch) return
@@ -45,12 +65,51 @@ export function Management({ nodes }: { nodes: Node[] }) {
     }
     watch.timer = setTimeout(() => { void refreshRef.current(id) }, Math.min(3000, watch.deadline - Date.now()))
   }, [stopWatching])
-  const submitted = useCallback((id: number, operation: string) => {
+  const submitted = useCallback((id: number, operation: string, next?: FollowUp) => {
     stopWatching(id)
     stopped.current.delete(id)
+    chains.current.delete(id)
+    if (next) chains.current.set(id, { next })
+    setProgress(previous => ({ ...previous, [id]: next ? `1/2 ${next.steps[0]}… 请保持此页面打开直到完成。` : "" }))
     watches.current.set(id, { deadline: Date.now() + 120_000, operation })
     schedule(id)
   }, [schedule, stopWatching])
+  /** The watched operation has a result. True while the page keeps watching:
+   *  for a new instance to start, or for the second step it submitted. */
+  const advance = useCallback(async (id: number, status: Status, result: { status: string; message: string }) => {
+    const chain = chains.current.get(id)
+    if (chain?.final) {
+      if (result.status === "succeeded") endChain(id, chain.final.done, false)
+      else endChain(id, `${chain.final.steps[1]}未成功：${(result.message || "请展开操作记录查看详情").replace(/。$/, "")}。`)
+      return false
+    }
+    const next = chain?.next
+    if (!chain || !next) return false
+    if (result.status !== "succeeded") { endChain(id, `${next.steps[0]}未成功，未${next.steps[1]}。`, false); return false }
+    if (next.running) {
+      const state = moduleView(status, next.running.module)?.runtime?.[String(next.running.port)]
+      if (state !== "active") {
+        // The first report after a new instance may still show it starting.
+        chain.waitUntil ??= Date.now() + 30_000
+        if ((!state || state === "activating") && Date.now() < chain.waitUntil) return true
+        endChain(id, `实例未在运行，未${next.steps[1]}。`)
+        return false
+      }
+    }
+    const revision = moduleView(status, next.module)?.revision
+    const operation = crypto.randomUUID().replaceAll("-", "")
+    try {
+      if (!revision) throw new Error("模块状态不可用")
+      await api(`/management/${id}/operations`, { method: "POST", body: JSON.stringify({ id: operation, action: next.action, payload: next.payload, revision, intent: next.intent, ...(next.module !== "snell" ? { module: next.module } : {}) }) })
+    } catch (e) {
+      endChain(id, `${next.steps[1]}未提交：${String(e)}。`)
+      return false
+    }
+    chains.current.set(id, { final: next })
+    setProgress(previous => ({ ...previous, [id]: `2/2 ${next.steps[1]}… 请保持此页面打开直到完成。` }))
+    watches.current.set(id, { deadline: Date.now() + 120_000, operation })
+    return true
+  }, [endChain])
   const detail = useRef<HTMLDivElement>(null)
   const ids = nodes.map(n => n.id).join(",")
 
@@ -64,7 +123,12 @@ export function Management({ nodes }: { nodes: Node[] }) {
     }
   }, [])
   const refreshNode = useCallback((id: number, force = false, manual = false): Promise<void> => {
-    if (manual) { stopWatching(id); stopped.current.delete(id) }
+    if (manual) {
+      // A refresh restarts the watch but keeps a running chain's operation.
+      const operation = chains.current.has(id) ? watches.current.get(id)?.operation : undefined
+      stopWatching(id); stopped.current.delete(id)
+      if (operation) watches.current.set(id, { deadline: Date.now() + 120_000, operation })
+    }
     const running = pending.current.get(id)
     if (running && !force) return running
     const sequence = (sequences.current.get(id) ?? 0) + 1
@@ -80,15 +144,20 @@ export function Management({ nodes }: { nodes: Node[] }) {
           const active = status.operations?.some(operation => ["queued", "delivered"].includes(operation.status))
           const blocked = status.snapshot?.blocked || Object.values(status.snapshot?.modules ?? {}).some(view => view.blocked)
           const watch = watches.current.get(id)
+          const result = status.operations?.find(operation => operation.id === watch?.operation && !["queued", "delivered"].includes(operation.status))
           if (status.lifecycle && ["paused", "interrupted"].includes(status.lifecycle.status)) stopWatching(id, "卸载尚未完成，请查看管理页中的进度和恢复提示。", true)
           else if (blocked) stopWatching(id, "配置待核实，已停止自动确认。核实后请手动刷新。", true)
           else if (!status.bound && !lifecycleActive(status.lifecycle)) stopWatching(id, watch && status.lifecycle?.status !== "succeeded" ? "管理绑定尚未确认，请安装完成后手动刷新配置。" : "")
           else if (watch?.operation && status.lifecycle?.id === watch.operation && status.lifecycle.status === "succeeded") stopWatching(id)
-          else if (watch?.operation && status.operations?.some(operation => operation.id === watch.operation && !["queued", "delivered"].includes(operation.status))) stopWatching(id)
+          else if (result) {
+            if (await advance(id, status, result)) schedule(id)
+            else stopWatching(id)
+          }
           else if ((active || lifecycleActive(status.lifecycle) || watch?.operation) && !stopped.current.has(id)) {
             if (!watch) watches.current.set(id, { deadline: Date.now() + 120_000 })
             schedule(id)
           } else if (watch) stopWatching(id)
+          if (!watches.current.has(id) && chains.current.has(id)) endChain(id, "已停止自动确认，后续步骤未执行。")
         }
       } catch (e) {
         if (alive.current && sequences.current.get(id) === sequence) {
@@ -101,7 +170,7 @@ export function Management({ nodes }: { nodes: Node[] }) {
     })()
     pending.current.set(id, request)
     return request
-  }, [schedule, stopWatching])
+  }, [advance, endChain, schedule, stopWatching])
   useLayoutEffect(() => { refreshRef.current = refreshNode }, [refreshNode])
   const refreshAll = useCallback(async (manual = false) => {
     const queue = ids ? ids.split(",").map(Number) : []
@@ -117,6 +186,7 @@ export function Management({ nodes }: { nodes: Node[] }) {
     pending.current.clear()
     watches.current.forEach(watch => { if (watch.timer) clearTimeout(watch.timer) })
     watches.current.clear()
+    chains.current.clear()
   }, [])
   useEffect(() => { alive.current = true; return invalidate }, [invalidate])
   useEffect(() => {
@@ -130,7 +200,7 @@ export function Management({ nodes }: { nodes: Node[] }) {
   async function select(id: number, nextModule = module, scroll = true) {
     const changing = id !== node || nextModule !== module
     if (changing && !await discard(dirty.current)) return false
-    if (changing) dirty.current = false
+    if (changing) { dirty.current = false; setPmOpening(null) }
     setNode(id); setModule(nextModule)
     setManagedNode(0)
     if (scroll) requestAnimationFrame(() => {
@@ -145,6 +215,12 @@ export function Management({ nodes }: { nodes: Node[] }) {
   const online = nodes.filter(n => records[n.id]?.status?.online && !records[n.id]?.error).length
   const record = records[node]
   const managementTarget = nodes.find(n => n.id === managedNode)
+  async function openPm(port: number) {
+    if (!await select(node, "pm")) return
+    const key = `${node}:${port}`
+    setPmOpening({ node, port, draft: keptDrafts.current.get(key), seq: Date.now() })
+    keptDrafts.current.delete(key)
+  }
   function openNodeManagement(id: number, trigger: HTMLElement) {
     nodeManagementTrigger.current = trigger
     setManagedNode(previous => previous === id ? 0 : id)
@@ -202,7 +278,7 @@ export function Management({ nodes }: { nodes: Node[] }) {
     }} reload={async (manual = false) => { await Promise.all([refreshSettings(), refreshNode(managementTarget.id, true, manual)]) }} />}
     {confirmation}
     <div ref={detail} hidden={!!managementTarget} id="service-detail" tabIndex={-1} aria-label={`${nodes.find(n => n.id === node)?.name ?? "节点"} · ${names[module]}配置`} className="scroll-mt-24 focus:outline-none" data-testid="node-detail" data-node-id={node}>
-      <ManagementDetail key={`${node}/${module}`} node={node} module={module} selectedName={nodes.find(n => n.id === node)?.name ?? ""} record={record} defaultAddress={defaultHost(nodes.find(n => n.id === node))} notice={notices[node]} onSubmitted={operation => submitted(node, operation)} onDirtyChange={onDirtyChange} onNodeManagement={trigger => openNodeManagement(node, trigger)} enabled={enabled} settingsError={settingsError} reload={async (manual = false) => { await Promise.all([refreshSettings(), node ? refreshNode(node, true, manual) : Promise.resolve()]) }} />
+      <ManagementDetail key={`${node}/${module}`} node={node} module={module} selectedName={nodes.find(n => n.id === node)?.name ?? ""} record={record} defaultAddress={defaultHost(nodes.find(n => n.id === node))} notice={notices[node]} progress={progress[node]} onSubmitted={(operation, next) => submitted(node, operation, next)} onOpenPm={port => { void openPm(port) }} pmOpening={pmOpening?.node === node && module === "pm" ? pmOpening : undefined} onDirtyChange={onDirtyChange} onNodeManagement={trigger => openNodeManagement(node, trigger)} enabled={enabled} settingsError={settingsError} reload={async (manual = false) => { await Promise.all([refreshSettings(), node ? refreshNode(node, true, manual) : Promise.resolve()]) }} />
     </div>
 
   </section>

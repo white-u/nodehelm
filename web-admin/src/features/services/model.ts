@@ -68,9 +68,48 @@ export const modules = Object.keys(names) as Module[]
 export function pmDraft({ ip_limit, ...rule }: PmPolicy): PmDraft {
   return { ...rule, max_ips: ip_limit?.max_ips ?? 0, cooldown_min: ip_limit?.cooldown_min ?? 30, whitelist: ip_limit?.whitelist.join("\n") ?? "" }
 }
-/** An IP limit of 0 is left out, so the rule keeps the shape older components accept. */
+const ipv4 = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/
+function ipAddress(value: string) {
+  if (ipv4.test(value)) return true
+  if (!value.includes(":") || !/^[0-9a-fA-F:.]+$/.test(value)) return false
+  try { new URL(`http://[${value}]/`); return true } catch { return false }
+}
+/** An IP limit of 0 is left out, so the rule keeps the shape older components
+ *  accept. The whitelist is checked here, before anything is submitted: the
+ *  instance form applies it only after the instance exists. */
 export function pmPayload({ max_ips, cooldown_min, whitelist, ...rule }: PmDraft): PmPolicy {
-  return max_ips ? { ...rule, ip_limit: { max_ips, cooldown_min, whitelist: whitelist.split(/[\s,，]+/).filter(Boolean) } } : rule
+  if (!max_ips) return rule
+  const ips = whitelist.split(/[\s,，]+/).filter(Boolean)
+  const invalid = ips.find(ip => !ipAddress(ip))
+  if (invalid) throw new Error(`IP 白名单中的 ${invalid} 不是有效的 IP 地址`)
+  if (ips.length > 32) throw new Error("IP 白名单最多 32 个")
+  return { ...rule, ip_limit: { max_ips, cooldown_min, whitelist: ips } }
+}
+export function pmSummary(rule: PmPolicy) {
+  return [rule.quota_gb ? `配额 ${rule.quota_gb} GiB` : "只计量", rule.reset_day ? `每月 ${rule.reset_day} 日重置` : "", rule.expiry_date ? `${rule.expiry_date} 到期` : "",
+    rule.egress_mbps ? `出站超速 ${rule.egress_mbps} Mbps 丢包` : "", rule.ip_limit ? `IP 告警 ${rule.ip_limit.max_ips} 个` : ""].filter(Boolean).join("／")
+}
+/** Why a port cannot take a managed PM rule now, or "" when it can. */
+export function pmBlocked(snapshot: RootSnapshot | undefined, port: number) {
+  const pm = snapshot?.modules?.pm, legacy = snapshot?.port_monitor
+  if (!pm?.installed) return "启用 PM 后可同时添加"
+  if (pm.blocked) return "PM 状态需要核实"
+  if (port < 1024) return "PM 只统计 1024 以上的端口"
+  if (legacy?.status !== "ready" && legacy?.status !== "not_installed") return "原 PM 配置暂不可读取"
+  if (legacy.rows.some(row => row.port === port)) return "该端口已由原 PM 管理"
+  if (pm.resources.some(rule => rule.port === port)) return "该端口已有 PM 规则"
+  return ""
+}
+/** A second operation submitted once the first succeeds: PM after a new
+ *  instance, or the instance after its PM rule is deleted. One per node at a
+ *  time, as the hub accepts one operation per node. */
+export type FollowUp = {
+  module: Module; action: string; payload: object; intent?: ApplyIntent
+  /** Wait for this instance to be running before submitting. */
+  running?: { module: Module; port: number }
+  steps: [string, string]; done: string
+  /** Kept for "添加 PM" when the PM step does not go through. */
+  draft?: PmDraft
 }
 export function moduleView(status: Status | undefined, module: Module) {
   return module === "snell" ? status?.snapshot : status?.snapshot?.modules?.[module]

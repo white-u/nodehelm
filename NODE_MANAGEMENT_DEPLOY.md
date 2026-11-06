@@ -72,7 +72,7 @@ Cloudflare 代理部署须允许管理组件的机器请求。组件使用明确
 
 管理在线 → 选择 Snell/SB/FW → 安装对应核心 → 新增实例或规则 → 保存并应用 → 查看操作记录。Snell/SB 在每个实例上点击“显示配置”，在弹窗中只展示该实例的配置文本，提供复制配置和关闭；复制失败提示手动选取，不触发文件下载，不创建订阅链接。Snell 输出单条 Surge 代理配置，不带 `[Proxy]` 段头，要求 Snell 6 客户端；SB 输出单个 sing-box outbound JSON 对象，不包含其他实例或本地入口/DNS/路由设置。查看需要管理员登录，内容包含业务认证材料，应妥善保管。切换节点或模块后清除展示，配置版本变化时不继续展示旧内容。
 
-PM 页分为受管 PM 与原 PM 只读状态。目标 VPS 需预装 `nftables`（Debian 可执行 `apt-get install nftables`，无需启动全局 `nftables.service`）。在后台安装受管 PM 后，创建独立 `ip node_manager_pm` 表以及 `node-manager-pm.service`、`node-manager-pm.timer`，不修改原 PM 或全局 tc。先在 Snell/SB/FW 创建运行中的 IPv4 高端口业务，再添加对应 PM 规则；配额 0 表示不启用配额阻断，重置日 0 表示不自动按月重置。
+PM 页分为受管 PM 与原 PM 只读状态。目标 VPS 需预装 `nftables`（Debian 可执行 `apt-get install nftables`，无需启动全局 `nftables.service`）。在后台安装受管 PM 后，创建独立 `ip node_manager_pm` 表以及 `node-manager-pm.service`、`node-manager-pm.timer`，不修改原 PM 或全局 tc。先在 Snell/SB/FW 创建运行中的 IPv4 高端口业务，再添加对应 PM 规则；新增实例时也可勾选“同时启用 PM 统计”并填写参数，实例运行后自动应用（页面需保持打开）。实例行的“添加 PM”／“PM 已统计”可直接进入对应规则；删除带 PM 规则的实例会先删除规则及计数，再删除实例。配额 0 表示不启用配额阻断，重置日 0 表示不自动按月重置。
 
 PM 使用 UTC 日期，月底没有指定日期时以该月最后一天重置。到期日当天仍有效，次日阻断。计数为匹配的 IPv4 TCP/UDP IP 字节，包含重传和被策略丢弃的流量，不等于客户端有效负载或主机分时流量。出站限速是超速丢包，不是 tc 平滑整形。定时器约每分钟持久化；异常断电后可能丢失最近检查点后的用量，策略编辑期间也有采样与应用间的短暂计量边界，不适合作为精确收费账本。旧 PM 的动态整形和 IP 超限断开仍由原脚本管理。
 

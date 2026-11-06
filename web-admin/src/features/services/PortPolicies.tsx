@@ -5,8 +5,10 @@ import { Plus } from "lucide-react"
 import { InlinePanel, useServiceConfirmation } from "./ServiceInteractions"
 import { type ApplyIntent, type PmDraft, type PmPolicy, type RootSnapshot, type Snapshot, pmStatus, pmAlerts, gib, pmDraft, pmPayload } from "./model"
 
-export function PmPanel({ node, snapshot, view, writable, busy, feedback, refreshing, onDirtyChange, run, submit }: {
+export function PmPanel({ node, snapshot, view, writable, busy, feedback, refreshing, onDirtyChange, run, submit, opening }: {
   node: string
+  /** Opened from an instance row: edit its rule, or add one for its port, with a kept draft if any. */
+  opening?: { port: number; draft?: PmDraft; seq: number }
   snapshot?: RootSnapshot
   view?: Snapshot
   writable: boolean
@@ -18,28 +20,40 @@ export function PmPanel({ node, snapshot, view, writable, busy, feedback, refres
   submit: (action: string, payload: object, revision?: string, intent?: ApplyIntent) => Promise<void>
 }) {
   const { confirm, discard, confirmation } = useServiceConfirmation()
-  const [form, setForm] = useState<PmDraft | null>(null)
-  const [revision, setRevision] = useState("")
-  const [editing, setEditing] = useState(false)
-  const [initialForm, setInitialForm] = useState("")
-  const [draftNotice, setDraftNotice] = useState("")
-  const formTrigger = useRef<HTMLElement | null>(null)
-  const dirty = form !== null && JSON.stringify(form) !== initialForm
-  const draftStale = form !== null && revision !== view?.revision
-  useLayoutEffect(() => { onDirtyChange(dirty) }, [dirty, onDirtyChange])
-  useEffect(() => () => onDirtyChange(false), [onDirtyChange])
   const legacy = snapshot?.port_monitor
   const rules = view?.resources as PmPolicy[] | undefined
   const candidates = [snapshot, snapshot?.modules?.sb, snapshot?.modules?.fw].flatMap(s =>
     s?.resources.filter(r => r.port >= 1024 && s.runtime?.[String(r.port)] === "active"
       && !rules?.some(rule => rule.port === r.port) && !legacy?.rows.some(row => row.port === r.port)) ?? [])
   const legacyReadable = legacy?.status === "ready" || legacy?.status === "not_installed"
+  function draftFor(item?: PmPolicy, port = candidates[0]?.port, draft?: PmDraft) {
+    if (item) return pmDraft(item)
+    if (!candidates.some(candidate => candidate.port === port)) return null
+    return draft ?? pmDraft({ port, name: candidates.find(c => c.port === port)?.name || "端口监控", quota_gb: 0, quota_mode: "in_out", reset_day: 0, expiry_date: "", egress_mbps: 0 })
+  }
+  // Opened from an instance row, the panel starts with that port's form.
+  const [start] = useState(() => {
+    if (!opening) return { form: null, editing: false, notice: "" }
+    const rule = rules?.find(item => item.port === opening.port)
+    const form = view?.installed ? draftFor(rule, opening.port, opening.draft) : null
+    return { form, editing: !!rule, notice: form ? "" : `端口 ${opening.port} 暂不能添加 PM 规则：实例需在运行中，且未由原 PM 管理。` }
+  })
+  const [form, setForm] = useState<PmDraft | null>(start.form)
+  const [revision, setRevision] = useState(start.form ? view?.revision ?? "" : "")
+  const [editing, setEditing] = useState(start.editing)
+  const [initialForm, setInitialForm] = useState(start.form ? JSON.stringify(start.form) : "")
+  const [draftNotice, setDraftNotice] = useState(start.notice)
+  const formTrigger = useRef<HTMLElement | null>(null)
+  const dirty = form !== null && JSON.stringify(form) !== initialForm
+  const draftStale = form !== null && revision !== view?.revision
+  useLayoutEffect(() => { onDirtyChange(dirty) }, [dirty, onDirtyChange])
+  useEffect(() => () => onDirtyChange(false), [onDirtyChange])
 
   function loadDraft(item?: PmPolicy) {
-    if (!item && !candidates.length) return
+    const next = draftFor(item)
+    if (!next) return
     setEditing(!!item)
     setRevision(view?.revision ?? "")
-    const next = pmDraft(item ?? { port: candidates[0].port, name: "端口监控", quota_gb: 0, quota_mode: "in_out", reset_day: 0, expiry_date: "", egress_mbps: 0 })
     setInitialForm(JSON.stringify(next)); setForm(next); setDraftNotice("")
   }
 
@@ -100,8 +114,9 @@ export function PmPanel({ node, snapshot, view, writable, busy, feedback, refres
         e.preventDefault()
         void run(async () => {
           if (draftStale) throw new Error("配置已更新，请先重新载入最新配置。")
+          const payload = pmPayload(form)
           if (!await confirm(`在 ${node} 应用端口 ${form.port} 的 PM 规则？开启配额、到期或超速策略可能丢弃端口流量。`)) return
-          await submit("apply", pmPayload(form), revision, editing ? "update" : "create")
+          await submit("apply", payload, revision, editing ? "update" : "create")
           setForm(null)
         })
       }}>
@@ -111,21 +126,8 @@ export function PmPanel({ node, snapshot, view, writable, busy, feedback, refres
             {editing ? <option value={form.port}>{form.port}</option> : candidates.map(candidate => <option key={candidate.port} value={candidate.port}>{candidate.port} · {candidate.name}</option>)}
           </select></label>
           <label>名称／备注<Input required maxLength={48} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></label>
-          <label>配额（GiB，0 关闭）<Input type="number" required min={0} max={8589934591} value={form.quota_gb} onChange={e => setForm({ ...form, quota_gb: Number(e.target.value) })} /></label>
-          <label>计费方向<select aria-label="计费方向" className="block w-full rounded border bg-background p-2" value={form.quota_mode} onChange={e => setForm({ ...form, quota_mode: e.target.value as PmPolicy["quota_mode"] })}><option value="in_out">双向，达到配额后丢弃双向流量</option><option value="out_only">仅出站，达到配额后丢弃出站流量</option></select></label>
-          <label>每月重置日（0 关闭）<Input type="number" required min={0} max={31} value={form.reset_day} onChange={e => setForm({ ...form, reset_day: Number(e.target.value) })} /></label>
-          <label>到期日期（可选）<Input type="date" value={form.expiry_date} onChange={e => setForm({ ...form, expiry_date: e.target.value })} /></label>
-          <label>出站超速丢包（Mbps，0 关闭）<Input type="number" required min={0} max={10000} value={form.egress_mbps} onChange={e => setForm({ ...form, egress_mbps: Number(e.target.value) })} /></label>
         </fieldset>
-        <details className="text-sm" open={form.max_ips > 0}>
-          <summary className="cursor-pointer text-muted-foreground">IP 告警（可选）</summary>
-          <fieldset disabled={busy} className="mt-3 grid gap-3 sm:grid-cols-2">
-            <label>同时在线 IP 上限（0 关闭）<Input type="number" required min={0} max={65535} value={form.max_ips} onChange={e => setForm({ ...form, max_ips: Number(e.target.value) })} /></label>
-            <label>重复提醒间隔（分钟）<Input type="number" required min={1} max={525600} disabled={!form.max_ips} value={form.cooldown_min} onChange={e => setForm({ ...form, cooldown_min: Number(e.target.value) })} /></label>
-            <label className="sm:col-span-2">白名单 IP（可选，每行或逗号分隔，最多 32 个）<textarea className="block min-h-20 w-full rounded border bg-background p-2" disabled={!form.max_ips} value={form.whitelist} onChange={e => setForm({ ...form, whitelist: e.target.value })} /></label>
-          </fieldset>
-          <p className="mt-2 text-xs text-muted-foreground">每分钟统计已建立 TCP 连接的不同来源 IP，连续两分钟出现才计入，避免扫描误报。超过上限时通过服务管理提醒推送，超过上限 2 个以上为高风险，同一等级按间隔重复提醒；只提醒，不断开连接。</p>
-        </details>
+        <PmFields form={form} setForm={setForm} busy={busy} />
         <p className="text-xs text-muted-foreground">重置按 UTC，每月不足指定日时取月末。到期日 UTC 结束后开始阻断。定时任务约每分钟保存用量，异常重启可能丢失最近一次保存后的用量。</p>
       </form>
           {confirmation}
@@ -143,4 +145,26 @@ export function PmPanel({ node, snapshot, view, writable, busy, feedback, refres
       </div>)}
     </details>
   </div>
+}
+
+/** The PM policy fields, shared by the PM form and the new-instance form. */
+export function PmFields({ form, setForm, busy }: { form: PmDraft; setForm: (form: PmDraft) => void; busy: boolean }) {
+  return <>
+    <fieldset disabled={busy} className="grid gap-3 sm:grid-cols-2">
+      <label>配额（GiB，0 关闭）<Input type="number" required min={0} max={8589934591} value={form.quota_gb} onChange={e => setForm({ ...form, quota_gb: Number(e.target.value) })} /></label>
+      <label>计费方向<select aria-label="计费方向" className="block w-full rounded border bg-background p-2" value={form.quota_mode} onChange={e => setForm({ ...form, quota_mode: e.target.value as PmPolicy["quota_mode"] })}><option value="in_out">双向，达到配额后丢弃双向流量</option><option value="out_only">仅出站，达到配额后丢弃出站流量</option></select></label>
+      <label>每月重置日（0 关闭）<Input type="number" required min={0} max={31} value={form.reset_day} onChange={e => setForm({ ...form, reset_day: Number(e.target.value) })} /></label>
+      <label>到期日期（可选）<Input type="date" value={form.expiry_date} onChange={e => setForm({ ...form, expiry_date: e.target.value })} /></label>
+      <label>出站超速丢包（Mbps，0 关闭）<Input type="number" required min={0} max={10000} value={form.egress_mbps} onChange={e => setForm({ ...form, egress_mbps: Number(e.target.value) })} /></label>
+    </fieldset>
+    <details className="text-sm" open={form.max_ips > 0}>
+      <summary className="cursor-pointer text-muted-foreground">IP 告警（可选）</summary>
+      <fieldset disabled={busy} className="mt-3 grid gap-3 sm:grid-cols-2">
+        <label>同时在线 IP 上限（0 关闭）<Input type="number" required min={0} max={65535} value={form.max_ips} onChange={e => setForm({ ...form, max_ips: Number(e.target.value) })} /></label>
+        <label>重复提醒间隔（分钟）<Input type="number" required min={1} max={525600} disabled={!form.max_ips} value={form.cooldown_min} onChange={e => setForm({ ...form, cooldown_min: Number(e.target.value) })} /></label>
+        <label className="sm:col-span-2">白名单 IP（可选，每行或逗号分隔，最多 32 个）<textarea aria-label="白名单 IP（可选，每行或逗号分隔，最多 32 个）" className="block min-h-20 w-full rounded border bg-background p-2" disabled={!form.max_ips} value={form.whitelist} onChange={e => setForm({ ...form, whitelist: e.target.value })} /></label>
+      </fieldset>
+      <p className="mt-2 text-xs text-muted-foreground">每分钟统计已建立 TCP 连接的不同来源 IP，连续两分钟出现才计入，避免扫描误报。超过上限时通过服务管理提醒推送，超过上限 2 个以上为高风险，同一等级按间隔重复提醒；只提醒，不断开连接。</p>
+    </details>
+  </>
 }
