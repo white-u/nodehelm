@@ -71,7 +71,8 @@ class MenuTests(unittest.TestCase):
     def test_unknown_argument_is_refused_before_anything_runs(self):
         import menu
         from unittest.mock import patch
-        with patch('os.geteuid', return_value=0), patch.object(menu, 'run') as run:
+        # main() restores the default SIGPIPE, which would then kill this test process.
+        with patch('os.geteuid', return_value=0), patch('signal.signal'), patch.object(menu, 'run') as run:
             with self.assertRaises(SystemExit):
                 menu.main(['purge'])
             run.assert_not_called()
@@ -105,6 +106,6 @@ class PrivateUmaskTests(unittest.TestCase):
                 patch('install.present', return_value=False), patch('install.lock'):
             agent.main()
         umask.assert_called_with(0o077)
-        with patch('os.geteuid', return_value=0), patch('os.umask') as umask, patch.dict(menu.ACTIONS, status=lambda: None):
+        with patch('os.geteuid', return_value=0), patch('signal.signal'), patch('os.umask') as umask, patch.dict(menu.ACTIONS, status=lambda: None):
             menu.main(['status'])
         umask.assert_called_with(0o077)

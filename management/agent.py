@@ -5,14 +5,16 @@ from contextlib import ExitStack
 import fcntl
 import functools
 import hashlib
+import http.client
+import io
 import json
 import os
 import pathlib
+import ssl
 import sys
 import time
 import urllib.error
 import urllib.parse
-import urllib.request
 from controller import Controller
 from model import PROTOCOL, Rejected, request, revision
 from snell import Driver
@@ -22,11 +24,6 @@ import port_monitor
 from pm import Driver as PMDriver
 
 ROOT = pathlib.Path('/var/lib/node-manager')
-
-class NoRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise Rejected('管理地址发生跳转，请核实反向代理')
-
 
 def base_url(value):
     u = urllib.parse.urlsplit(value)
@@ -50,16 +47,60 @@ def component_digest():
         return ''
 
 
+@functools.lru_cache(maxsize=1)
+def tls():
+    return ssl.create_default_context()
+
+
+# One kept-alive connection for the poll loop: a new TLS handshake every five
+# seconds cost about fifteen times the CPU of the request itself. http.client
+# follows no redirect and reads no proxy variable, as this channel requires.
+_connection = {}
+
+
 def exchange(binding, path, payload):
-    url = base_url(binding['server']) + '/api/management-agent/v1/' + path
-    data = json.dumps(payload).encode()
-    req = urllib.request.Request(url, data, headers={'User-Agent': 'NodeManager/1', 'Content-Type': 'application/json', 'Authorization':'Bearer ' + binding['credential'], 'X-Node-Manager-Protocol':str(PROTOCOL), 'X-Node-Manager-Component':component_digest()})
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-    with opener.open(req, timeout=20) as response:
-        data = response.read(256 * 1024 + 1)
-    if len(data) > 256 * 1024:
-        raise Rejected('后台响应过大')
-    return json.loads(data)
+    base = base_url(binding['server'])
+    server = urllib.parse.urlsplit(base)
+    target = (server.hostname, server.port or 443)
+    route = '/api/management-agent/v1/' + path
+    body = json.dumps(payload).encode()
+    headers = {'User-Agent': 'NodeManager/1', 'Content-Type': 'application/json', 'Authorization':'Bearer ' + binding['credential'], 'X-Node-Manager-Protocol':str(PROTOCOL), 'X-Node-Manager-Component':component_digest()}
+    for attempt in (0, 1):
+        reused = _connection.get('target') == target
+        if not reused:
+            close_connection()
+            _connection.update(target=target, conn=http.client.HTTPSConnection(*target, timeout=20, context=tls()))
+        conn = _connection['conn']
+        try:
+            conn.request('POST', route, body, headers)
+            response = conn.getresponse()
+            data = response.read(256 * 1024 + 1)
+            if len(data) > 256 * 1024:
+                close_connection()
+                raise Rejected('后台响应过大')
+        except (http.client.RemoteDisconnected, BrokenPipeError, ConnectionResetError) as error:
+            close_connection()
+            # A kept-alive connection the hub or a proxy closed while idle; the
+            # same exchange on a fresh one is what the next round would send.
+            if reused and attempt == 0:
+                continue
+            raise urllib.error.URLError(error) from None
+        except (OSError, http.client.HTTPException) as error:
+            close_connection()
+            raise urllib.error.URLError(error) from None
+        if 300 <= response.status < 400:
+            close_connection()
+            raise Rejected('管理地址发生跳转，请核实反向代理')
+        if response.status >= 400:
+            raise urllib.error.HTTPError(base + route, response.status, response.reason, response.headers, io.BytesIO(data))
+        return json.loads(data)
+
+
+def close_connection():
+    conn = _connection.pop('conn', None)
+    _connection.pop('target', None)
+    if conn is not None:
+        conn.close()
 
 
 def confirm_connection(binding):

@@ -4,7 +4,7 @@
 
 文档：**[部署文档](DEPLOY.md)** · [完整索引](INDEX.md) · [开发与验证](DEVELOPMENT.md) · [部署与恢复说明](NODE_MANAGEMENT_DEPLOY.md)
 
-本项目派生自 [monitor-probe/monitor](https://github.com/monitor-probe/monitor) 与 [monitor-probe/agent](https://github.com/monitor-probe/agent)（MIT），已独立发布，不要用上游安装器覆盖或升级本项目。公开页主题与上游兼容，主题站 [monitor-themes.pages.dev](https://monitor-themes.pages.dev) 收录的第三方主题可在面板安装。
+本项目派生自 [monitor-probe/monitor](https://github.com/monitor-probe/monitor) 与 [monitor-probe/agent](https://github.com/monitor-probe/agent)（MIT），已独立发布，不要用上游安装器覆盖或升级本项目。公开页主题与上游兼容，主题站 [monitor-themes.pages.dev](https://monitor-themes.pages.dev) 收录的第三方主题可在面板安装。主题与后台同源运行，在已登录的浏览器中能以管理员身份操作，只安装可信来源。
 
 ## 特性
 

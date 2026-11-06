@@ -296,6 +296,7 @@ export function Themes() {
               <p>
                 主题的 url 指向 GitHub 仓库时，卡片上的 <RefreshCw className="inline size-3" /> 检查更新，版本没变就不下载。
               </p>
+              <p>更新直接安装该仓库最新的 release，不核对摘要；内置默认主题的版本和摘要随后台固定。</p>
             </Help>
             <Button size="sm" variant="ghost" className="-my-1 -mr-2.5 ml-auto h-7" asChild>
               <a href="https://monitor-themes.pages.dev" target="_blank" rel="noreferrer">
@@ -304,7 +305,7 @@ export function Themes() {
             </Button>
           </div>
           {/* Stays in view: it is the one line about what installing permits. */}
-          <p className="mt-1 text-xs text-muted-foreground">主题代码在访客浏览器中执行，请只安装可信来源。</p>
+          <p className="mt-1 text-xs text-muted-foreground">主题与后台同源运行，在已登录的浏览器中能以管理员身份操作。只安装可信来源，更新前确认来源未变；查看公开页可用未登录的浏览器。</p>
         </div>
         <form
           className="flex flex-wrap gap-2"

@@ -1,14 +1,17 @@
-import io
+import http.client
+import http.server
 import json
 import pathlib
 import re
 import sys
 import tempfile
+import threading
 import time
 import unittest
-from urllib.error import HTTPError
-from unittest.mock import patch, MagicMock
+from urllib.error import HTTPError, URLError
+from unittest.mock import patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+import agent
 from agent import base_url, component_digest, execute_module_task, execute_task, exchange, files_digest, recover_idle, run_action
 from controller import Controller
 from model import PROTOCOL, Rejected, request
@@ -57,34 +60,97 @@ class ComponentDigestTests(unittest.TestCase):
                 write(pathlib.Path(directory)/'component-manifest.json',{'agent.py':'a'*64,'model.py':'b'*64})
                 self.assertRegex(component_digest(),r'^[a-f0-9]{64}$')
 
+class Hub(http.server.BaseHTTPRequestHandler):
+    """A loopback stand-in for the hub: answers from `replies` in order, counting connections."""
+    protocol_version = 'HTTP/1.1'
+    replies, requests, connections = [], [], 0
+
+    def setup(self):
+        super().setup(); Hub.connections += 1
+
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers['Content-Length']))
+        Hub.requests.append((self.path, dict(self.headers), body))
+        status, headers, data, then_drop = Hub.replies.pop(0)
+        self.send_response(status)
+        for name, value in {**headers, 'Content-Length': str(len(data))}.items():
+            self.send_header(name, value)
+        self.end_headers(); self.wfile.write(data)
+        # Closed without saying so, as an idle keep-alive connection is.
+        self.close_connection = then_drop
+
+    def log_message(self, *args): pass
+
+
+class ExchangeTests(unittest.TestCase):
+    binding = {'server': 'https://panel.example.com', 'credential': 'a' * 64}
+
+    def setUp(self):
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Hub)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close); self.addCleanup(server.shutdown)
+        Hub.replies, Hub.requests, Hub.connections = [], [], 0
+        port = server.server_address[1]
+        # Plain HTTP to the loopback server in place of TLS to the hub.
+        local = lambda host, _port, timeout, context: http.client.HTTPConnection('127.0.0.1', port, timeout=timeout)
+        patcher = patch('agent.http.client.HTTPSConnection', side_effect=local)
+        patcher.start(); self.addCleanup(patcher.stop)
+        agent.close_connection(); self.addCleanup(agent.close_connection)
+
+    def reply(self, status=200, data=b'{"task":null}', headers=None, then_drop=False):
+        Hub.replies.append((status, {'Content-Type': 'application/json', **(headers or {})}, data, then_drop))
+
+    def test_identifies_the_client_and_reuses_one_connection(self):
+        self.reply(); self.reply()
+        for _ in range(2):
+            self.assertEqual(exchange(self.binding, 'poll', {}), {'task': None})
+        self.assertEqual(Hub.connections, 1)
+        path, headers, body = Hub.requests[0]
+        self.assertEqual(path, '/api/management-agent/v1/poll')
+        self.assertEqual(headers['User-Agent'], 'NodeManager/1')
+        self.assertEqual(headers['Authorization'], 'Bearer ' + 'a' * 64)
+        self.assertEqual(headers['X-Node-Manager-Protocol'], str(PROTOCOL))
+        self.assertEqual(json.loads(body), {})
+
+    def test_a_connection_dropped_while_idle_is_reopened_once(self):
+        self.reply(then_drop=True); self.reply()
+        exchange(self.binding, 'poll', {})
+        self.assertEqual(exchange(self.binding, 'poll', {}), {'task': None})
+        self.assertEqual((len(Hub.requests), Hub.connections), (2, 2))
+
+    def test_an_error_status_is_raised_with_its_headers_and_not_retried(self):
+        self.reply(422, b'snapshot: missing field `revision`')
+        with self.assertRaises(HTTPError) as caught:
+            exchange(self.binding, 'poll', {'snapshot': {'core': {}}})
+        with caught.exception as error:
+            self.assertEqual(error.code, 422)
+        self.reply(401, b'', {'X-Node-Manager-Binding': 'revoked'})
+        with self.assertRaises(HTTPError) as caught:
+            exchange(self.binding, 'maintenance', {})
+        with caught.exception as error:
+            self.assertEqual(error.headers.get('X-Node-Manager-Binding'), 'revoked')
+        self.assertEqual(len(Hub.requests), 2)
+
+    def test_a_redirect_or_an_oversized_reply_is_refused(self):
+        self.reply(302, b'', {'Location': 'https://elsewhere.example.com/'})
+        with self.assertRaisesRegex(Rejected, '跳转'):
+            exchange(self.binding, 'poll', {})
+        self.reply(data=b' ' * (256 * 1024 + 1))
+        with self.assertRaisesRegex(Rejected, '过大'):
+            exchange(self.binding, 'poll', {})
+
+    def test_an_unreachable_hub_reads_as_a_connection_failure(self):
+        with patch('agent.http.client.HTTPSConnection', side_effect=lambda *a, **k: http.client.HTTPConnection('127.0.0.1', 9, timeout=1)):
+            agent.close_connection()
+            with self.assertRaises(URLError):
+                exchange(self.binding, 'poll', {})
+
+
 class TransportTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
         self.d=Driver();self.c=Controller(self.tmp.name,self.d)
         self.req={'id':'a'*32,'action':'install','revision':self.c.snapshot()['revision'],'payload':{}}
-    def test_machine_requests_identify_client_and_keep_authorization(self):
-        response = MagicMock()
-        response.__enter__.return_value.read.return_value = b'{"task":null}'
-        opener = MagicMock()
-        opener.open.return_value = response
-        with patch('agent.urllib.request.build_opener', return_value=opener):
-            self.assertEqual(exchange({'server':'https://panel.example.com','credential':'a'*64}, 'poll', {}), {'task':None})
-        request = opener.open.call_args.args[0]
-        self.assertEqual(request.get_header('User-agent'), 'NodeManager/1')
-        self.assertEqual(request.get_header('Authorization'), 'Bearer '+'a'*64)
-        self.assertEqual(request.get_header('X-node-manager-protocol'), str(PROTOCOL))
-        self.assertEqual(request.full_url, 'https://panel.example.com/api/management-agent/v1/poll')
-
-    def test_unrelated_unprocessable_poll_is_not_retried(self):
-        binding = {'server': 'https://panel.example.com', 'credential': 'a' * 64}
-        opener = MagicMock()
-        opener.open.side_effect = HTTPError(binding['server'], 422, 'invalid data', {},
-                                            io.BytesIO(b'snapshot: missing field `revision`'))
-        with patch('agent.urllib.request.build_opener', return_value=opener):
-            with self.assertRaises(HTTPError):
-                exchange(binding, 'poll', {'snapshot': {'core': {}}})
-        opener.open.assert_called_once()
-
     def test_idle_recovery_clears_old_null_receipt_without_touching_poller(self):
         pending = self.c.root / 'pending-result.json'
         with patch('agent.ROOT', self.c.root), patch('snell.command') as command, patch('builtins.print'):
