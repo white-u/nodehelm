@@ -95,10 +95,11 @@ class PmIpTests(unittest.TestCase):
             data = {'plan': {'23456': rule}, 'values': {'23456': {'rx': 1, 'tx': 2}}, 'quotas': {}, 'sampled_at': now}
             write(driver.checkpoint, data)
             entry = {'seen': [], 'count': 4, 'level': 1, 'ips': ['203.0.113.1'], 'seq': 2, 'last': now}
+            states = {'node-manager-pm.service': {'ActiveState': 'inactive'}}
             with patch.object(driver, 'units_match', return_value=True), \
                     patch.object(driver, 'timer_active', return_value=True), \
                     patch.object(driver, 'inspect'), patch.object(driver, 'sample', return_value=data), \
-                    patch.object(driver, 'unit_info', return_value={'ActiveState': 'inactive'}), \
+                    patch.object(driver, 'unit_states', return_value=states), \
                     patch.object(driver, 'expected_plan', return_value={'23456': rule}):
                 for sampled, rules, shown in ((now, [limited()], True), (now - 300, [limited()], False),
                                               (now, [policy()], False)):
@@ -119,6 +120,45 @@ class PmIpTests(unittest.TestCase):
         for bad in ({'max_ips': 0}, {'action': 'block'}, {'whitelist': ['fe80::1%eth0']}):
             with self.assertRaises(Rejected):
                 resource(policy(ip_limit={'max_ips': 1, 'cooldown_min': 30, 'whitelist': []} | bad), 'pm')
+
+
+class PmUnitStateTests(unittest.TestCase):
+    SHOW = (b'Id=node-manager-pm.service\nLoadState=loaded\nActiveState=inactive\nFragmentPath=/etc/systemd/system/node-manager-pm.service\n'
+            b'UnitFileState=static\nDropInPaths=\n\nId=node-manager-pm.timer\nLoadState=loaded\nActiveState=active\n'
+            b'FragmentPath=/etc/systemd/system/node-manager-pm.timer\nUnitFileState=enabled\nDropInPaths=\n')
+
+    def test_status_reads_both_units_in_one_call(self):
+        with patch('pm.command') as command:
+            command.return_value.stdout = self.SHOW
+            states = Driver.unit_states()
+        command.assert_called_once()
+        self.assertEqual(states['node-manager-pm.timer']['UnitFileState'], 'enabled')
+        self.assertEqual(states['node-manager-pm.service']['FragmentPath'], '/etc/systemd/system/node-manager-pm.service')
+        self.assertTrue(Driver.timer_active(states))
+        for state, enabled in (('disabled', False), ('masked', False), ('linked', False), ('enabled-runtime', True)):
+            changed = {**states, 'node-manager-pm.timer': {**states['node-manager-pm.timer'], 'UnitFileState': state}}
+            self.assertEqual(Driver.timer_active(changed), enabled, state)
+        stopped = {**states, 'node-manager-pm.timer': {**states['node-manager-pm.timer'], 'ActiveState': 'inactive'}}
+        self.assertFalse(Driver.timer_active(stopped))
+
+    def test_units_match_uses_the_given_states(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            driver = Driver(root, root)
+            for path, content in driver.unit_files():
+                path.write_text(content)
+            states = {path.name: {'LoadState': 'loaded', 'FragmentPath': str(path), 'DropInPaths': ''} for path, _ in driver.unit_files()}
+            with patch.object(driver, 'unit_info') as unit_info:
+                self.assertTrue(driver.units_match(states))
+                states['node-manager-pm.timer']['DropInPaths'] = '/etc/systemd/system/node-manager-pm.timer.d/x.conf'
+                self.assertFalse(driver.units_match(states))
+            unit_info.assert_not_called()
+
+    def test_a_missing_or_renamed_unit_is_refused(self):
+        with patch('pm.command') as command:
+            command.return_value.stdout = self.SHOW.split(b'\n\n')[0]
+            with self.assertRaises(Rejected):
+                Driver.unit_states()
 
 
 class PmRefreshTests(unittest.TestCase):

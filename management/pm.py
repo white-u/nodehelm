@@ -346,6 +346,22 @@ class Driver:
         return plan(state, dt.datetime.now(dt.timezone.utc).date(), conflicts)
 
     @staticmethod
+    def unit_states():
+        """Both PM units in one systemctl call, for the status every poll reads."""
+        keys = ('Id', 'LoadState', 'FragmentPath', 'DropInPaths', 'ActiveState', 'UnitFileState')
+        result = command('systemctl', 'show', '--all', '--property=' + ','.join(keys),
+                         SERVICE_NAME, TIMER_NAME, check=False)
+        states = {}
+        for block in result.stdout.decode().split('\n\n'):
+            info = dict(line.split('=', 1) for line in block.splitlines() if '=' in line)
+            if info:
+                states[info.get('Id')] = info
+        if set(states) != {SERVICE_NAME, TIMER_NAME} or any(
+                key not in info for info in states.values() for key in keys):
+            raise Rejected('无法核实 PM 定时单元归属', 'pm_timer')
+        return states
+
+    @staticmethod
     def unit_info(name):
         keys = 'LoadState,FragmentPath,DropInPaths,ActiveState'
         result = command('systemctl', 'show', '--all', f'--property={keys}', name, check=False)
@@ -421,12 +437,12 @@ class Driver:
         # Rebuilds the table to the current layout; counters carry over as on any rule edit.
         self.reconcile(state)
 
-    def units_match(self):
+    def units_match(self, states=None):
         try:
             for path, content in self.unit_files():
                 if path.is_symlink() or path.read_text() != content:
                     return False
-                info = self.unit_info(path.name)
+                info = states[path.name] if states else self.unit_info(path.name)
                 if (info['LoadState'] != 'loaded' or info['FragmentPath'] != str(path)
                         or info['DropInPaths']):
                     return False
@@ -441,7 +457,12 @@ class Driver:
         self.verify(state, {})
 
     @staticmethod
-    def timer_active():
+    def timer_active(states=None):
+        if states:
+            # The states for which `systemctl is-enabled` exits 0.
+            timer = states[TIMER_NAME]
+            return timer['ActiveState'] == 'active' and timer['UnitFileState'] in (
+                'enabled', 'enabled-runtime', 'static', 'alias', 'indirect', 'generated', 'transient')
         return all(command('systemctl', action, '--quiet', TIMER_NAME, check=False).returncode == 0
                    for action in ('is-active', 'is-enabled'))
 
@@ -536,11 +557,12 @@ class Driver:
         if not state['installed']:
             return False, {}
         try:
-            if not self.units_match() or not self.timer_active():
+            states = self.unit_states()
+            if not self.units_match(states) or not self.timer_active(states):
                 raise Rejected('PM 定时单元不可用', 'pm_timer')
             saved = read(self.checkpoint)
             data = self.sample(self.inspect(), saved)
-            failed = self.unit_info(SERVICE_NAME)['ActiveState'] == 'failed'
+            failed = states[SERVICE_NAME]['ActiveState'] == 'failed'
         except (Rejected, OSError, ValueError, subprocess.TimeoutExpired):
             return True, {}
         usage = {}

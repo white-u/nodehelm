@@ -81,7 +81,11 @@ for line in sys.stdin:
                 return {'LoadState': 'loaded' if path.exists() else 'not-found',
                         'FragmentPath': str(path) if path.exists() else '', 'DropInPaths': '', 'ActiveState': 'inactive'}
 
-            with patch('pm.command'), patch.object(driver, 'timer_active', return_value=True), patch.object(driver, 'unit_info', side_effect=unit_info):
+            def unit_states():
+                return {name: {**unit_info(name), 'UnitFileState': 'enabled'} for name in ('node-manager-pm.service', 'node-manager-pm.timer')}
+
+            with patch('pm.command'), patch.object(driver, 'timer_active', return_value=True), patch.object(driver, 'unit_info', side_effect=unit_info), \
+                    patch.object(driver, 'unit_states', side_effect=unit_states):
                 assert task(controller, 'install', {}, 1)['status'] == 'succeeded'
                 rule = dict(port=port, name='Test', quota_gb=0, quota_mode='in_out',
                             reset_day=0, expiry_date='', egress_mbps=0)
