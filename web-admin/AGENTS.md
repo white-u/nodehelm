@@ -40,6 +40,6 @@
 
 ## 服务管理页面定位
 
-节点卡片选择对应节点和业务模块，下方仍是一张详情卡片，使用“配置”和“管理”页签。Snell／SB 的实例行通过弹窗展示配置，FW 展示转发目标，PM 使用端口策略面板。状态读取与结果确认在 `Management.tsx`，表单与维护在 `ServiceDetail.tsx`，页面布局与交互由两者组合。
+节点卡片内每个模块独占一行，名称和状态横向排列；卡片保留读取时间，选择后在下方同一张详情卡片内使用“配置”和“管理”页签。组件最后通信时间及默认折叠的已完成卸载记录放在“管理”页签，未完成或异常的卸载进度在两页签中持续可见。Snell／SB 的实例行通过弹窗展示配置，FW 展示转发目标，PM 使用端口策略面板。状态读取与结果确认在 `Management.tsx`，表单与维护在 `ServiceDetail.tsx`，页面布局与交互由两者组合。
 
 字段与动作对应 [management/mod.rs](../src/management/mod.rs)、[models.rs](../src/management/models.rs) 和 [Python 模型](../management/AGENTS.md)。页面功能及交互变化时，同步这些实际消费者与对应文档入口。

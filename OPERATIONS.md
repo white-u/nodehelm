@@ -35,7 +35,7 @@
 
 `--site https://你的域名` 可明确 agent 接入地址和 cookie 的安全标志；域名必须是 HTTPS 域名入口。正常从 HTTPS 域名打开后台时可用浏览器地址生成安装命令，但通过 SSH 隧道访问、节点入口与后台域名不同、或代理不能正确表达 HTTPS 时应显式指定。添加/安装节点有额外入口保护，仅能打开页面不代表可添加节点。
 
-首次启动且数据库尚无密码时，后台把应急密码写入本机服务日志；独立安装器随后立即重置，新密码只显示在安装终端，日志中的那一个已失效。安装器不将密码存入发布包。遗失密码可使用下文的重置入口。登录后在后台添加节点并复制 agent 安装命令。hub 的 `/install.sh` 提供的是 [agent 安装器](install.sh)，它安装外部 `monitor-probe/agent`，不是 hub 自身。
+首次启动且数据库尚无密码时，后台把应急密码写入本机服务日志；独立安装器随后立即重置，新密码只显示在安装终端，日志中的那一个已失效。安装器不将密码存入发布包。遗失密码可使用下文的重置入口。登录后在后台添加节点并复制 agent 安装命令。hub 的 `/install.sh` 提供的是 [agent 安装器](install.sh)，它安装 hub 内嵌的 `agent/` 监控 agent（从 hub 的 `/agent/{arch}` 下载），不是 hub 自身。
 
 agent 默认路径是 `/opt/monitor/monitor-agent`、`/opt/monitor/agent.env`，服务名 `monitor-agent`，支持 systemd 或 OpenRC。hub 与 agent 可在同机共存，但服务、凭据和卸载入口不同。
 

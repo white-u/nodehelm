@@ -115,6 +115,8 @@ sudo nodehelm-hub reset-password
 3. 命令返回成功后，点「刷新此节点」，确认管理在线。
 4. 按需安装 Snell、SB、FW 核心或启用 PM，再新增实例或规则。
 
+多台机器可用节点页的「批量添加」：同一条命令在窗口期内发给所有机器执行（例如 `for h in node1 node2; do ssh root@$h '命令'; done`），每台自动换取自己的令牌。
+
 接入命令含一次性登记凭据，10 分钟内有效，过期后在同一节点重新生成即可。组件安装在 `/opt/node-manager`，服务名 `node-manager-agent`；节点主动通过 HTTPS 轮询后台，不开放入站端口。
 
 接入后节点上多出 `nodehelm` 命令。`sudo nodehelm` 打开节点菜单：升级管理组件和监控 Agent、运行状态、最近日志、恢复中断的操作。接入、配置和卸载仍在后台网页完成。
@@ -127,6 +129,8 @@ sudo nodehelm-hub reset-password
 | --- | --- | --- |
 | 后台 | 后台主机上 `sudo nodehelm-hub update` | 自动回退到原程序 |
 | 节点管理组件和监控 Agent | 节点上 `sudo nodehelm upgrade` | 组件自动回退；Agent 保留原版本 |
+
+监控 Agent 随后台发布并嵌入后台，节点从后台的 `/agent/{arch}` 下载，不访问 GitHub；后台更新后，「更新」页的 agent 一栏列出需要升级的节点。未接入服务管理的节点没有 `nodehelm` 命令，用该栏给出的升级命令。
 | 业务核心 | 服务管理 → 模块「管理」页 → 升级核心 | 自动恢复原核心；页面可显式回退 |
 
 更新后台：已是最新会直接退出；否则先做一致性备份，再切换并检查新程序。还没有 `nodehelm-hub` 命令时，用安装时的同一条命令，已安装时它显示菜单。后台「更新」页提供命令的复制按钮。

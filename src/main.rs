@@ -39,7 +39,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 
 use anyhow::Result;
-use axum::extract::{Path, State};
+use axum::extract::Path;
 use axum::http::{header, Extensions, HeaderMap, StatusCode, Version};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
@@ -94,9 +94,8 @@ pub struct App {
 pub struct Releases {
     /// The second these were read, 0 before the first read.
     pub read_at: i64,
-    /// Tags without their leading `v`, empty where the lookup failed.
+    /// The tag without its leading `v`, empty where the lookup failed.
     pub hub: String,
-    pub agent: String,
 }
 
 impl App {
@@ -164,33 +163,13 @@ fn forwarded_proto(headers: &HeaderMap) -> Option<&str> {
     Some(chain.split(',').next()?.trim())
 }
 
-/// Where the agent binaries are published, and where this hub is published. Not
-/// settings: redirecting either implies a fork, which rebuilds these lines
-/// anyway.
-pub const AGENT_REPO: &str = "monitor-probe/agent";
+/// Where this hub is published. Not a setting: redirecting it implies a fork,
+/// which rebuilds this line anyway.
 pub const HUB_REPO: &str = "white-u/nodehelm";
 
 /// The one-line installer pasted onto a new VPS.
 async fn install_script() -> Response {
     ([(header::CONTENT_TYPE, "text/x-shellscript")], include_str!("../install.sh")).into_response()
-}
-
-/// Where the hub fetches an agent release, behind the panel's GitHub proxy when
-/// one is configured. The proxy belongs to the hub rather than to each install
-/// command: a hub that cannot reach github.com cannot relay to any node, so the
-/// answer is the same for all of them.
-///
-/// This URL is fetched on an anonymous request, so setting it redirects that
-/// path. It remains within the bounds `agent_binary` already enforces: four
-/// concurrent transfers, a response within [`RELAY_HEAD`], a capped body and a
-/// signature.
-fn release_url(app: &App, arch: &str) -> String {
-    proxied(
-        app,
-        format!(
-            "https://github.com/{AGENT_REPO}/releases/latest/download/monitor-agent-{arch}-unknown-linux-musl"
-        ),
-    )
 }
 
 /// Places the panel's GitHub proxy in front of a github.com URL when one is
@@ -203,214 +182,36 @@ pub fn proxied(app: &App, url: String) -> String {
     }
 }
 
-/// How many release downloads the hub relays concurrently.
-///
-/// This route takes no credentials, and one request costs an outbound fetch from
-/// GitHub plus 1.8 MB of egress -- the most expensive operation an anonymous
-/// caller can request. Each transfer holds the binary whole while it is
-/// verified, at most [`MAX_AGENT_BINARY`]; this bounds how many may run, closing
-/// the same gap as the password gate in `auth`.
-///
-/// Four, because a node installs once: the load is a burst, not a sustained
-/// workload. A batch install or upgrade sent to many machines at once -- by an
-/// SSH client broadcasting one command, a provider's boot script, a parallel
-/// tool -- arrives as exactly that burst, so a request past the four waits
-/// its turn for up to [`RELAY_WAIT`] rather than being refused at once, which
-/// would fail eight of twelve parallel downloads within 2 ms. The semaphore is
-/// FIFO, and a waiting request holds its connection alone: no fetch, no buffer.
-/// Waiters are not counted, so how many can wait is bounded by the connections
-/// the process may hold, the same bound as for a client that connects and then
-/// sends nothing.
-const RELAY_SLOTS: usize = 4;
-static RELAY_GATE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(RELAY_SLOTS);
-
-/// Longest a request waits for a relay slot before the 503. Below the 60 s nginx
-/// and the 100 s Cloudflare allow for a response head, so the refusal is the
-/// hub's own and says why; `install.sh` retries it. At about a second per
-/// transfer, four slots drain some 120 queued machines within it.
-const RELAY_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// Longest a request may take to produce its response head, the wait for a
-/// slot included: below the 60 s nginx allows. The binary is verified whole
-/// before the head is sent, so the download from GitHub falls within it.
-const RELAY_HEAD: std::time::Duration = std::time::Duration::from_secs(55);
-
-/// Longest a relay may hold its permit once the response is under way.
-///
-/// Deliberately generous, since a node on a slow link must still transfer
-/// 1.8 MB; what it rules out is a transfer that never completes.
-const RELAY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(180);
-
-/// Holds a relay permit until the last byte has been sent. The handler returns
-/// once the response head is built, so a permit dropped there would gate only
-/// the fetch and leave the transfer -- the expensive part -- unbounded.
-///
-/// The permit is not held here, because "until the last byte" has no upper bound
-/// of its own: a client that stops reading leaves hyper unable to flush, hyper
-/// then stops polling this stream, and a deadline checked in `poll_next` would
-/// never run -- nor would the upstream timeout on the reqwest body, which is
-/// equally poll-driven. Four connections that accept the response and never read
-/// it would hold all four slots for as long as they remained open, and
-/// `/agent/{arch}` is the path every node installs through. The permit therefore
-/// belongs to a task with its own timer, and this end of the channel -- dropped
-/// with the body, whether it completed or the connection died -- releases it
-/// early.
-struct Metered<S> {
-    inner: S,
-    _done: tokio::sync::oneshot::Sender<()>,
+/// The agents this hub was released with, built from `agent/` by the same
+/// release job; empty in a development build. See `build.rs`.
+mod agents {
+    include!(concat!(env!("OUT_DIR"), "/agents.rs"));
 }
 
-/// Wraps `inner` and parks `permit` on a task that releases it when the body is
-/// dropped or [`RELAY_DEADLINE`] elapses, whichever comes first.
-fn metered<S>(inner: S, permit: tokio::sync::SemaphorePermit<'static>) -> Metered<S> {
-    let (_done, body_gone) = tokio::sync::oneshot::channel();
-    tokio::spawn(async move {
-        // Either arm ends the task, which drops the permit. `body_gone` resolves
-        // as an error the moment the sender is dropped, which is the signal.
-        let _permit = permit;
-        let _ = tokio::time::timeout(RELAY_DEADLINE, body_gone).await;
-    });
-    Metered { inner, _done }
-}
-
-impl<S: futures_core::Stream + Unpin> futures_core::Stream for Metered<S> {
-    type Item = S::Item;
-
-    fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        std::pin::Pin::new(&mut self.inner).poll_next(cx)
-    }
-}
-
-/// The key the agent's release job signs each binary with (ed25519, the raw 32
-/// bytes). Rotating it takes a hub release.
-const AGENT_SIGNING_KEY: [u8; 32] = [
-    0x9a, 0x7c, 0x5e, 0x29, 0xf8, 0x79, 0x5a, 0x0a, 0x72, 0x12, 0x3e, 0xe1, 0xf0, 0x6a, 0x93, 0x41, 0xf2,
-    0x95, 0x34, 0xdb, 0xc2, 0x85, 0xb9, 0xab, 0xbe, 0xe6, 0xa0, 0x06, 0xdc, 0x65, 0xee, 0xef,
-];
-
-/// Far above the 1.8 MB an agent weighs; bounds what a proxy can make the hub
-/// hold, four at a time under [`RELAY_GATE`].
-const MAX_AGENT_BINARY: usize = 16 << 20;
-
-/// Whether `signature` is `key`'s over `binary`.
-fn signed(key: &[u8], binary: &[u8], signature: &[u8]) -> bool {
-    use ring::signature::{UnparsedPublicKey, ED25519};
-    UnparsedPublicKey::new(&ED25519, key).verify(binary, signature).is_ok()
-}
-
-/// Whether `binary` is an ELF executable for `arch`. A signature covers the
-/// bytes alone, so a mirror could answer one architecture's request with the
-/// other's signed binary, and `install.sh` would replace a running agent with
-/// one that cannot start.
-fn built_for(binary: &[u8], arch: &str) -> bool {
-    let machine: u16 = if arch == "aarch64" { 183 } else { 62 };
-    binary.get(18..20).is_some_and(|m| u16::from_le_bytes([m[0], m[1]]) == machine)
-}
-
-/// Whether the hub may hand `binary` to `install.sh` on an `arch` machine.
-fn relayable(key: &[u8], binary: &[u8], signature: &[u8], arch: &str) -> bool {
-    signed(key, binary, signature) && built_for(binary, arch)
-}
-
-/// One GET of a release asset, whole, refused past `max` bytes.
-async fn fetch_asset(app: &App, url: &str, what: &str, max: usize) -> Result<Vec<u8>, String> {
-    let who = if url.starts_with("https://github.com/") { "GitHub" } else { "the GitHub proxy" };
-    // The default client timeout is sized for API calls; the caller bounds the
-    // download as a whole.
-    let mut res = app.http.get(url).timeout(RELAY_HEAD).send().await.map_err(|e| {
-        warn!("fetching {url} failed: {e:#}");
-        "the hub could not reach GitHub or its GitHub proxy; its log has the details".to_owned()
-    })?;
-    if !res.status().is_success() {
-        return Err(format!("{who} answered {} for the {what}", res.status()));
-    }
-    let too_large = || format!("{who} sent more than {max} bytes for the {what}");
-    let declared = res.content_length().unwrap_or(0);
-    if declared > max as u64 {
-        return Err(too_large());
-    }
-    let mut body = Vec::with_capacity(declared as usize);
-    loop {
-        match res.chunk().await {
-            Ok(Some(chunk)) if body.len() + chunk.len() <= max => body.extend_from_slice(&chunk),
-            Ok(Some(_)) => return Err(too_large()),
-            Ok(None) => return Ok(body),
-            Err(e) => {
-                warn!("reading {url} failed: {e:#}");
-                return Err("the agent download was cut off; try again".to_owned());
-            }
-        }
-    }
-}
-
-/// The verified binary as a one-item body, so [`metered`] holds the permit
-/// until it has been sent.
-struct Once(Option<axum::body::Bytes>);
-
-impl futures_core::Stream for Once {
-    type Item = Result<axum::body::Bytes, std::convert::Infallible>;
-
-    fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        _: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        std::task::Poll::Ready(self.0.take().map(Ok))
-    }
-}
+/// The agent version this hub serves, or "" when it carries none.
+pub const AGENT_VERSION: &str = agents::VERSION;
 
 /// Serves the agent binary from the hub itself, so a node that can reach the hub
 /// can install without reaching GitHub: IPv6-only machines cannot resolve
 /// github.com, and neither can blocked networks.
 ///
-/// `install.sh` executes these bytes as root on every node, and through the
-/// panel's `github_proxy` they come from a mirror the operator does not run. So
-/// the binary is held whole and relayed only under the release job's signature,
-/// fetched from the same place: a mirror can withhold or replace either, but
-/// cannot produce a signature that verifies. The key is the hub's, not the
-/// release's, so an agent release needs no hub release.
-async fn agent_binary(State(app): State<Shared>, Path(arch): Path<String>) -> Response {
-    if !matches!(arch.as_str(), "x86_64" | "aarch64") {
-        return api::answer(StatusCode::NOT_FOUND, "unknown architecture");
-    }
-    let asked = tokio::time::Instant::now();
-    let Ok(Ok(permit)) = tokio::time::timeout(RELAY_WAIT, RELAY_GATE.acquire()).await else {
-        return api::answer(StatusCode::SERVICE_UNAVAILABLE, "too many downloads in flight, try again");
+/// `install.sh` executes these bytes as root on every node. They are embedded at
+/// build time, so they are exactly as trustworthy as the hub release itself and
+/// need no signature of their own; and a hub serves the agent it was tested with.
+async fn agent_binary(Path(arch): Path<String>) -> Response {
+    let binary = match arch.as_str() {
+        "x86_64" => agents::X86_64,
+        "aarch64" => agents::AARCH64,
+        _ => return api::answer(StatusCode::NOT_FOUND, "unknown architecture"),
     };
-    let url = release_url(&app, &arch);
-    let sig = format!("{url}.sig");
-    // English, as `install.sh` prints it after its own English line.
-    let fetched = async {
-        let (binary, signature) = tokio::try_join!(
-            fetch_asset(&app, &url, "agent binary", MAX_AGENT_BINARY),
-            fetch_asset(&app, &sig, "agent signature", 64),
-        )?;
-        if !relayable(&AGENT_SIGNING_KEY, &binary, &signature, &arch) {
-            warn!("{url} does not match its signature or architecture; not relayed");
-            return Err(
-                "the agent binary failed its signature check, so the hub refused to relay it".to_owned()
-            );
-        }
-        Ok(binary)
-    };
-    let budget = RELAY_HEAD.saturating_sub(asked.elapsed());
-    let Ok(fetched) = tokio::time::timeout(budget, fetched).await else {
-        warn!("fetching {url} took longer than {} s; not relayed", RELAY_HEAD.as_secs());
+    if binary.is_empty() {
+        // English, as `install.sh` prints it after its own English line.
         return api::answer(
-            StatusCode::BAD_GATEWAY,
-            "GitHub or the GitHub proxy was too slow to deliver the agent before the response deadline",
+            StatusCode::NOT_FOUND,
+            "this hub build carries no agent; install a released hub to serve one",
         );
-    };
-    match fetched {
-        Ok(binary) => (
-            [(header::CONTENT_TYPE, "application/octet-stream")],
-            axum::body::Body::from_stream(metered(Once(Some(binary.into())), permit)),
-        )
-            .into_response(),
-        Err(refusal) => api::answer(StatusCode::BAD_GATEWAY, refusal),
     }
+    ([(header::CONTENT_TYPE, "application/octet-stream")], binary).into_response()
 }
 
 // ---- startup ----
@@ -1119,32 +920,25 @@ impl Drop for TempDir {
 mod tests {
     use super::*;
 
+    use axum::extract::State;
     use axum::http::{StatusCode, Uri};
 
-    #[test]
-    fn only_a_binary_signed_with_the_key_is_relayed() {
-        use ring::signature::{Ed25519KeyPair, KeyPair};
-        let pkcs8 = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
-        let pair = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();
-        let key = pair.public_key().as_ref();
-        let binary = b"\x7fELF agent".to_vec();
-        let signature = pair.sign(&binary);
-        assert!(signed(key, &binary, signature.as_ref()));
-        let mut swapped = binary.clone();
-        swapped[5] ^= 1;
-        assert!(!signed(key, &swapped, signature.as_ref()), "a replaced binary");
-        assert!(!signed(&AGENT_SIGNING_KEY, &binary, signature.as_ref()), "another key's signature");
-        assert!(!signed(key, &binary, &[]), "no signature");
-        let mut elf = vec![0u8; 64];
-        elf[18] = 62;
-        assert!(built_for(&elf, "x86_64") && !built_for(&elf, "aarch64"), "the other architecture's binary");
-
-        // Relayed only with both: the signature alone passes the other
-        // architecture's signed binary, the architecture alone a replaced one.
-        let elf_signature = pair.sign(&elf);
-        assert!(relayable(key, &elf, elf_signature.as_ref(), "x86_64"));
-        assert!(!relayable(key, &elf, elf_signature.as_ref(), "aarch64"));
-        assert!(!relayable(key, &elf, signature.as_ref(), "x86_64"));
+    /// A development build carries no agent and says so, rather than serving an
+    /// empty file that `install.sh` would install as the agent.
+    #[tokio::test]
+    async fn the_agent_route_serves_the_embedded_binary_or_explains_its_absence() {
+        let answer = |arch: &str| agent_binary(Path(arch.to_owned()));
+        assert_eq!(answer("riscv64").await.status(), StatusCode::NOT_FOUND);
+        let served = answer("x86_64").await;
+        if agents::X86_64.is_empty() {
+            assert_eq!(served.status(), StatusCode::NOT_FOUND);
+            assert_eq!(AGENT_VERSION, "", "no version is announced for agents the hub cannot serve");
+        } else {
+            assert_eq!(served.status(), StatusCode::OK);
+            let body = axum::body::to_bytes(served.into_body(), usize::MAX).await.unwrap();
+            assert_eq!(&body[..], agents::X86_64);
+            assert!(!AGENT_VERSION.is_empty());
+        }
     }
 
     /// The limit only moves up, so raising it here cannot disturb another test.
@@ -1383,20 +1177,6 @@ mod tests {
         assert!(app.public_page());
     }
 
-    /// A stream that ends immediately, standing in for a release.
-    struct Nothing;
-
-    impl futures_core::Stream for Nothing {
-        type Item = ();
-
-        fn poll_next(
-            self: std::pin::Pin<&mut Self>,
-            _: &mut std::task::Context<'_>,
-        ) -> std::task::Poll<Option<()>> {
-            std::task::Poll::Ready(None)
-        }
-    }
-
     /// Without a timer hyper would wait for a request head forever, both on a
     /// fresh connection and between keep-alive requests.
     #[tokio::test(start_paused = true)]
@@ -1419,54 +1199,22 @@ mod tests {
         }
     }
 
-    /// The gate is worthless if the permit is released when the handler returns:
-    /// the head is built in microseconds while the 1.8 MB behind it is the cost.
-    /// The permit therefore outlives the handler, and -- since "until the last
-    /// byte" is the client's decision -- no longer than RELAY_DEADLINE.
-    #[tokio::test(start_paused = true)]
-    async fn a_relay_permit_follows_the_body_but_not_past_the_deadline() {
-        let queued: Vec<_> =
-            (1..RELAY_SLOTS).map(|_| RELAY_GATE.try_acquire().expect("up to the limit")).collect();
-        let body = metered(Nothing, RELAY_GATE.try_acquire().expect("the last slot"));
-        tokio::task::yield_now().await;
-        assert!(RELAY_GATE.try_acquire().is_err(), "every slot is taken");
-
-        // A body that ends, or a connection that dies, returns the slot
-        // immediately rather than waiting out the deadline.
-        drop(body);
-        tokio::task::yield_now().await;
-        let finished = RELAY_GATE.try_acquire().expect("a finished download gives its slot back");
-        drop(finished);
-
-        // A client that accepts the response and then reads nothing never polls
-        // the body, so the body cannot time itself out. Only an independent timer
-        // can, which is why the permit does not travel with it.
-        let stalled = metered(Nothing, RELAY_GATE.try_acquire().expect("the last slot"));
-        tokio::task::yield_now().await;
-        assert!(RELAY_GATE.try_acquire().is_err());
-        tokio::time::advance(RELAY_DEADLINE + std::time::Duration::from_secs(1)).await;
-        tokio::task::yield_now().await;
-        assert!(RELAY_GATE.try_acquire().is_ok(), "a transfer that never finishes still gives its slot back");
-        drop((stalled, queued));
-    }
-
-    /// The proxy is a hub setting rather than an install-command argument, so
-    /// this is the only place the URL is built. A trailing slash in the setting
-    /// must not become a double slash the proxy will not match.
+    /// The proxy is a hub setting shared by every release download. A trailing
+    /// slash in the setting must not become a double slash the proxy will not
+    /// match.
     #[test]
-    fn a_github_proxy_prefixes_the_release_url_and_an_empty_one_does_not() {
+    fn a_github_proxy_prefixes_a_release_url_and_an_empty_one_does_not() {
         let app = app("");
-        let direct = release_url(&app, "x86_64");
-        assert!(direct.starts_with("https://github.com/monitor-probe/agent/releases/"), "{direct}");
-
+        let direct = format!("https://github.com/{HUB_REPO}/releases/download/v1/theme.tar.gz");
+        assert_eq!(proxied(&app, direct.clone()), direct);
         for set in ["https://ghfast.top", "https://ghfast.top/", "  https://ghfast.top/  "] {
             app.db.set("github_proxy", set).unwrap();
-            assert_eq!(release_url(&app, "x86_64"), format!("https://ghfast.top/{direct}"), "{set:?}");
+            assert_eq!(proxied(&app, direct.clone()), format!("https://ghfast.top/{direct}"), "{set:?}");
         }
         // Cleared in the panel, which stores an empty string rather than removing
         // the row.
         app.db.set("github_proxy", "").unwrap();
-        assert_eq!(release_url(&app, "x86_64"), direct);
+        assert_eq!(proxied(&app, direct.clone()), direct);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 /target
+/agent/target
 /web-admin/node_modules
 /web-admin/dist
 *.db

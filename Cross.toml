@@ -1,0 +1,3 @@
+# build.rs reads this to refuse a release hub without its agents.
+[build.env]
+passthrough = ["NODEHELM_REQUIRE_AGENTS"]

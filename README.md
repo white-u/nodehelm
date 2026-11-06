@@ -2,17 +2,9 @@
 
 基于 monitor 的独立新项目，保留监控与分时流量，新增可选节点服务管理。当前支持 Snell、SB（Reality / SS2022）和 FW（Realm TCP/UDP）实例管理、可信核心升级回退与卸载、Snell/SB 配置导出，以及受管业务端口的 PM 计量、配额、重置与到期策略。原 PM 数据可在同一页面只读查看。
 
-请先阅读 [部署说明](NODE_MANAGEMENT_DEPLOY.md)。下方为继承的 monitor 文档；其中上游一键安装命令不会安装本项目新增功能，请勿用于覆盖本项目。
+文档：**[部署文档](DEPLOY.md)** · [完整索引](INDEX.md) · [开发与验证](DEVELOPMENT.md) · [部署与恢复说明](NODE_MANAGEMENT_DEPLOY.md)
 
----
-
-# monitor
-
-本仓库文档：**[完整索引](INDEX.md)** · [开发与验证](DEVELOPMENT.md) · [部署与维护](NODE_MANAGEMENT_DEPLOY.md)。
-
-文档：[monitor-document.pages.dev](https://monitor-document.pages.dev)，安装、配置、反向代理与主题开发都在这里。
-
-主题站：[monitor-themes.pages.dev](https://monitor-themes.pages.dev)，在线预览各个公开页主题，复制地址即可在面板安装。
+本项目派生自 [monitor-probe/monitor](https://github.com/monitor-probe/monitor) 与 [monitor-probe/agent](https://github.com/monitor-probe/agent)（MIT），已独立发布，不要用上游安装器覆盖或升级本项目。公开页主题与上游兼容，主题站 [monitor-themes.pages.dev](https://monitor-themes.pages.dev) 收录的第三方主题可在面板安装。
 
 ## 特性
 
@@ -34,16 +26,16 @@ curl -fsSL https://github.com/white-u/nodehelm/releases/latest/download/nodehelm
 
 离线安装和全部参数见 [部署文档](DEPLOY.md)。
 
-后台默认仅监听 `127.0.0.1:9911`，使用独立 `node-manager-hub` 服务及数据目录。配置自己的 HTTPS 反代后访问 `/admin/`，先以应急密码登录，再设置 GitHub 登录。升级、备份、恢复和卸载使用随包提供的 `scripts/hub-lifecycle.py`；完整参数见 [部署说明](NODE_MANAGEMENT_DEPLOY.md)。原监控 Agent 和主题仍复用上游；不要用原 monitor 安装器升级本后台。
+后台默认仅监听 `127.0.0.1:9911`，使用独立 `node-manager-hub` 服务及数据目录。配置自己的 HTTPS 反代后访问 `/admin/`，先以应急密码登录，再设置 GitHub 登录。安装后用 `sudo nodehelm-hub` 更新、备份、恢复和卸载；不要用原 monitor 安装器升级本后台。
 
 ## 组成
 
-| 仓库 | 说明 |
+| 目录 | 说明 |
 |---|---|
-| [monitor](https://github.com/monitor-probe/monitor) | hub：后台、API、公开页宿主 |
-| [agent](https://github.com/monitor-probe/agent) | Linux agent |
-| [monitor-theme-default](https://github.com/monitor-probe/monitor-theme-default) | 内置默认主题 |
-| [themes](https://github.com/monitor-probe/themes) | 主题站：收录第三方主题，提供在线预览 |
+| `src/`、`web-admin/` | hub：后台、API、公开页宿主 |
+| `agent/` | Linux 监控 agent，随后台发布并嵌入后台，节点从后台下载 |
+| `management/` | 节点服务管理组件（Snell／SB／FW／PM） |
+| [monitor-theme-default](https://github.com/monitor-probe/monitor-theme-default) | 内置默认主题，构建时按 `web-theme.pin` 的版本与校验和取用 |
 
 ```
 agent (Linux)  ──WebSocket / JSON-RPC 2.0──▶  hub (axum + SQLite)  ──▶  后台 + 状态页

@@ -186,9 +186,9 @@ export function SettingsTab({ onSaved }: { onSaved: () => void }) {
           </Field>
           <Field
             label="GitHub 代理"
-            hint="留空直连，只在 hub 拉不到 GitHub Release 时填"
+            hint="留空直连，只在 hub 下载主题拉不到 GitHub Release 时填"
             helpWidth="max-w-58 min-[376px]:max-w-86"
-            help={<p>agent 有签名校验，主题包没有，只填信得过的镜像。</p>}
+            help={<p>只用于下载主题包。agent 随后台发布，不经此下载。主题包没有签名校验，只填信得过的镜像。</p>}
           >
             <Input
               value={String(s.github_proxy ?? "")}

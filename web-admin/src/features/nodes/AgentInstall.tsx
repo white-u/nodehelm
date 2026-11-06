@@ -156,7 +156,7 @@ export function RegisterDialog({ site, reg, onClose }: {
                 要给某台单独起名，在它执行的命令末尾加 <code>--name 名字</code>，只对新建的节点生效。
                 <a
                   className="ml-1 underline underline-offset-2 hover:text-foreground"
-                  href="https://monitor-document.pages.dev/install/batch"
+                  href="https://github.com/white-u/nodehelm/blob/main/DEPLOY.md#5-接入节点"
                   target="_blank"
                   rel="noreferrer"
                 >

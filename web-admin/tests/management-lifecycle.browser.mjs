@@ -63,6 +63,15 @@ try {
   })
   await page.goto(base+'/admin/manage')
   const maintenance=page.getByTestId('node-maintenance'),instances=page.getByTestId('instance-config'),progress=page.getByTestId('lifecycle-progress')
+  async function completedHistory(message){
+    const history=maintenance.getByTestId('lifecycle-history')
+    await history.waitFor()
+    assert.equal(await progress.count(),0,'completed uninstall remained in the current progress area')
+    assert.equal(await history.evaluate(element=>element.open),false,'completed history was expanded by default')
+    await history.locator('summary').click()
+    await history.getByText(message,{exact:true}).waitFor()
+    await history.locator('summary').click()
+  }
   async function select(node,module='snell'){
     const card=page.getByTestId(`node-card-${node.id}`),entry=card.getByRole('button',{name:'接入管理',exact:true})
     if(await entry.count())await entry.click();else await card.getByTestId(`node-module-${node.id}-${module}`).click()
@@ -140,7 +149,9 @@ try {
   assert.equal(resumed.id,job.id);await page.unroute(resumeRoute);await progress.getByText('fixture resumed',{exact:true}).waitFor()
   const singleDone=structuredClone(pausedSnapshot);singleDone.installed=false;singleDone.resources=[];singleDone.runtime={};singleDone.core=structuredClone(emptyCore);singleDone.revision='f'.repeat(64)
   fixtures.set(single.id,{...running,snapshot:singleDone,lifecycle:{...running.lifecycle,status:'succeeded',stage:'completed',attempt:4,message:'fixture module completed'}})
-  await refresh();await progress.getByText('fixture module completed',{exact:true}).waitFor()
+  await refresh();await completedHistory('fixture module completed')
+  await page.getByRole('tab',{name:'配置',exact:true}).click()
+  assert.equal(await maintenance.getByTestId('lifecycle-history').isVisible(),false,'old uninstall result leaked into configuration')
   await select(single,'sb');await page.getByRole('tab',{name:'配置',exact:true}).click();await instances.getByTestId('instance-34567').waitFor()
   await select(single,'fw');await page.getByRole('tab',{name:'配置',exact:true}).click();await instances.getByTestId('instance-23456').waitFor()
   // Whole-node cleanup stays locked even after credentials have been removed.
@@ -162,7 +173,7 @@ try {
   // credentials are revoked. It must not be relabelled as an unfinished install.
   fixtures.set(all.id,{...wholeRunning,bound:false,online:false,lifecycle:{...wholeRunning.lifecycle,status:'succeeded',stage:'finished',message:'fixture watched completion'}})
   await page.clock.fastForward(3100)
-  await progress.getByText('fixture watched completion',{exact:true}).waitFor()
+  await completedHistory('fixture watched completion')
   assert.equal(await page.getByText('管理绑定尚未确认，请安装完成后手动刷新配置。',{exact:true}).count(),0,'successful uninstall displayed an unfinished-install warning')
   await assertIdle('confirmed whole-node cleanup kept polling')
   fixtures.set(all.id,{...wholeRunning,bound:false,online:false,lifecycle:{...wholeRunning.lifecycle,status:'revoked',stage:'revoked',message:'fixture authorization revoked'}})
@@ -170,8 +181,8 @@ try {
   await progress.getByText('恢复备份后原卸载授权已失效 · 此节点全部受管服务',{exact:true}).waitFor()
   assert.equal(await progress.getByText('卸载已确认完成 · 此节点全部受管服务',{exact:true}).count(),0,'revocation was displayed as successful cleanup')
   fixtures.set(all.id,{...wholeRunning,bound:false,online:false,lifecycle:{...wholeRunning.lifecycle,status:'succeeded',stage:'completed',message:'fixture whole-node completed'}})
-  await refresh();await progress.getByText('fixture whole-node completed',{exact:true}).waitFor()
-  await progress.getByText('卸载已确认完成 · 此节点全部受管服务',{exact:true}).waitFor()
+  await refresh();await completedHistory('fixture whole-node completed')
+  await maintenance.getByTestId('lifecycle-history').getByText('上次卸载已完成 · 此节点全部受管服务',{exact:true}).waitFor()
   assert(await maintenance.getByRole('button',{name:'安装并接入此节点',exact:true}).isEnabled())
   await assertIdle('completed lifecycle kept polling')
   assert.deepEqual(errors,[])

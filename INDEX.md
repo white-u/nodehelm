@@ -11,6 +11,7 @@
 | VPS 管理执行器 | [management/AGENTS.md](management/AGENTS.md) | Agent、事务、节点生命周期与四个业务模块 |
 | 管理界面 | [web-admin/AGENTS.md](web-admin/AGENTS.md) | 登录、节点、探测、服务、设置及共享组件 |
 | 部署工具 | [scripts/AGENTS.md](scripts/AGENTS.md) | 安装维护、主题、离线打包与工作流 |
+| 监控 Agent | [agent/README.md](agent/README.md) | 指标采集、上报参数与构建 |
 
 主要源码和配置的逐文件职责统一列在各模块文档中。
 
@@ -31,12 +32,12 @@
 | 登录、监控、数据库与分时流量 | [后端功能定位](src/AGENTS.md#按功能定位) |
 | 前端业务目录与导航组合 | [业务文件索引](web-admin/AGENTS.md#业务文件索引) |
 | Snell／SB／FW／PM 配置及驱动 | [四个业务模块入口](management/AGENTS.md#四个业务模块入口) |
-| 节点卡片、配置与管理页签 | [服务管理页面定位](web-admin/AGENTS.md#服务管理页面定位) |
+| 节点卡片单行模块、配置与管理页签、卸载进度与历史 | [服务管理页面定位](web-admin/AGENTS.md#服务管理页面定位) |
 | 服务管理后端接口、模型与生命周期 | [management/](src/management/) |
 | 后台安装维护、组件维护与发行打包 | [部署工具索引](scripts/AGENTS.md)、[组件安装维护](management/install.py) |
 
 ## 相关项目
 
-外部监控 Agent 来自 `monitor-probe/agent`。
+监控 Agent 源码在 [agent/](agent/)，派生自 `monitor-probe/agent` v1.2.3（MIT），随后台发布并嵌入后台。默认主题取自 `monitor-probe/monitor-theme-default`，构建时按 `web-theme.pin` 校验。
 
 新增或移动文件时维护对应模块索引；本页维护导航，使用说明放在上表对应文档中。

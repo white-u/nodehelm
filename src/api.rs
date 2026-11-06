@@ -440,9 +440,9 @@ pub async fn traffic_periods(
 /// How many history windows are built concurrently.
 ///
 /// `span` bounds what one request costs; this bounds how many may run,
-/// closing the same gap `main::RELAY_GATE` and `auth::PASSWORD_GATE` close on
-/// the other two paths an anonymous caller can make expensive. This is the most
-/// expensive of the three: a week of probe results is a scan of 98 ms at four
+/// closing the same gap `auth::PASSWORD_GATE` closes on
+/// the other path an anonymous caller can make expensive. This is the more
+/// expensive of the two: a week of probe results is a scan of 98 ms at four
 /// 60-second probes and 486 ms at eight 10-second ones, growing with the probes
 /// the admin configured rather than with anything the caller sends.
 ///
@@ -699,9 +699,8 @@ pub struct Stream {
     gzip: Option<String>,
 }
 
-/// How many anonymous streams may be open at once. The fourth bound of the
-/// anonymous paths, beside `HISTORY_GATE`, `main::RELAY_GATE` and
-/// `auth::PASSWORD_GATE`: a stream holds a descriptor and a task for as long as
+/// How many anonymous streams may be open at once. The third bound of the
+/// anonymous paths, beside `HISTORY_GATE` and `auth::PASSWORD_GATE`: a stream holds a descriptor and a task for as long as
 /// its page stays open, and at a hundred nodes sends about 7 KB/s of compressed
 /// frames, 55 KB/s to a page that does not ask for gzip. A thousand pages are
 /// 7 to 55 MB/s outbound. Beyond it a page falls back to polling `/api/nodes`,
@@ -1876,15 +1875,8 @@ pub async fn versions(_: Admin, State(app): State<Shared>) -> Json<Value> {
     let latest = if fresh_enough(&cached, Utc::now().timestamp()) {
         cached
     } else {
-        // Both at once: one round trip of latency rather than two, and neither
-        // lookup depends on the other.
-        let (hub, agent) =
-            tokio::join!(latest_tag(&app, crate::HUB_REPO), latest_tag(&app, crate::AGENT_REPO));
-        let read = crate::Releases {
-            read_at: Utc::now().timestamp(),
-            hub: hub.unwrap_or_default(),
-            agent: agent.unwrap_or_default(),
-        };
+        let hub = latest_tag(&app, crate::HUB_REPO).await;
+        let read = crate::Releases { read_at: Utc::now().timestamp(), hub: hub.unwrap_or_default() };
         *app.releases.lock().unwrap() = read.clone();
         read
     };
@@ -1894,7 +1886,9 @@ pub async fn versions(_: Admin, State(app): State<Shared>) -> Json<Value> {
         // update rather than as an error: a hub on a network that cannot reach
         // github.com is a supported deployment, not a fault to report.
         "hub_latest": latest.hub,
-        "agent_latest": latest.agent,
+        // The agent this hub serves, which `install.sh --upgrade` installs: an
+        // agent update arrives with a hub update. Empty in a development build.
+        "agent_latest": crate::AGENT_VERSION,
         // Whether the navigation marks an update. It governs the mark alone: the
         // lookup runs either way, so the update page still answers when opened.
         "notice": app.db.get("update_notice").as_deref() != Some("off"),
@@ -1905,8 +1899,7 @@ pub async fn versions(_: Admin, State(app): State<Shared>) -> Json<Value> {
 /// for [`RELEASES_RETRY`] instead, so a single unreachable moment does not hide
 /// an update for the rest of the day.
 fn fresh_enough(cached: &crate::Releases, now: i64) -> bool {
-    let holds =
-        if cached.hub.is_empty() || cached.agent.is_empty() { RELEASES_RETRY } else { RELEASES_FRESH };
+    let holds = if cached.hub.is_empty() { RELEASES_RETRY } else { RELEASES_FRESH };
     // A negative age is a clock set back since the lookup, not a fresh one.
     cached.read_at != 0 && (0..holds).contains(&(now - cached.read_at))
 }
@@ -1951,8 +1944,7 @@ struct Asset {
 /// fetch is constructed from these two strings, so neither a manifest nor a pasted
 /// address can direct the hub at a host it did not choose, which is why no
 /// private-address check is needed here. The only host that is not github.com
-/// is the GitHub proxy in the panel's settings, configured by the operator and
-/// already used by the agent relay.
+/// is the GitHub proxy in the panel's settings, configured by the operator.
 fn github_repo(url: &str) -> Option<(&str, &str)> {
     let (owner, rest) = url.strip_prefix("https://github.com/")?.split_once('/')?;
     // A link to a branch or a file is still a link to the repository, as is the
@@ -2486,20 +2478,13 @@ mod tests {
     #[test]
     fn a_release_lookup_is_held_for_six_hours_and_a_failed_one_for_ten_minutes() {
         let now = Utc::now().timestamp();
-        let read = |read_at, hub: &str, agent: &str| crate::Releases {
-            read_at,
-            hub: hub.into(),
-            agent: agent.into(),
-        };
+        let read = |read_at, hub: &str| crate::Releases { read_at, hub: hub.into() };
         assert!(!fresh_enough(&crate::Releases::default(), now), "nothing has been read yet");
-        assert!(fresh_enough(&read(now - 5 * 3600, "1.2.0", "1.1.0"), now));
-        assert!(!fresh_enough(&read(now - 7 * 3600, "1.2.0", "1.1.0"), now));
-        assert!(fresh_enough(&read(now - 300, "", ""), now), "a failure is held briefly");
-        assert!(!fresh_enough(&read(now - 1200, "1.2.0", ""), now), "half an answer is a failure");
-        assert!(
-            !fresh_enough(&read(now + 3600, "1.2.0", "1.1.0"), now),
-            "read before the clock was set back"
-        );
+        assert!(fresh_enough(&read(now - 5 * 3600, "1.2.0"), now));
+        assert!(!fresh_enough(&read(now - 7 * 3600, "1.2.0"), now));
+        assert!(fresh_enough(&read(now - 300, ""), now), "a failure is held briefly");
+        assert!(!fresh_enough(&read(now - 1200, ""), now), "and only briefly");
+        assert!(!fresh_enough(&read(now + 3600, "1.2.0"), now), "read before the clock was set back");
     }
 
     fn app_with_site(site: &str) -> App {
@@ -3945,8 +3930,7 @@ mod tests {
 
     /// `span` bounds one window; this bounds how many are built concurrently.
     /// Each holds the reader for its entire scan, and the path takes no
-    /// credentials. `PASSWORD_GATE` refuses the same way; `RELAY_GATE` queues
-    /// briefly instead, as a batch install is one burst of legitimate requests.
+    /// credentials. `PASSWORD_GATE` refuses the same way.
     #[tokio::test]
     async fn history_queries_past_the_gate_are_refused_rather_than_queued() {
         let _serial = HISTORY_TESTS.lock().await;

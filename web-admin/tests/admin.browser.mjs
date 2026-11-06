@@ -21,7 +21,7 @@ try {
   const context=await browser.newContext({viewport:{width:1280,height:900}}),page=await context.newPage(),errors=[]
   page.on('pageerror',error=>errors.push(error.message))
   // Version discovery is external to page wiring; all CRUD below uses real APIs.
-  await page.route('**/api/version',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({hub:'1.0.2',hub_latest:'',agent_latest:'',notice:false})}))
+  await page.route('**/api/version',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({hub:'1.1.0',hub_latest:'',agent_latest:'',notice:false})}))
   // Existing admin Field labels are display labels; scope the input to that field.
   function field(scope,label){return scope.locator('label').filter({hasText:new RegExp('^'+label.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'$')}).locator('..').locator('input').first()}
   async function api(route){const response=await context.request.get(base+route);assert(response.ok(),route);return response.json()}
@@ -67,6 +67,8 @@ try {
   const managementRoute=route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({enabled:true,site:'https://panel.example.com',bound:1,outdated:[nodes[0].id],offline:[nodes[0].id]})})
   await page.route('**/api/management',managementRoute)
   await section('更新','/admin/update');await page.getByRole('heading',{name:'后台',exact:true}).waitFor()
+  // A development hub carries no agent, and says so instead of offering a command that would fail.
+  await page.getByText('此后台构建不含 agent',{exact:true}).waitFor()
   await page.getByRole('heading',{name:'管理组件',exact:true}).waitFor();await page.getByText('1 台待升级',{exact:true}).waitFor();await page.locator('[title="管理组件未连接"]').waitFor()
   await page.getByText('sudo python3 /opt/node-manager/install.py upgrade',{exact:true}).waitFor();await page.getByText(nodes[0].name,{exact:true}).waitFor()
   await page.unroute('**/api/management',managementRoute)

@@ -244,33 +244,22 @@ aarch64 | arm64) ARCH=aarch64 ;;
 *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
-# The hub relays the binary, so a node need only reach the hub it already talks
-# to: an IPv6-only or blocked machine cannot resolve github.com. A hub unable to
-# fetch releases itself is configured with a GitHub proxy in its own settings,
-# which is why none is requested here.
+# The hub serves the agent it was released with, so a node need only reach the
+# hub it already talks to: an IPv6-only or blocked machine cannot resolve
+# github.com.
 URL="${SERVER%/}/agent/$ARCH"
 TMP="$(mktemp)"
 trap 'rm -f "$TMP"' EXIT
 
 echo "downloading monitor-agent ($ARCH)"
-# The hub relays four downloads at once and queues the rest for 30 seconds. A
-# batch run on more machines than drain in that time is turned away with 503,
-# which is retried here rather than failing the machine. Any other refusal is
-# final and shown with the hub's own reason, which --fail would discard.
-TRIES=0
-while :; do
-	CODE=$(curl -sSL --max-time 300 -w '%{http_code}' "$URL" -o "$TMP") || exit 1
-	[ "$CODE" = 503 ] && [ "$TRIES" -lt 5 ] || break
-	TRIES=$((TRIES + 1))
-	echo "the hub is busy relaying to other machines; retrying in 5 seconds"
-	sleep 5
-done
+# A refusal is shown with the hub's own reason, which --fail would discard.
+CODE=$(curl -sSL --max-time 300 -w '%{http_code}' "$URL" -o "$TMP") || exit 1
 [ "$CODE" = 200 ] ||
 	{ printf 'download failed (HTTP %s): %s\n' "$CODE" "$(head -n 1 "$TMP" | cut -c1-500)" >&2; exit 1; }
-# A relay can answer 200 with something other than the program, such as a
-# mirror's error page. Checked before the running agent is stopped, so a batch
-# run through such a relay leaves each machine on the agent it had, rather than
-# on bytes that cannot start while this script reports success.
+# A reverse proxy or CDN can answer 200 with something other than the program,
+# such as its own error page. Checked before the running agent is stopped, so a
+# batch run through such a proxy leaves each machine on the agent it had, rather
+# than on bytes that cannot start while this script reports success.
 [ "$(head -c 4 "$TMP")" = "$(printf '\177ELF')" ] ||
 	{ echo "the download is not a Linux executable: $(head -n 1 "$TMP" | tr -cd '[:print:]' | cut -c1-200)" >&2; exit 1; }
 

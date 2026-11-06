@@ -159,14 +159,15 @@ export function Management({ nodes }: { nodes: Node[] }) {
             <div className="flex items-start justify-between gap-2"><div className="flex min-w-0 items-start gap-3"><Server aria-hidden="true" className="mt-0.5 size-5 shrink-0 text-muted-foreground" /><div className="min-w-0"><h3 className="break-words font-medium">{n.name}</h3><p className="break-all text-xs text-muted-foreground">{[n.group, n.ipv4 || n.ip || n.hostname].filter(Boolean).join(" · ") || `节点 #${n.id}`}</p></div></div><span className={`shrink-0 rounded px-2 py-1 text-xs ${row?.error ? "bg-destructive/10 text-destructive" : status?.online ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"}`}>{row?.error ? "读取失败" : !status ? "读取中" : !status.bound ? "未绑定" : status.online ? "上次读取在线" : "上次读取离线"}</span></div>
             {row?.error && <p className="text-xs text-destructive">{status ? "显示上次配置；刷新成功后可操作。" : row.error}</p>}
             {status?.snapshot?.blocked && <p className="text-xs text-destructive">配置待核实，已暂停写入</p>}
-            {status && !status.bound ? <Button variant="outline" onClick={() => select(n.id)}>接入管理</Button> : <div className="grid grid-cols-2 gap-2" aria-label={`${n.name}的模块`}>{modules.map(id => {
+            {status && !status.bound ? <Button variant="outline" onClick={() => select(n.id)}>接入管理</Button> : <div className="grid gap-2" aria-label={`${n.name}的模块`}>{modules.map(id => {
               const view = moduleView(status, id)
               const active = status?.operations?.some(o => o.module === id && ["queued", "delivered"].includes(o.status))
               const state = !status ? "读取中" : !status.bound ? "待绑定" : !view ? "未上报" : view.blocked ? "待核实" : active ? "执行中" : !view.installed ? "未安装" : `${view.resources.length} 项配置`
               const selected = node === n.id && module === id
-              return <button key={id} type="button" data-testid={`node-module-${n.id}-${id}`} aria-label={`${n.name} · ${names[id]} · ${state}`} aria-pressed={selected} aria-controls="service-detail" onClick={() => select(n.id, id)} className={`flex min-h-16 min-w-0 items-center justify-between gap-2 rounded-lg border px-3 py-2.5 text-left text-sm transition-colors motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${selected ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background hover:bg-muted"}`}>
-                <span className="min-w-0"><span className="block font-medium">{names[id]}</span><span className={`mt-1 block text-xs ${selected ? "text-primary-foreground" : "text-muted-foreground"}`}>{state}</span></span>
-                {selected && <ArrowDownRight aria-hidden="true" className="size-4 shrink-0" />}
+              return <button key={id} type="button" data-testid={`node-module-${n.id}-${id}`} aria-label={`${n.name} · ${names[id]} · ${state}`} aria-pressed={selected} aria-controls="service-detail" onClick={() => select(n.id, id)} className={`flex min-h-11 min-w-0 items-center gap-2 whitespace-nowrap rounded-lg border px-3 py-2.5 text-left text-sm transition-colors motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${selected ? "border-primary bg-primary text-primary-foreground" : "border-border bg-background hover:bg-muted"}`}>
+                <span className="flex-1 font-medium">{names[id]}</span>
+                <span className={`shrink-0 text-xs ${selected ? "text-primary-foreground" : "text-muted-foreground"}`}>{state}</span>
+                <ArrowDownRight aria-hidden="true" className={`size-4 shrink-0 ${selected ? "" : "invisible"}`} />
               </button>
             })}</div>}
             {row?.updatedAt && <p className="text-xs tabular-nums text-muted-foreground">读取于 {new Date(row.updatedAt).toLocaleTimeString()}</p>}

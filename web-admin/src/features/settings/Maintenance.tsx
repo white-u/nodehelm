@@ -357,6 +357,7 @@ export function Data() {
 
 // Hub and agent are published from different accounts; the hub entry matches HUB_REPO in main.rs.
 const hubUpdate = 'curl -fsSL https://github.com/white-u/nodehelm/releases/latest/download/nodehelm.sh | sudo sh'
+const updateDocs = "https://github.com/white-u/nodehelm/blob/main/DEPLOY.md#6-更新与回退"
 const componentUpgrade = "sudo python3 /opt/node-manager/install.py upgrade"
 const releaseUrl = (repo: string, version: string) => `https://github.com/${repo}/releases/tag/v${version}`
 
@@ -400,7 +401,7 @@ export function Update({ versions, reload, nodes, site, refusal }: {
   const outdated = outdatedAgents(nodes, versions.agent_latest)
   const offline = outdated.filter((n) => !n.online).length
   const upgrade = refusal ? "" : upgradeCommand(site)
-  const unreachable = !versions.hub_latest && !versions.agent_latest
+  const unreachable = !versions.hub_latest
 
   // Applied on the spot: one switch, and the navigation changes with it.
   async function setNotice(on: boolean) {
@@ -420,7 +421,7 @@ export function Update({ versions, reload, nodes, site, refusal }: {
       {unreachable && (
         <Card className="p-5">
           <p className="text-sm text-muted-foreground">
-            查不到最新版本：这台 hub 连不上 api.github.com。GitHub 代理不作用于这一项。
+            查不到后台最新版本：这台 hub 连不上 api.github.com。GitHub 代理不作用于这一项。
           </p>
         </Card>
       )}
@@ -460,17 +461,17 @@ export function Update({ versions, reload, nodes, site, refusal }: {
           <span className="text-xs text-muted-foreground">
             {versions.agent_latest
               ? outdated.length
-                ? <>最新 v{versions.agent_latest} · <span className="font-medium text-foreground">{outdated.length} 台待升级</span></>
-                : `全部已是最新 v${versions.agent_latest}`
-              : "查不到版本"}
+                ? <>本后台提供 v{versions.agent_latest} · <span className="font-medium text-foreground">{outdated.length} 台待升级</span></>
+                : `全部已是本后台提供的 v${versions.agent_latest}`
+              : "此后台构建不含 agent"}
           </span>
         </div>
-        {/* Also where the lookup failed: the command does not depend on it, and a
-            hub that fetches agents through the GitHub proxy cannot read tags. */}
-        {(outdated.length > 0 || !versions.agent_latest) && (
+        {/* The agent arrives with the hub: a development build serves none, so
+            its command would only fail. */}
+        {outdated.length > 0 && versions.agent_latest && (
           <>
             <p className="text-xs leading-relaxed text-muted-foreground">
-              以 root 在每台机器上执行一次。不含凭证，沿用机器上已有的设置，不会新建节点。
+              agent 随后台发布，从本后台下载。以 root 在每台机器上执行一次，不含凭证，沿用机器上已有的设置，不会新建节点；已接入服务管理的节点也可运行 sudo nodehelm upgrade。
             </p>
             {upgrade ? (
               <>
@@ -479,16 +480,9 @@ export function Update({ versions, reload, nodes, site, refusal }: {
                   <Button size="sm" variant="secondary" onClick={() => copy(upgrade)}>
                     <Copy className="size-4" /> 复制命令
                   </Button>
-                  {versions.agent_latest && (
-                    <Button size="sm" variant="ghost" asChild>
-                      <a href={releaseUrl("monitor-probe/agent", versions.agent_latest)} target="_blank" rel="noreferrer">
-                        发布说明
-                      </a>
-                    </Button>
-                  )}
                   <Button size="sm" variant="ghost" asChild>
-                    <a href="https://monitor-document.pages.dev/install/batch" target="_blank" rel="noreferrer">
-                      批量升级的做法
+                    <a href={updateDocs} target="_blank" rel="noreferrer">
+                      更新说明
                     </a>
                   </Button>
                 </div>
