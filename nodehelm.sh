@@ -108,6 +108,13 @@ latest_tag() {
 	echo "${tag##*/}"
 }
 
+# Whether the installed hub is release $1, read from that release's checksum
+# list alone: 0 yes, 1 no, 2 the list could not be read.
+is_release() {
+	SUMS=$(curl -fsSL --proto '=https' -m 20 "https://github.com/$REPO/releases/download/$1/sha256sums.txt" 2>/dev/null) || return 2
+	echo "$SUMS" | grep -q "^$(sha256sum "$CODE/monitor-hub" | cut -d' ' -f1)  monitor-hub-$ARCH-unknown-linux-musl\$"
+}
+
 # Fetches and verifies the release package into $PKG.
 fetch() {
 	WORK=$(mktemp -d)
@@ -232,6 +239,14 @@ print(m[1],m[2]) if m else sys.exit(1)' "$PLAN") || die "安装恢复记录无�
 
 do_update() {
 	need_installed
+	# Already current is answered from the checksum list, without the package.
+	# Still downloaded when the local command or tools are missing, as after a
+	# manual install-hub.sh, since this is how they are added.
+	if [ -z "$PACKAGE" ] && [ -x "$CODE/nodehelm-hub" ] && [ -f "$TOOLS/hub-lifecycle.py" ] &&
+		TAG=$(latest_tag) && is_release "$TAG"; then
+		echo "后台已是 $TAG，无需更新。"
+		return
+	fi
 	fetch
 	if cmp -s "$PKG/monitor-hub" "$CODE/monitor-hub"; then
 		echo "后台已是 $TAG，无需更新。"
@@ -249,15 +264,14 @@ do_status() {
 	echo "服务: $(systemctl is-active "$UNIT" || true)"
 	echo "地址: $(site)/admin/（本机 $L）"
 	echo "本机检查: HTTP $(curl -s -o /dev/null -m 5 -w '%{http_code}' "http://$L/api/me" || true)"
-	if TAG=$(latest_tag 2>/dev/null) &&
-		SUMS=$(curl -fsSL --proto '=https' -m 20 "https://github.com/$REPO/releases/download/$TAG/sha256sums.txt" 2>/dev/null); then
-		if echo "$SUMS" | grep -q "^$(sha256sum "$CODE/monitor-hub" | cut -d' ' -f1)  monitor-hub-$ARCH"; then
-			echo "版本: 已是最新 $TAG"
-		else
-			echo "版本: 有新版本 $TAG，运行 sudo nodehelm-hub update 更新"
-		fi
-	else
+	if ! TAG=$(latest_tag 2>/dev/null); then
 		echo "版本: 无法访问 GitHub，未检查"
+	elif is_release "$TAG"; then
+		echo "版本: 已是最新 $TAG"
+	elif [ $? = 2 ]; then
+		echo "版本: 无法访问 GitHub，未检查"
+	else
+		echo "版本: 有新版本 $TAG，运行 sudo nodehelm-hub update 更新"
 	fi
 }
 
