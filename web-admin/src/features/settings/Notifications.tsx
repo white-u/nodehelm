@@ -263,6 +263,9 @@ export function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void 
           <Field label="流量提醒（%）" hint="本期用量达到该比例和 100% 时各提醒一次，0 关闭">
             <Input type="number" min={0} max={100} value={text("notify_traffic")} onChange={(e) => set("notify_traffic", e.target.value)} />
           </Field>
+          <Field label="PM 流量阈值（%）" hint="PM 端口本期用量达到各比例时提醒一次，逗号分隔；100% 即配额用尽，始终提醒">
+            <Input value={text("notify_pm_thresholds")} onChange={(e) => set("notify_pm_thresholds", e.target.value)} />
+          </Field>
           <Field label="到期提醒（天）" hint="每天 9 点汇总这么多天内到期的节点，自动续期时也提醒，0 关闭">
             <Input type="number" min={0} max={365} value={text("notify_expiry")} onChange={(e) => set("notify_expiry", e.target.value)} />
           </Field>
@@ -273,7 +276,7 @@ export function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void 
         </div>
         <div className="flex items-center gap-2 text-sm">
           <Switch aria-labelledby="notify-management-label" checked={s.notify_management !== "off"} onCheckedChange={(v) => set("notify_management", v ? "on" : "off")} />
-          <span id="notify-management-label">服务管理需要关注时提醒（操作失败、配置漂移、PM 配额与到期、管理组件离线）</span>
+          <span id="notify-management-label">服务管理需要关注时提醒（操作失败、配置漂移、PM 流量阈值、到期与异常接入、管理组件离线）</span>
         </div>
         <div>
           <Button
@@ -283,6 +286,7 @@ export function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void 
                 notify_grace: text("notify_grace"),
                 notify_traffic: text("notify_traffic"),
                 notify_expiry: text("notify_expiry"),
+                notify_pm_thresholds: text("notify_pm_thresholds"),
                 notify_login: s.notify_login === "off" ? "off" : "on",
                 notify_management: s.notify_management === "off" ? "off" : "on",
               })

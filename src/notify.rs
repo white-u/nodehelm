@@ -4,8 +4,8 @@
 //!
 //! Events: a node going offline and returning, a billing period's traffic
 //! crossing the threshold and the full allowance, expiry dates approaching or
-//! rolled forward, a sign-in to the panel, and service management needing
-//! attention.
+//! rolled forward, a sign-in to the panel, service management needing
+//! attention, PM quota thresholds and PM ports with too many client addresses.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::IpAddr;
@@ -114,6 +114,8 @@ pub fn settings(app: &App, out: &mut serde_json::Map<String, Value>) {
     out.insert("notify_login".into(), json!(login));
     let management = if app.db.get("notify_management").as_deref() == Some("off") { "off" } else { "on" };
     out.insert("notify_management".into(), json!(management));
+    let steps = pm_thresholds(app).iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+    out.insert("notify_pm_thresholds".into(), json!(steps));
     out.insert("notify_telegram_chat".into(), json!(app.db.get("notify_telegram_chat").unwrap_or_default()));
     out.insert("notify_telegram_text".into(), json!(template(app, "notify_telegram_text", DEFAULT_TEXT)));
     out.insert("notify_webhook_body".into(), json!(template(app, "notify_webhook_body", DEFAULT_BODY)));
@@ -135,6 +137,9 @@ pub fn setting_error(key: &str, value: &str) -> Option<String> {
     let problem = match key {
         "notify_login" => (!matches!(value, "on" | "off")).then_some("登录提醒只能是 on 或 off"),
         "notify_management" => (!matches!(value, "on" | "off")).then_some("服务管理提醒只能是 on 或 off"),
+        "notify_pm_thresholds" => {
+            thresholds(value).is_none().then_some("PM 流量阈值要填 1 到 100 的整数，逗号分隔，最多 5 个")
+        }
         "notify_webhook_headers" => return parse_headers(value).err(),
         // Empty clears a channel's field, or restores a template's default.
         "notify_telegram_token"
@@ -432,17 +437,113 @@ pub fn signed_in(app: &App, how: &str, ip: IpAddr) {
     }
 }
 
+/// Percents of a PM quota that each send one alert per billing period, as the
+/// original PM tool's `telegram.thresholds`. 100 is always included: it is the
+/// quota-reached alert.
+fn thresholds(value: &str) -> Option<Vec<u64>> {
+    let mut steps = value
+        .split(',')
+        .map(|s| s.trim().parse::<u64>().ok().filter(|n| (1..=100).contains(n)))
+        .collect::<Option<Vec<_>>>()?;
+    steps.push(100);
+    steps.sort_unstable();
+    steps.dedup();
+    (steps.len() <= 5).then_some(steps)
+}
+
+pub fn pm_thresholds(app: &App) -> Vec<u64> {
+    app.db.get("notify_pm_thresholds").and_then(|v| thresholds(&v)).unwrap_or_else(|| vec![50, 80, 100])
+}
+
+/// One PM port with more distinct client addresses than its limit allows.
+#[derive(Debug)]
+pub struct IpAlert {
+    pub port: String,
+    pub name: String,
+    pub count: u64,
+    pub max: u64,
+    pub level: u64,
+    pub ips: Vec<String>,
+}
+
 /// What one management poll found worth reporting about its node.
-pub fn management(app: &App, node: i64, items: Vec<String>) {
-    if items.is_empty() || app.db.get("notify_management").as_deref() == Some("off") {
+pub fn management(app: &Shared, node: i64, items: Vec<String>, ips: Vec<IpAlert>) {
+    if (items.is_empty() && ips.is_empty()) || app.db.get("notify_management").as_deref() == Some("off") {
         return;
     }
     let name = app.db.node(node).ok().flatten().map_or_else(|| format!("节点 {node}"), |n| n.name);
-    let title = format!("🟠 {name} 服务管理需要关注");
-    send(
-        app,
-        Note { event: "management", node: name, title, message: items.join("\n"), ..Default::default() },
-    );
+    if !items.is_empty() {
+        let title = format!("🟠 {name} 服务管理需要关注");
+        let message = items.join("\n");
+        send(app, Note { event: "management", node: name.clone(), title, message, ..Default::default() });
+    }
+    if ips.is_empty() {
+        return;
+    }
+    // The lookup waits up to 3 s, so it runs after the poll has answered.
+    let app = app.clone();
+    tokio::spawn(async move {
+        for alert in ips {
+            let places = places(&alert.ips).await;
+            send(&app, ip_note(&name, &alert, &places));
+        }
+    });
+}
+
+/// Country, region and ISP per address from ip-api.com's free batch endpoint,
+/// as the original PM tool asks. It only answers over plain HTTP; addresses it
+/// cannot place are left out and shown as failed.
+async fn places(ips: &[String]) -> HashMap<String, String> {
+    let request = client()
+        .post("http://ip-api.com/batch?fields=status,country,regionName,isp,query&lang=zh-CN")
+        .timeout(Duration::from_secs(3))
+        .json(ips);
+    let Ok(response) = request.send().await else { return HashMap::new() };
+    let rows: Vec<Value> = response.json().await.unwrap_or_default();
+    rows.iter()
+        .filter(|row| row["status"] == "success")
+        .filter_map(|row| {
+            let place = ["country", "regionName", "isp"]
+                .iter()
+                .filter_map(|key| row[key].as_str().filter(|s| !s.is_empty()))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Some((row["query"].as_str()?.to_owned(), place))
+        })
+        .collect()
+}
+
+/// The original PM tool's wording, in plain text like every other alert.
+pub(crate) fn ip_note(node: &str, alert: &IpAlert, places: &HashMap<String, String>) -> Note {
+    let (title, level) = if alert.level >= 2 {
+        ("🔴 异常接入升级", format!("高风险（超过 {} IP）", alert.max + 2))
+    } else {
+        ("🚨 异常接入警报", "普通超限".to_owned())
+    };
+    let mut lines = vec![
+        format!(
+            "端口 {}{}",
+            alert.port,
+            if alert.name.is_empty() { String::new() } else { format!("（{}）", alert.name) }
+        ),
+        format!("在线 {} IP · 阈值 {} IP · 等级 {level}", alert.count, alert.max),
+        "当前连接：".to_owned(),
+    ];
+    for (i, ip) in alert.ips.iter().enumerate() {
+        let place = places.get(ip).filter(|p| !p.is_empty()).map_or("(查询失败)", String::as_str);
+        lines.push(format!("{}. {ip} - {place}", i + 1));
+    }
+    if alert.count > alert.ips.len() as u64 {
+        lines.push(format!("... 仅显示前 {} 条", alert.ips.len()));
+    }
+    lines.push("建议检查密码或重启服务".to_owned());
+    Note {
+        event: "ip_alert",
+        node: node.to_owned(),
+        title: format!("{title} · {node}"),
+        message: lines.join("\n"),
+        ..Default::default()
+    }
 }
 
 /// Expiry dates that housekeeping rolled forward, as `(name, "old → new")`.

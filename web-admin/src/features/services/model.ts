@@ -3,8 +3,11 @@ import { api, type Node } from "../../lib/api.ts"
 export type Module = "snell" | "sb" | "fw" | "pm"
 export type ApplyIntent = "create" | "update"
 export type Resource = { name: string; port: number; host?: string; public_port?: number; mode?: string; psk?: string; protocol?: string; sni?: string; target_host?: string; target_port?: number }
-export type PmPolicy = Resource & { quota_gb: number; quota_mode: "in_out" | "out_only"; reset_day: number; expiry_date: string; egress_mbps: number }
-export type PmUsage = { rx: number; tx: number; sampled_at: number; period_start: string; alert: string }
+export type IpLimit = { max_ips: number; cooldown_min: number; whitelist: string[] }
+export type PmPolicy = Resource & { quota_gb: number; quota_mode: "in_out" | "out_only"; reset_day: number; expiry_date: string; egress_mbps: number; ip_limit?: IpLimit }
+export type PmUsage = { rx: number; tx: number; sampled_at: number; period_start: string; alert: string; ip_count?: number; ip_level?: number; ip_list?: string[] }
+/** The PM form: the IP limit flattened, 0 meaning off, and the whitelist as typed. */
+export type PmDraft = Omit<PmPolicy, "ip_limit"> & { max_ips: number; cooldown_min: number; whitelist: string }
 export type CoreAction = "core_upgrade" | "core_rollback" | "core_uninstall"
 export type Core = { version: string | null; sha256: string | null; previous_version: string | null; candidates: string[] }
 export type Snapshot = { core?: Core; usage?: Record<string, PmUsage>; runtime?: Record<string, string>; installed: boolean; blocked: boolean; revision: string; resources: Resource[] }
@@ -62,6 +65,13 @@ export async function readManagement<T>(path: string): Promise<T> {
 
 export type NodeStatus = { status?: Status; error?: string; loading: boolean; updatedAt?: number }
 export const modules = Object.keys(names) as Module[]
+export function pmDraft({ ip_limit, ...rule }: PmPolicy): PmDraft {
+  return { ...rule, max_ips: ip_limit?.max_ips ?? 0, cooldown_min: ip_limit?.cooldown_min ?? 30, whitelist: ip_limit?.whitelist.join("\n") ?? "" }
+}
+/** An IP limit of 0 is left out, so the rule keeps the shape older components accept. */
+export function pmPayload({ max_ips, cooldown_min, whitelist, ...rule }: PmDraft): PmPolicy {
+  return max_ips ? { ...rule, ip_limit: { max_ips, cooldown_min, whitelist: whitelist.split(/[\s,，]+/).filter(Boolean) } } : rule
+}
 export function moduleView(status: Status | undefined, module: Module) {
   return module === "snell" ? status?.snapshot : status?.snapshot?.modules?.[module]
 }

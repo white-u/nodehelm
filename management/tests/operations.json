@@ -539,6 +539,233 @@
   "valid": true
  },
  {
+  "module": "pm",
+  "action": "apply",
+  "payload": {
+   "port": 8443,
+   "name": "quota",
+   "quota_gb": 100,
+   "quota_mode": "in_out",
+   "reset_day": 1,
+   "expiry_date": "",
+   "egress_mbps": 0,
+   "ip_limit": {
+    "max_ips": 3,
+    "cooldown_min": 30,
+    "whitelist": [
+     "203.0.113.7",
+     "2001:db8::1",
+     "::ffff:198.51.100.2"
+    ]
+   }
+  },
+  "valid": true
+ },
+ {
+  "module": "pm",
+  "action": "apply",
+  "payload": {
+   "port": 8443,
+   "name": "quota",
+   "quota_gb": 100,
+   "quota_mode": "in_out",
+   "reset_day": 1,
+   "expiry_date": "",
+   "egress_mbps": 0,
+   "ip_limit": {
+    "max_ips": 0,
+    "cooldown_min": 30,
+    "whitelist": [
+     "203.0.113.7",
+     "2001:db8::1",
+     "::ffff:198.51.100.2"
+    ]
+   }
+  },
+  "valid": false
+ },
+ {
+  "module": "pm",
+  "action": "apply",
+  "payload": {
+   "port": 8443,
+   "name": "quota",
+   "quota_gb": 100,
+   "quota_mode": "in_out",
+   "reset_day": 1,
+   "expiry_date": "",
+   "egress_mbps": 0,
+   "ip_limit": {
+    "max_ips": 3,
+    "cooldown_min": 525601,
+    "whitelist": [
+     "203.0.113.7",
+     "2001:db8::1",
+     "::ffff:198.51.100.2"
+    ]
+   }
+  },
+  "valid": false
+ },
+ {
+  "module": "pm",
+  "action": "apply",
+  "payload": {
+   "port": 8443,
+   "name": "quota",
+   "quota_gb": 100,
+   "quota_mode": "in_out",
+   "reset_day": 1,
+   "expiry_date": "",
+   "egress_mbps": 0,
+   "ip_limit": {
+    "max_ips": 3,
+    "cooldown_min": 30
+   }
+  },
+  "valid": false
+ },
+ {
+  "module": "pm",
+  "action": "apply",
+  "payload": {
+   "port": 8443,
+   "name": "quota",
+   "quota_gb": 100,
+   "quota_mode": "in_out",
+   "reset_day": 1,
+   "expiry_date": "",
+   "egress_mbps": 0,
+   "ip_limit": {
+    "max_ips": 3,
+    "cooldown_min": 30,
+    "whitelist": [
+     "203.0.113.7",
+     "2001:db8::1",
+     "::ffff:198.51.100.2"
+    ],
+    "action": "block"
+   }
+  },
+  "valid": false
+ },
+ {
+  "module": "pm",
+  "action": "apply",
+  "payload": {
+   "port": 8443,
+   "name": "quota",
+   "quota_gb": 100,
+   "quota_mode": "in_out",
+   "reset_day": 1,
+   "expiry_date": "",
+   "egress_mbps": 0,
+   "ip_limit": {
+    "max_ips": 3,
+    "cooldown_min": 30,
+    "whitelist": [
+     "203.0.113.0/24"
+    ]
+   }
+  },
+  "valid": false
+ },
+ {
+  "module": "pm",
+  "action": "apply",
+  "payload": {
+   "port": 8443,
+   "name": "quota",
+   "quota_gb": 100,
+   "quota_mode": "in_out",
+   "reset_day": 1,
+   "expiry_date": "",
+   "egress_mbps": 0,
+   "ip_limit": {
+    "max_ips": 3,
+    "cooldown_min": 30,
+    "whitelist": [
+     "fe80::1%eth0"
+    ]
+   }
+  },
+  "valid": false
+ },
+ {
+  "module": "pm",
+  "action": "apply",
+  "payload": {
+   "port": 8443,
+   "name": "quota",
+   "quota_gb": 100,
+   "quota_mode": "in_out",
+   "reset_day": 1,
+   "expiry_date": "",
+   "egress_mbps": 0,
+   "ip_limit": {
+    "max_ips": 3,
+    "cooldown_min": 30,
+    "whitelist": [
+     " 203.0.113.7"
+    ]
+   }
+  },
+  "valid": false
+ },
+ {
+  "module": "pm",
+  "action": "apply",
+  "payload": {
+   "port": 8443,
+   "name": "quota",
+   "quota_gb": 100,
+   "quota_mode": "in_out",
+   "reset_day": 1,
+   "expiry_date": "",
+   "egress_mbps": 0,
+   "ip_limit": {
+    "max_ips": 3,
+    "cooldown_min": 30,
+    "whitelist": [
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7",
+     "203.0.113.7"
+    ]
+   }
+  },
+  "valid": false
+ },
+ {
   "module": "sb",
   "action": "reset",
   "payload": {

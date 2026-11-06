@@ -4283,6 +4283,7 @@ mod tests {
             "notify_expiry": read["notify_expiry"],
             "notify_login": read["notify_login"],
             "notify_management": read["notify_management"],
+            "notify_pm_thresholds": read["notify_pm_thresholds"],
             "notify_telegram_chat": read["notify_telegram_chat"],
             "notify_telegram_text": read["notify_telegram_text"],
             "notify_webhook_body": read["notify_webhook_body"],

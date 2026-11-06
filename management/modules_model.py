@@ -6,10 +6,29 @@ import re
 from model import Rejected, address
 
 
+def ip_limit(value):
+    """Present only when on: rules without it keep their earlier revision."""
+    if not isinstance(value, dict) or set(value) != {'max_ips', 'cooldown_min', 'whitelist'}:
+        raise Rejected('IP 告警设置格式错误')
+    limit, cooldown, allowed = value['max_ips'], value['cooldown_min'], value['whitelist']
+    if (type(limit) is not int or not 1 <= limit <= 65535 or type(cooldown) is not int
+            or not 1 <= cooldown <= 525600 or not isinstance(allowed, list) or len(allowed) > 32):
+        raise Rejected('IP 上限须为 1–65535，冷却 1–525600 分钟，白名单最多 32 个')
+    try:
+        if any(not isinstance(item, str) or '%' in item for item in allowed):
+            raise ValueError()
+        ips = [ipaddress.ip_address(item) for item in allowed]
+    except ValueError:
+        raise Rejected('IP 白名单只能填写 IP 地址') from None
+    whitelist = sorted({str(getattr(ip, 'ipv4_mapped', None) or ip) for ip in ips},
+                       key=lambda item: (':' in item, ipaddress.ip_address(item)))
+    return dict(max_ips=limit, cooldown_min=cooldown, whitelist=whitelist)
+
+
 def resource(value, module):
     common = {'port', 'name'}
     if module == 'pm':
-        fields = common | {'quota_gb', 'quota_mode', 'reset_day', 'expiry_date', 'egress_mbps'}
+        fields = common | {'quota_gb', 'quota_mode', 'reset_day', 'expiry_date', 'egress_mbps', 'ip_limit'}
     else:
         fields = common | ({'host', 'public_port', 'protocol', 'sni', 'psk'} if module == 'sb' else {'target_host', 'target_port'})
     if not isinstance(value, dict) or set(value) - fields:
@@ -34,8 +53,11 @@ def resource(value, module):
                     raise ValueError()
             except ValueError:
                 raise Rejected('PM 到期日期须为 YYYY-MM-DD') from None
-        return dict(port=port, name=name, quota_gb=quota, quota_mode=mode, reset_day=reset_day,
+        rule = dict(port=port, name=name, quota_gb=quota, quota_mode=mode, reset_day=reset_day,
                     expiry_date=expiry, egress_mbps=rate)
+        if 'ip_limit' in value:
+            rule['ip_limit'] = ip_limit(value['ip_limit'])
+        return rule
     if module == 'fw':
         try: target = str(ipaddress.IPv4Address(value.get('target_host', '')))
         except (ValueError, TypeError): raise Rejected('目标必须为有效 IPv4 地址') from None

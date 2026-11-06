@@ -1,6 +1,6 @@
 /// <reference types="node" />
 import assert from "node:assert/strict"
-import { editable, instancePayload, newResource } from "./model.ts"
+import { editable, instancePayload, newResource, pmDraft, pmPayload, type PmPolicy } from "./model.ts"
 
 const draft = newResource("snell", "example.com")
 assert.equal(draft.name, "")
@@ -23,3 +23,10 @@ assert.equal(instancePayload("sb", { ...sb, name: "", protocol: "ss2022", sni: "
 assert.equal(instancePayload("sb", { ...sb, name: "", port: 34567 }).name, "34567")
 assert.equal(instancePayload("fw", { name: "", port: 12345 }).name, "", "other module validation remains unchanged")
 console.log("service name defaults, hidden configuration preservation and SB field switching passed")
+
+const pm: PmPolicy = { port: 23456, name: "PM", quota_gb: 0, quota_mode: "in_out", reset_day: 0, expiry_date: "", egress_mbps: 0 }
+assert.deepEqual(pmPayload(pmDraft(pm)), pm, "a rule without an IP limit keeps its earlier shape")
+const limitedDraft = { ...pmDraft(pm), max_ips: 3, whitelist: " 203.0.113.7,2001:db8::1\n\n198.51.100.2，" }
+assert.deepEqual(pmPayload(limitedDraft).ip_limit, { max_ips: 3, cooldown_min: 30, whitelist: ["203.0.113.7", "2001:db8::1", "198.51.100.2"] })
+assert.deepEqual(pmPayload(pmDraft(pmPayload(limitedDraft))), pmPayload(limitedDraft))
+assert.equal("ip_limit" in pmPayload({ ...limitedDraft, max_ips: 0 }), false, "0 turns the check off")

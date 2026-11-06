@@ -3,7 +3,7 @@ use crate::{
     api::{fail, Admin},
     auth::{random_token, sha256},
     db::Db,
-    Shared,
+    notify, Shared,
 };
 use anyhow::{Context, Result};
 use axum::{
@@ -873,6 +873,7 @@ pub async fn poll(State(app): State<Shared>, headers: HeaderMap, Json(input): Js
         let component = reported_component(&headers);
         let is_enabled = app.db.get("management_enabled").as_deref() == Some("on")
             && app.db.get("hub_lifecycle_maintenance").as_deref() != Some("on");
+        let thresholds = notify::pm_thresholds(&app);
         let mut c = app.db.conn();
         let tx = c.transaction()?;
         let authorized: i64 = tx.query_row(
@@ -887,10 +888,11 @@ pub async fn poll(State(app): State<Shared>, headers: HeaderMap, Json(input): Js
             tx.query_row("SELECT snapshot FROM managed_node WHERE node=?1", [node], |r| r.get(0))?;
         // The first report after binding has nothing to compare against, and an
         // unreadable one must not cost the poll that replaces it.
-        let mut notes = if previous.is_empty() {
-            Vec::new()
+        let (mut notes, ip_alerts) = if previous.is_empty() {
+            Default::default()
         } else {
-            open(&bytes, node, &previous).map_or_else(|_| Vec::new(), |old| snapshot_events(&old, &plain))
+            open(&bytes, node, &previous)
+                .map_or_else(|_| Default::default(), |old| snapshot_events(&old, &plain, &thresholds))
         };
         if let Some(result) = &input.result {
             if !valid_hex(&result.id, 32)
@@ -1005,34 +1007,86 @@ pub async fn poll(State(app): State<Shared>, headers: HeaderMap, Json(input): Js
         tx.commit()?;
         // Naming the node reads the database, so the writer lock goes first.
         drop(c);
-        crate::notify::management(&app, node, notes);
+        notify::management(&app, node, notes, ip_alerts);
         Ok(json!({"task":task,"enabled":is_enabled,"lifecycle":lifecycle,"lifecycle_ack":lifecycle_ack}))
     })())
 }
 /// What became worth telling an administrator between two reports. The page reads
-/// on demand, so nobody is looking when a quota runs out. Fixed wording and ports
-/// only: a report carries client secrets beside these fields.
-fn snapshot_events(old: &Value, new: &Value) -> Vec<String> {
-    let mut events = Vec::new();
+/// on demand, so nobody is looking when a quota runs out. Fixed wording, ports and
+/// rule names only: a report carries client secrets beside these fields.
+///
+/// Usage is compared against `thresholds` (ascending percents ending at 100) in
+/// both reports, so each step sounds once per billing period; the 100 % step is
+/// the quota-reached message.
+fn snapshot_events(old: &Value, new: &Value, thresholds: &[u64]) -> (Vec<String>, Vec<notify::IpAlert>) {
+    let (mut events, mut ips) = (Vec::new(), Vec::new());
     if new["blocked"] == true && old["blocked"] != true {
         events.push("配置漂移或有未恢复事务，已暂停写入，请在 VPS 核实".to_owned());
     }
-    if let Some(usage) = new["modules"]["pm"]["usage"].as_object() {
-        for (port, state) in usage {
-            let alert = state["alert"].as_str().unwrap_or_default();
-            let what = match alert {
-                "quota_warning" => "用量已达配额 80%",
-                "quota_reached" => "已达配额，匹配流量已被丢弃",
-                "expired" => "已到期，匹配流量已被阻断",
-                "legacy_conflict" => "与原 PM 端口冲突，受管规则已暂停",
-                _ => continue,
-            };
-            if old["modules"]["pm"]["usage"][port.as_str()]["alert"].as_str() != Some(alert) {
-                events.push(format!("PM 端口 {port}：{what}"));
-            }
+    let Some(usage) = new["modules"]["pm"]["usage"].as_object() else { return (events, ips) };
+    for (port, state) in usage {
+        let (rule, before) = (rule_of(new, port), &old["modules"]["pm"]["usage"][port.as_str()]);
+        let alert = state["alert"].as_str().unwrap_or_default();
+        let what = match alert {
+            "expired" => Some("已到期，匹配流量已被阻断"),
+            "legacy_conflict" => Some("与原 PM 端口冲突，受管规则已暂停"),
+            _ => None,
+        };
+        if let Some(what) = what.filter(|_| before["alert"].as_str() != Some(alert)) {
+            events.push(format!("PM 端口 {port}：{what}"));
+        }
+        let step = threshold(state, &rule, thresholds);
+        let was = if before["period_start"] == state["period_start"] {
+            threshold(before, &rule_of(old, port), thresholds)
+        } else {
+            0
+        };
+        if step > was {
+            events.push(if step >= 100 {
+                format!("PM 端口 {port}：已达配额，匹配流量已被丢弃")
+            } else {
+                format!("PM 端口 {port}：用量已达配额 {step}%")
+            });
+        }
+        let level = state["ip_level"].as_u64().unwrap_or(0);
+        if level > 0 && state["ip_alert"] != before["ip_alert"] {
+            ips.push(notify::IpAlert {
+                port: port.clone(),
+                name: rule["name"].as_str().unwrap_or_default().to_owned(),
+                count: state["ip_count"].as_u64().unwrap_or(0),
+                max: rule["ip_limit"]["max_ips"].as_u64().unwrap_or(0),
+                level,
+                ips: state["ip_list"]
+                    .as_array()
+                    .map(|l| l.iter().filter_map(|ip| ip.as_str().map(str::to_owned)).collect())
+                    .unwrap_or_default(),
+            });
         }
     }
-    events
+    (events, ips)
+}
+fn rule_of(snapshot: &Value, port: &str) -> Value {
+    snapshot["modules"]["pm"]["resources"]
+        .as_array()
+        .and_then(|rules| rules.iter().find(|r| r["port"].as_u64() == port.parse().ok()))
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+/// The highest threshold a report's usage has reached, 0 for none. Counting
+/// follows the rule's billing direction; a quota the node reports as reached is
+/// 100 % even if the counters lag the nftables quota.
+fn threshold(usage: &Value, rule: &Value, thresholds: &[u64]) -> u64 {
+    let quota = rule["quota_gb"].as_u64().unwrap_or(0) as u128 * (1 << 30);
+    if quota == 0 || !matches!(usage["alert"].as_str(), Some("normal" | "quota_warning" | "quota_reached")) {
+        return 0;
+    }
+    if usage["alert"] == "quota_reached" {
+        return 100;
+    }
+    let tx = usage["tx"].as_u64().unwrap_or(0) as u128;
+    let used =
+        if rule["quota_mode"] == "out_only" { tx } else { tx + usage["rx"].as_u64().unwrap_or(0) as u128 };
+    thresholds.iter().copied().filter(|&t| used * 100 >= quota * t as u128).max().unwrap_or(0)
 }
 /// Bound nodes whose component stopped polling though nothing explains it: not
 /// one uninstalling, which stops its own agent, nor one under local maintenance.
@@ -1578,16 +1632,71 @@ mod lifecycle_tests {
     }
     #[test]
     fn snapshot_events_report_transitions_once_and_no_secrets() {
+        let steps = [50, 80, 100];
         let state = |blocked: bool, alert: &str| {
             json!({"blocked":blocked,"resources":[{"psk":"secret-value"}],
                 "modules":{"pm":{"usage":{"12345":{"alert":alert}}}}})
         };
-        assert!(snapshot_events(&state(false, "normal"), &state(false, "normal")).is_empty());
-        let raised = snapshot_events(&state(false, "normal"), &state(true, "quota_reached"));
+        let events = |old: &Value, new: &Value| snapshot_events(old, new, &steps).0;
+        assert!(events(&state(false, "normal"), &state(false, "normal")).is_empty());
+        assert!(events(&state(false, "normal"), &state(false, "expired"))[0].contains("到期"));
+        let raised = events(&state(false, "normal"), &state(true, "legacy_conflict"));
         assert_eq!(raised.len(), 2);
         assert!(raised[1].contains("12345") && !raised.concat().contains("secret-value"));
-        assert!(snapshot_events(&state(true, "quota_reached"), &state(true, "quota_reached")).is_empty());
-        assert_eq!(snapshot_events(&state(false, "quota_warning"), &state(false, "quota_reached")).len(), 1);
+        assert!(events(&state(true, "legacy_conflict"), &state(true, "legacy_conflict")).is_empty());
+    }
+    #[test]
+    fn quota_thresholds_sound_once_per_period_and_merge_with_the_quota() {
+        let gib = 1u64 << 30;
+        let state = |rx: u64, tx: u64, alert: &str, period: &str, mode: &str| {
+            json!({"modules":{"pm":{
+                "resources":[{"port":12345,"name":"PM","quota_gb":10,"quota_mode":mode,"psk":"secret-value"}],
+                "usage":{"12345":{"rx":rx,"tx":tx,"alert":alert,"period_start":period}}}}})
+        };
+        let events = |old: &Value, new: &Value| snapshot_events(old, new, &[50, 80, 100]).0;
+        let p = "2026-11-01";
+        assert!(events(&state(0, 0, "normal", p, "in_out"), &state(2 * gib, 2 * gib, "normal", p, "in_out"))
+            .is_empty());
+        let half =
+            events(&state(0, 0, "normal", p, "in_out"), &state(3 * gib, 2 * gib, "normal", p, "in_out"));
+        assert_eq!(half, ["PM 端口 12345：用量已达配额 50%"]);
+        // Inbound traffic does not count against an outbound-only quota.
+        assert!(events(&state(0, 0, "normal", p, "out_only"), &state(9 * gib, 0, "normal", p, "out_only"))
+            .is_empty());
+        // A jump past several steps reports the highest, once.
+        let jump = events(
+            &state(0, 0, "normal", p, "in_out"),
+            &state(5 * gib, 4 * gib, "quota_warning", p, "in_out"),
+        );
+        assert_eq!(jump, ["PM 端口 12345：用量已达配额 80%"]);
+        let same = state(5 * gib, 4 * gib, "quota_warning", p, "in_out");
+        assert!(events(&same, &same).is_empty());
+        // The quota itself is one message whether the counters or the node report it first.
+        let full = events(&same, &state(5 * gib, 4 * gib, "quota_reached", p, "in_out"));
+        assert_eq!(full, ["PM 端口 12345：已达配额，匹配流量已被丢弃"]);
+        let reached = state(5 * gib, 5 * gib, "quota_reached", p, "in_out");
+        assert!(events(&reached, &reached).is_empty());
+        // A new period starts counting again.
+        let next = events(&reached, &state(3 * gib, 3 * gib, "normal", "2026-12-01", "in_out"));
+        assert_eq!(next, ["PM 端口 12345：用量已达配额 50%"]);
+        assert!(!jump.concat().contains("secret-value"));
+    }
+    #[test]
+    fn ip_alerts_follow_the_component_sequence() {
+        let state = |level: u64, seq: u64| {
+            json!({"modules":{"pm":{
+                "resources":[{"port":12345,"name":"PM","quota_gb":0,"quota_mode":"in_out",
+                    "ip_limit":{"max_ips":3,"cooldown_min":30,"whitelist":[]}}],
+                "usage":{"12345":{"rx":0,"tx":0,"alert":"normal","period_start":"",
+                    "ip_count":4,"ip_level":level,"ip_alert":seq,"ip_list":["203.0.113.1"]}}}}})
+        };
+        let alerts = |old: &Value, new: &Value| snapshot_events(old, new, &[100]).1;
+        assert!(alerts(&state(0, 0), &state(0, 0)).is_empty());
+        let raised = alerts(&state(0, 0), &state(1, 1));
+        assert_eq!((raised[0].port.as_str(), raised[0].max, raised[0].count), ("12345", 3, 4));
+        assert!(alerts(&state(1, 1), &state(1, 1)).is_empty(), "the same alert is not repeated");
+        assert_eq!(alerts(&state(1, 1), &state(2, 2))[0].level, 2);
+        assert!(alerts(&state(1, 1), &state(0, 1)).is_empty(), "and a reset is silent");
     }
     #[tokio::test]
     async fn component_report_compares_with_the_embedded_release() {

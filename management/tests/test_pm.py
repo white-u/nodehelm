@@ -11,7 +11,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from agent import execute_module_task
 from controller import Controller
 from model import Rejected, revision
-from pm import Driver, GIB, batch, period_start, plan
+from pm import Driver, GIB, batch, peers, period_start, plan, watch
 from storage import read, write
 from test_controller import Driver as FakeDriver
 
@@ -19,6 +19,106 @@ from test_controller import Driver as FakeDriver
 def policy(**change):
     return dict(port=23456, name='Example', quota_gb=1, quota_mode='in_out', reset_day=31,
                 expiry_date='', egress_mbps=0) | change
+
+
+SS = '''0 0 192.0.2.10:23456 203.0.113.1:50000
+0 0 192.0.2.10:23456 203.0.113.1:50001
+0 0 [::ffff:192.0.2.10]:23456 [::ffff:203.0.113.2]:50002
+0 0 [2001:db8::10]:23456 [2001:db8::2]:50003
+0 0 [fe80::10%eth0]:23456 [fe80::3%eth0]:50004
+0 0 192.0.2.10:22 198.51.100.9:50005
+0 0 192.0.2.10:123456 198.51.100.8:50006
+garbage
+'''
+
+
+def limited(max_ips=1, cooldown_min=30, whitelist=()):
+    return policy(ip_limit={'max_ips': max_ips, 'cooldown_min': cooldown_min, 'whitelist': list(whitelist)})
+
+
+class PmIpTests(unittest.TestCase):
+    def test_peers_are_distinct_normalized_addresses_on_watched_ports(self):
+        self.assertEqual(peers(SS, {'23456'}), {'23456': {'203.0.113.1', '203.0.113.2', '2001:db8::2', 'fe80::3'}})
+        self.assertEqual(peers(SS, {'80'}), {})
+
+    def test_addresses_count_from_their_second_minute_and_whitelist_is_skipped(self):
+        rules = [limited(whitelist=['2001:db8::2'])]
+        first = watch(rules, SS, {}, 1000)['23456']
+        self.assertEqual((first['count'], first['level'], first['seq']), (0, 0, 0))
+        second = watch(rules, SS, {'23456': first}, 1060)['23456']
+        self.assertEqual(second['ips'], ['203.0.113.1', '203.0.113.2', 'fe80::3'])
+        self.assertNotIn('2001:db8::2', second['seen'])
+        # 3 over a limit of 1 is level 1; over limit + 2 would be level 2.
+        self.assertEqual((second['count'], second['level'], second['seq'], second['last']), (3, 1, 1, 1060))
+        # An address seen once, as by a scan, is not counted.
+        scan = SS + '0 0 192.0.2.10:23456 198.51.100.77:40000\n'
+        third = watch(rules, scan, {'23456': second}, 1120)['23456']
+        self.assertEqual(third['count'], 3)
+
+    def test_alerts_repeat_after_cooldown_or_on_a_rise_and_reset_silently(self):
+        rules = [limited(max_ips=1, cooldown_min=2)]
+        state = {'23456': {'seen': ['203.0.113.1', '203.0.113.2'], 'level': 1, 'seq': 4, 'last': 1000}}
+        two = '0 0 192.0.2.10:23456 203.0.113.1:1\n0 0 192.0.2.10:23456 203.0.113.2:1\n'
+        same = watch(rules, two, state, 1060)['23456']
+        self.assertEqual((same['level'], same['seq'], same['last']), (1, 4, 1000))
+        again = watch(rules, two, {'23456': same}, 1120)['23456']
+        self.assertEqual((again['seq'], again['last']), (5, 1120))
+        many = ''.join(f'0 0 192.0.2.10:23456 203.0.113.{n}:1\n' for n in range(1, 6))
+        primed = {'23456': {**again, 'seen': [f'203.0.113.{n}' for n in range(1, 6)]}}
+        rise = watch(rules, many, primed, 1130)['23456']
+        self.assertEqual((rise['count'], rise['level'], rise['seq']), (5, 2, 6))
+        calm = watch(rules, '0 0 192.0.2.10:23456 203.0.113.1:1\n', {'23456': rise}, 1190)['23456']
+        self.assertEqual((calm['level'], calm['seq'], calm['last'], calm['ips']), (0, 6, 0, []))
+
+    def test_maintenance_reads_connections_only_for_limited_rules(self):
+        with tempfile.TemporaryDirectory() as directory:
+            driver = Driver(directory)
+            with patch('pm.connections', return_value=SS) as connections:
+                driver.watch_ips({'installed': True, 'resources': [policy()]})
+                connections.assert_not_called()
+                self.assertFalse(driver.ip_watch.exists())
+                driver.watch_ips({'installed': True, 'resources': [limited()]})
+                self.assertEqual(read(driver.ip_watch)['ports']['23456']['count'], 0)
+                driver.ip_watch.write_text('{broken')
+                driver.watch_ips({'installed': True, 'resources': [limited()]})
+                driver.watch_ips({'installed': True, 'resources': [policy()]})
+                self.assertFalse(driver.ip_watch.exists())
+            with patch('pm.connections', return_value=None):
+                driver.watch_ips({'installed': True, 'resources': [limited()]})
+            self.assertFalse(driver.ip_watch.exists())
+
+    def test_status_reports_a_recent_check_for_limited_rules_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            driver = Driver(directory)
+            now = int(time.time())
+            rule = plan({'resources': [policy()]}, dt.date.today())['23456']
+            data = {'plan': {'23456': rule}, 'values': {'23456': {'rx': 1, 'tx': 2}}, 'quotas': {}, 'sampled_at': now}
+            write(driver.checkpoint, data)
+            entry = {'seen': [], 'count': 4, 'level': 1, 'ips': ['203.0.113.1'], 'seq': 2, 'last': now}
+            with patch.object(driver, 'units_match', return_value=True), \
+                    patch.object(driver, 'timer_active', return_value=True), \
+                    patch.object(driver, 'inspect'), patch.object(driver, 'sample', return_value=data), \
+                    patch.object(driver, 'unit_info', return_value={'ActiveState': 'inactive'}), \
+                    patch.object(driver, 'expected_plan', return_value={'23456': rule}):
+                for sampled, rules, shown in ((now, [limited()], True), (now - 300, [limited()], False),
+                                              (now, [policy()], False)):
+                    write(driver.ip_watch, {'sampled_at': sampled, 'ports': {'23456': entry}})
+                    usage = driver.status({'installed': True, 'resources': rules})[1]['23456']
+                    self.assertEqual('ip_alert' in usage, shown)
+                self.assertNotIn('ip_count', usage)
+                write(driver.ip_watch, {'sampled_at': now, 'ports': {'23456': entry}})
+                usage = driver.status({'installed': True, 'resources': [limited()]})[1]['23456']
+                self.assertEqual({key: usage[key] for key in ('ip_count', 'ip_level', 'ip_alert', 'ip_list')},
+                                 {'ip_count': 4, 'ip_level': 1, 'ip_alert': 2, 'ip_list': ['203.0.113.1']})
+
+    def test_rule_format_without_ip_limit_is_unchanged(self):
+        from model import resource
+        self.assertNotIn('ip_limit', resource(policy(), 'pm'))
+        rule = resource(limited(whitelist=['::ffff:203.0.113.7', '2001:DB8::1', '203.0.113.7']), 'pm')
+        self.assertEqual(rule['ip_limit']['whitelist'], ['203.0.113.7', '2001:db8::1'])
+        for bad in ({'max_ips': 0}, {'action': 'block'}, {'whitelist': ['fe80::1%eth0']}):
+            with self.assertRaises(Rejected):
+                resource(policy(ip_limit={'max_ips': 1, 'cooldown_min': 30, 'whitelist': []} | bad), 'pm')
 
 
 class PmRefreshTests(unittest.TestCase):

@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Plus } from "lucide-react"
 import { InlinePanel, useServiceConfirmation } from "./ServiceInteractions"
-import { type ApplyIntent, type PmPolicy, type RootSnapshot, type Snapshot, pmStatus, pmAlerts, gib } from "./model"
+import { type ApplyIntent, type PmDraft, type PmPolicy, type RootSnapshot, type Snapshot, pmStatus, pmAlerts, gib, pmDraft, pmPayload } from "./model"
 
 export function PmPanel({ node, snapshot, view, writable, busy, feedback, refreshing, onDirtyChange, run, submit }: {
   node: string
@@ -18,7 +18,7 @@ export function PmPanel({ node, snapshot, view, writable, busy, feedback, refres
   submit: (action: string, payload: object, revision?: string, intent?: ApplyIntent) => Promise<void>
 }) {
   const { confirm, discard, confirmation } = useServiceConfirmation()
-  const [form, setForm] = useState<PmPolicy | null>(null)
+  const [form, setForm] = useState<PmDraft | null>(null)
   const [revision, setRevision] = useState("")
   const [editing, setEditing] = useState(false)
   const [initialForm, setInitialForm] = useState("")
@@ -39,7 +39,7 @@ export function PmPanel({ node, snapshot, view, writable, busy, feedback, refres
     if (!item && !candidates.length) return
     setEditing(!!item)
     setRevision(view?.revision ?? "")
-    const next = item ?? { port: candidates[0].port, name: "端口监控", quota_gb: 0, quota_mode: "in_out" as const, reset_day: 0, expiry_date: "", egress_mbps: 0 }
+    const next = pmDraft(item ?? { port: candidates[0].port, name: "端口监控", quota_gb: 0, quota_mode: "in_out", reset_day: 0, expiry_date: "", egress_mbps: 0 })
     setInitialForm(JSON.stringify(next)); setForm(next); setDraftNotice("")
   }
 
@@ -76,9 +76,10 @@ export function PmPanel({ node, snapshot, view, writable, busy, feedback, refres
               <div className="space-y-1">
                 <strong>{rule.name} · {rule.port}</strong>
                 <p>{rule.quota_gb ? `配额 ${rule.quota_gb} GiB · ${rule.quota_mode === "out_only" ? "仅出站" : "双向"}` : "只计量，无配额"} · {rule.reset_day ? `每月 ${rule.reset_day} 日重置` : "无自动重置"}</p>
-                <p>到期日期 {rule.expiry_date || "未设置"} · 出站超速丢包 {rule.egress_mbps ? `${rule.egress_mbps} Mbps` : "关闭"}</p>
+                <p>到期日期 {rule.expiry_date || "未设置"} · 出站超速丢包 {rule.egress_mbps ? `${rule.egress_mbps} Mbps` : "关闭"} · IP 告警 {rule.ip_limit ? `超过 ${rule.ip_limit.max_ips} 个` : "关闭"}</p>
                 {usage ? <>
                   <p>入站 {gib(usage.rx)} GiB · 出站 {gib(usage.tx)} GiB · <strong>{pmAlerts[usage.alert]}</strong></p>
+                  {rule.ip_limit && usage.ip_count != null && <p className={usage.ip_level ? "text-destructive" : undefined}>在线 IP {usage.ip_count} / {rule.ip_limit.max_ips}{usage.ip_list?.length ? ` · ${usage.ip_list.join("、")}` : ""}</p>}
                   <p className="text-xs text-muted-foreground">采样 {new Date(usage.sampled_at * 1000).toLocaleString()}{usage.period_start && ` · 账期起始 ${usage.period_start} UTC`}</p>
                 </> : <p className="text-muted-foreground">用量未知，请核实 VPS 上的 PM 服务。</p>}
               </div>
@@ -100,7 +101,7 @@ export function PmPanel({ node, snapshot, view, writable, busy, feedback, refres
         void run(async () => {
           if (draftStale) throw new Error("配置已更新，请先重新载入最新配置。")
           if (!await confirm(`在 ${node} 应用端口 ${form.port} 的 PM 规则？开启配额、到期或超速策略可能丢弃端口流量。`)) return
-          await submit("apply", form, revision, editing ? "update" : "create")
+          await submit("apply", pmPayload(form), revision, editing ? "update" : "create")
           setForm(null)
         })
       }}>
@@ -116,6 +117,15 @@ export function PmPanel({ node, snapshot, view, writable, busy, feedback, refres
           <label>到期日期（可选）<Input type="date" value={form.expiry_date} onChange={e => setForm({ ...form, expiry_date: e.target.value })} /></label>
           <label>出站超速丢包（Mbps，0 关闭）<Input type="number" required min={0} max={10000} value={form.egress_mbps} onChange={e => setForm({ ...form, egress_mbps: Number(e.target.value) })} /></label>
         </fieldset>
+        <details className="text-sm" open={form.max_ips > 0}>
+          <summary className="cursor-pointer text-muted-foreground">IP 告警（可选）</summary>
+          <fieldset disabled={busy} className="mt-3 grid gap-3 sm:grid-cols-2">
+            <label>同时在线 IP 上限（0 关闭）<Input type="number" required min={0} max={65535} value={form.max_ips} onChange={e => setForm({ ...form, max_ips: Number(e.target.value) })} /></label>
+            <label>重复提醒间隔（分钟）<Input type="number" required min={1} max={525600} disabled={!form.max_ips} value={form.cooldown_min} onChange={e => setForm({ ...form, cooldown_min: Number(e.target.value) })} /></label>
+            <label className="sm:col-span-2">白名单 IP（可选，每行或逗号分隔，最多 32 个）<textarea className="block min-h-20 w-full rounded border bg-background p-2" disabled={!form.max_ips} value={form.whitelist} onChange={e => setForm({ ...form, whitelist: e.target.value })} /></label>
+          </fieldset>
+          <p className="mt-2 text-xs text-muted-foreground">每分钟统计已建立 TCP 连接的不同来源 IP，连续两分钟出现才计入，避免扫描误报。超过上限时通过服务管理提醒推送，超过上限 2 个以上为高风险，同一等级按间隔重复提醒；只提醒，不断开连接。</p>
+        </details>
         <p className="text-xs text-muted-foreground">重置按 UTC，每月不足指定日时取月末。到期日 UTC 结束后开始阻断。定时任务约每分钟保存用量，异常重启可能丢失最近一次保存后的用量。</p>
       </form>
           {confirmation}

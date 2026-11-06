@@ -143,7 +143,7 @@ try {
   snapshot.modules.pm.installed=true;await finish(task)
   await instances.getByRole('button',{name:'新增 PM 规则',exact:true}).click();await pmEditor.getByLabel('业务端口',{exact:true}).selectOption('23456')
   await pmEditor.getByLabel('配额（GiB，0 关闭）',{exact:true}).fill('10');await pmEditor.getByLabel('每月重置日（0 关闭）',{exact:true}).fill('31')
-  task=await submit(pmEditor.getByRole('button',{name:'保存并应用',exact:true}))
+  task=await submit(pmEditor.getByRole('button',{name:'保存并应用',exact:true}));assert(!('ip_limit' in task.request.payload),'an IP limit left at 0 is not sent')
   snapshot.modules.pm.resources=[task.request.payload];snapshot.modules.pm.revision='b'.repeat(64);await finish(task)
   await instances.getByRole('button',{name:'编辑',exact:true}).click();await pmEditor.getByLabel('配额（GiB，0 关闭）',{exact:true}).fill('20')
   snapshot.modules.pm.revision='c'.repeat(64);snapshot.modules.pm.resources[0]={...snapshot.modules.pm.resources[0],quota_gb:30}
@@ -153,6 +153,14 @@ try {
   assert.equal(await pmEditor.getByLabel('配额（GiB，0 关闭）',{exact:true}).inputValue(),'30')
   await pmEditor.getByRole('button',{name:'取消',exact:true}).click();await pmEditor.waitFor({state:'detached'})
   task=await submit(instances.getByRole('button',{name:'重置用量',exact:true}));assert.equal(task.request.action,'reset');await finish(task)
+  await instances.getByRole('button',{name:'编辑',exact:true}).click();await pmEditor.locator('summary').filter({hasText:'IP 告警'}).click()
+  await pmEditor.getByLabel('同时在线 IP 上限（0 关闭）',{exact:true}).fill('2');await pmEditor.getByLabel('白名单 IP（可选，每行或逗号分隔，最多 32 个）',{exact:true}).fill('203.0.113.9, 2001:db8::9')
+  task=await submit(pmEditor.getByRole('button',{name:'保存并应用',exact:true}))
+  assert.deepEqual(task.request.payload.ip_limit,{max_ips:2,cooldown_min:30,whitelist:['203.0.113.9','2001:db8::9']})
+  snapshot.modules.pm.resources=[task.request.payload];snapshot.modules.pm.revision='d'.repeat(64)
+  snapshot.modules.pm.usage={'23456':{rx:0,tx:0,sampled_at:Math.floor(Date.now()/1000),period_start:'',alert:'normal',ip_count:4,ip_level:1,ip_alert:1,ip_list:['198.51.100.1','198.51.100.2','198.51.100.3','198.51.100.4']}}
+  await finish(task);await instances.getByText('在线 IP 4 / 2 · 198.51.100.1、198.51.100.2、198.51.100.3、198.51.100.4',{exact:true}).waitFor()
+  assert.match(await instances.getByText(/^在线 IP 4 \/ 2/).getAttribute('class'),/text-destructive/)
 
   await select('snell');task=await submit(instances.getByRole('button',{name:'升级核心',exact:true}));assert.equal(task.request.action,'core_upgrade')
   await poll({id:task.request.id,status:'rolled_back',message:'private binary path',code:'core_runtime'});await refresh()

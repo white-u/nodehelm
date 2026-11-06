@@ -38,7 +38,9 @@ pub fn resource(module: &str, value: &Value, snapshot: bool) -> Result<()> {
     match module {
         "sb" => fields.extend(["host", "public_port", "protocol", "sni", "psk"]),
         "fw" => fields.extend(["target_host", "target_port"]),
-        "pm" => fields.extend(["quota_gb", "quota_mode", "reset_day", "expiry_date", "egress_mbps"]),
+        "pm" => {
+            fields.extend(["quota_gb", "quota_mode", "reset_day", "expiry_date", "egress_mbps", "ip_limit"])
+        }
         _ => refuse!("不支持的模块"),
     }
     if snapshot && module == "sb" {
@@ -64,6 +66,9 @@ pub fn resource(module: &str, value: &Value, snapshot: bool) -> Result<()> {
             || value["expiry_date"].as_str().is_none_or(|d| !d.is_empty() && !pm_date(d))
         {
             refuse!("PM 端口或策略值无效");
+        }
+        if let Some(limit) = map.get("ip_limit") {
+            ip_limit(limit)?;
         }
         return Ok(());
     }
@@ -121,6 +126,24 @@ pub fn resource(module: &str, value: &Value, snapshot: bool) -> Result<()> {
     Ok(())
 }
 
+/// Present only when on, so a rule without it keeps the revision older components
+/// computed. The component stores the whitelist normalized.
+fn ip_limit(value: &Value) -> Result<()> {
+    let Some(map) = value.as_object() else { refuse!("IP 告警设置格式错误") };
+    let whitelist = value["whitelist"].as_array();
+    if map.len() != 3
+        || value["max_ips"].as_u64().is_none_or(|n| !(1..=65535).contains(&n))
+        || value["cooldown_min"].as_u64().is_none_or(|n| !(1..=525600).contains(&n))
+        || whitelist.is_none_or(|ips| {
+            ips.len() > 32
+                || ips.iter().any(|ip| ip.as_str().is_none_or(|s| s.parse::<std::net::IpAddr>().is_err()))
+        })
+    {
+        refuse!("IP 上限须为 1–65535，冷却 1–525600 分钟，白名单最多 32 个 IP 地址");
+    }
+    Ok(())
+}
+
 fn pm_date(value: &str) -> bool {
     value.len() == 10
         && chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
@@ -135,6 +158,16 @@ pub struct PmUsage {
     sampled_at: u64,
     period_start: String,
     alert: String,
+    /// The IP check, present while the rule has an IP limit. `ip_alert` counts
+    /// alerts raised; a change with `ip_level` above zero is a new one to send.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip_level: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip_alert: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip_list: Option<Vec<String>>,
 }
 
 pub fn core_version(value: &str) -> bool {
@@ -225,6 +258,10 @@ impl ModuleSnapshot {
                 || usage.rx > i64::MAX as u64
                 || usage.tx > i64::MAX as u64
                 || usage.sampled_at == 0
+                || usage.ip_level.is_some_and(|l| l > 2)
+                || usage.ip_list.as_ref().is_some_and(|ips| {
+                    ips.len() > 15 || ips.iter().any(|ip| ip.parse::<std::net::IpAddr>().is_err())
+                })
                 || (!usage.period_start.is_empty() && !pm_date(&usage.period_start))
                 || !matches!(
                     usage.alert.as_str(),
@@ -413,6 +450,39 @@ mod tests {
         let usage = snapshot.usage.remove("12345").unwrap();
         snapshot.usage.insert("12346".into(), usage);
         assert!(snapshot.validate("pm").is_err());
+        let mut limited = policy.clone();
+        limited["ip_limit"] = json!({"max_ips":3,"cooldown_min":30,"whitelist":["203.0.113.7"]});
+        assert!(resource("pm", &limited, true).is_ok());
+        let usage = |list: Value| {
+            serde_json::from_value::<ModuleSnapshot>(json!({
+                "installed":true,"blocked":false,"revision":"a".repeat(64),"resources":[limited.clone()],
+                "usage":{"12345":{"rx":1,"tx":2,"sampled_at":1,"period_start":"","alert":"normal",
+                    "ip_count":4,"ip_level":1,"ip_alert":1,"ip_list":list}}
+            }))
+            .unwrap()
+            .validate("pm")
+        };
+        assert!(usage(json!(["203.0.113.1", "2001:db8::1"])).is_ok());
+        assert!(usage(json!(["not an address"])).is_err());
+        assert!(usage(json!(vec!["203.0.113.1"; 16])).is_err());
+    }
+    #[test]
+    fn ip_note_keeps_the_original_wording() {
+        let alert = crate::notify::IpAlert {
+            port: "12345".into(),
+            name: "PM".into(),
+            count: 17,
+            max: 3,
+            level: 2,
+            ips: (1..=15).map(|n| format!("203.0.113.{n}")).collect(),
+        };
+        let places = [("203.0.113.1".to_owned(), "中国, 上海, 某运营商".to_owned())].into();
+        let note = crate::notify::ip_note("hk", &alert, &places);
+        assert_eq!(note.title, "🔴 异常接入升级 · hk");
+        assert!(note.message.contains("等级 高风险（超过 5 IP）"));
+        assert!(note.message.contains("1. 203.0.113.1 - 中国, 上海, 某运营商"));
+        assert!(note.message.contains("2. 203.0.113.2 - (查询失败)"));
+        assert!(note.message.contains("... 仅显示前 15 条"));
     }
     #[test]
     fn ss_export_excludes_private_server_fields() {

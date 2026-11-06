@@ -3,6 +3,7 @@ import calendar
 from contextlib import ExitStack, contextmanager
 import datetime as dt
 import fcntl
+import ipaddress
 import json
 import os
 import pathlib
@@ -47,6 +48,8 @@ TABLE = 'ip node_manager_pm'
 GIB = 1073741824
 BYTES_PER_MEGABIT = 125000
 MAX_COUNTER = (1 << 63) - 1
+# Addresses kept per port for the next minute's comparison.
+IP_SEEN = 4096
 
 
 def period_start(today, day):
@@ -74,6 +77,64 @@ def plan(state, today, suspended=()):
 
 def counted(values, mode):
     return values['tx'] if mode == 'out_only' else values['tx'] + values['rx']
+
+
+def peers(output, ports):
+    """Peer addresses per watched local port in `ss -Hnt state established`."""
+    found = {}
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) < 4:
+            continue
+        port = fields[2].rpartition(':')[2]
+        if port not in ports:
+            continue
+        host = fields[3].rpartition(':')[0].strip('[]').partition('%')[0]
+        try:
+            ip = ipaddress.ip_address(host)
+        except ValueError:
+            continue
+        found.setdefault(port, set()).add(str(getattr(ip, 'ipv4_mapped', None) or ip))
+    return found
+
+
+def address_order(value):
+    ip = ipaddress.ip_address(value)
+    return ip.version, ip
+
+
+def watch(rules, output, previous, now):
+    """The original PM's IP check: level 1 over the limit, 2 over limit + 2; an
+    alert on a rise or after the cooldown, a silent reset at or under the limit.
+    An address counts only once seen in two consecutive minutes, so a port scan
+    or a single short visit does not raise an alert."""
+    current = peers(output, {str(rule['port']) for rule in rules})
+    result = {}
+    for rule in rules:
+        port, limit = str(rule['port']), rule['ip_limit']
+        old = previous.get(port, {})
+        seen = sorted(current.get(port, set()) - set(limit['whitelist']), key=address_order)
+        before = set(old.get('seen', ()))
+        online = [ip for ip in seen if ip in before]
+        count = len(online)
+        level = 2 if count > limit['max_ips'] + 2 else 1 if count > limit['max_ips'] else 0
+        entry = {'seen': seen[:IP_SEEN], 'count': count, 'level': level, 'ips': online[:15] if level else [],
+                 'seq': old.get('seq', 0), 'last': old.get('last', 0) if level else 0}
+        if level and (level > old.get('level', 0) or now - entry['last'] >= limit['cooldown_min'] * 60):
+            entry.update(seq=entry['seq'] + 1, last=now)
+        result[port] = entry
+    return result
+
+
+def connections():
+    try:
+        result = subprocess.run(
+            ['ss', '-Hnt', 'state', 'established'], text=True, capture_output=True, timeout=15,
+            env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C'},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return None if result.returncode else result.stdout
 
 
 def nft(*args, script=None):
@@ -154,6 +215,7 @@ class Driver:
         self.units = units
         self.checkpoint = self.root / 'checkpoint.json'
         self.transition = self.root / 'nft-transition.json'
+        self.ip_watch = self.root / 'ip-watch.json'
         self.boot_id = pathlib.Path('/proc/sys/kernel/random/boot_id')
         self.owner = read(self.root / 'owner.json')
 
@@ -408,6 +470,7 @@ class Driver:
                 # The epoch must still exist in the same atomic teardown transaction.
                 nft('-f', '-', script=f'delete chain {TABLE} epoch_{live["epoch"]}\ndelete table {TABLE}\n')
             remove(self.checkpoint)
+            remove(self.ip_watch)
             return
         prior = backup['checkpoint']
         if backup.get('uninstall'):
@@ -482,6 +545,14 @@ class Driver:
             return True, {}
         usage = {}
         expected = self.expected_plan(state, data['plan'])
+        watched = {str(rule['port']) for rule in state['resources'] if 'ip_limit' in rule}
+        try:
+            recent = read(self.ip_watch, {})
+        except ValueError:
+            recent = {}
+        # A stopped check must not keep showing its last count as current.
+        ips = {port: entry for port, entry in recent.get('ports', {}).items() if port in watched
+               } if time.time() - recent.get('sampled_at', 0) <= 150 else {}
         for port, values in data['values'].items():
             rule = data['plan'][port]
             used = data['quotas'].get(port, 0)
@@ -499,6 +570,10 @@ class Driver:
             else:
                 alert = 'normal'
             usage[port] = {**values, 'sampled_at': data['sampled_at'], 'period_start': rule['period'], 'alert': alert}
+            if port in ips:
+                entry = ips[port]
+                usage[port].update(ip_count=entry['count'], ip_level=entry['level'],
+                                   ip_alert=entry['seq'], ip_list=entry['ips'])
         return failed or time.time() - saved['sampled_at'] > 150, usage
 
     @staticmethod
@@ -579,7 +654,26 @@ class Driver:
                 return
             state = read(self.root / 'state.json')
             if state and state['installed']:
-                self.reconcile(state)
+                try:
+                    self.reconcile(state)
+                finally:
+                    self.watch_ips(state)
+
+    def watch_ips(self, state):
+        rules = [rule for rule in state['resources'] if 'ip_limit' in rule]
+        if not rules:
+            remove(self.ip_watch)
+            return
+        output = connections()
+        if output is None:
+            print('PM 无法读取 TCP 连接，跳过本轮 IP 检查', file=sys.stderr, flush=True)
+            return
+        now = int(time.time())
+        try:
+            previous = read(self.ip_watch, {}).get('ports', {})
+        except ValueError:
+            previous = {}
+        write(self.ip_watch, {'sampled_at': now, 'ports': watch(rules, output, previous, now)})
 
 
 if __name__ == '__main__':

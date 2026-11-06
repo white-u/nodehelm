@@ -1,6 +1,6 @@
 # NodeHelm
 
-基于 monitor 的独立新项目，保留监控与分时流量，新增可选节点服务管理。当前支持 Snell、SB（Reality / SS2022）和 FW（Realm TCP/UDP）实例管理、可信核心升级回退与卸载、Snell/SB 配置导出，以及受管业务端口的 PM 计量、配额、重置与到期策略。原 PM 数据可在同一页面只读查看。
+基于 monitor 的独立新项目，保留监控与分时流量，新增可选节点服务管理。当前支持 Snell、SB（Reality / SS2022）和 FW（Realm TCP/UDP）实例管理、可信核心升级回退与卸载、Snell/SB 配置导出，以及受管业务端口的 PM 计量、配额、重置、到期策略、流量阈值与 IP 告警。原 PM 数据可在同一页面只读查看。
 
 文档：**[部署文档](DEPLOY.md)** · [完整索引](INDEX.md) · [开发与验证](DEVELOPMENT.md) · [部署与恢复说明](NODE_MANAGEMENT_DEPLOY.md)
 
