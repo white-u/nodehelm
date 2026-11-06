@@ -1,4 +1,5 @@
 import hashlib
+import io
 import os
 from unittest.mock import MagicMock, patch
 import importlib.util
@@ -93,7 +94,9 @@ class HubInstallTests(unittest.TestCase):
             opener.open.return_value.__enter__.return_value = response
             with patch.multiple(m, CODE=code, DATA=data, UNIT=unit, PLAN=plan), \
                     patch.object(m, 'check_unit', return_value=service), \
-                    patch.object(m.subprocess, 'run'), patch.object(hub_health, 'PROC', proc.parent), \
+                    patch.object(m.subprocess, 'run', return_value=types.SimpleNamespace(
+                        returncode=0, stdout='Emergency password: fresh-one\n')) as run, \
+                    patch.object(hub_health, 'PROC', proc.parent), \
                     patch.object(hub_health.urllib.request, 'build_opener', return_value=opener), \
                     patch.object(hub_health.time, 'monotonic', side_effect=(0, 31, 0, 31, 0)):
                 with self.assertRaisesRegex(ValueError, '保留安装记录'):
@@ -111,7 +114,11 @@ class HubInstallTests(unittest.TestCase):
                 self.assertTrue(plan.is_file())
                 opener.open.reset_mock()
                 response.read.return_value = b'{"authed": false}'
-                m.install_hub(args, unit_contents, payload)
+                with patch('sys.stdout', new_callable=io.StringIO) as shown:
+                    m.install_hub(args, unit_contents, payload)
+                # The password the first start logged is replaced; only the new one is shown.
+                self.assertIn('--reset-password', run.call_args.args[0])
+                self.assertIn('应急密码: fresh-one\n', shown.getvalue())
                 opener.open.assert_called_once_with('http://127.0.0.1:9911/api/me', timeout=3)
                 self.assertEqual(binary.stat().st_ino, original_inode)
                 self.assertFalse(plan.exists())

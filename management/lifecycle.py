@@ -248,6 +248,10 @@ if root.exists() or root.is_symlink():
   state.unlink(); sync(root)
  elif paths: raise ValueError('missing completion state')
  root.rmdir(); sync(root.parent)
+# Held by this process until it exits; with the component gone there is nothing left to serialise.
+lock=pathlib.Path({str(install.LIFECYCLE_LOCK)!r})
+if lock.exists() and not lock.is_symlink():
+ owned(lock); lock.unlink()
 subprocess.run(('/usr/bin/systemctl','disable',{UNIT!r}),check=True,stdin=subprocess.DEVNULL,capture_output=True,timeout=45)
 if unit.exists() or unit.is_symlink():
  owned(unit)

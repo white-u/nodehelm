@@ -206,19 +206,23 @@ print(m[1],m[2]) if m else sys.exit(1)' "$PLAN") || die "安装恢复记录无�
 
 	fetch
 	confirm "将安装 NodeHelm $TAG：$SITE，本机端口 $PORT。继续？"
-	sh "$PKG/install-hub.sh" --binary "$PKG/monitor-hub" \
+	# The installer prints the only valid password; it stays in the private
+	# download workspace, which the exit trap removes, until shown once below.
+	OUT=$WORK/install.out
+	if ! sh "$PKG/install-hub.sh" --binary "$PKG/monitor-hub" \
 		--sha256 "$(sha256sum "$PKG/monitor-hub" | cut -d' ' -f1)" \
-		--site "$SITE" --port "$PORT" ${EXTRA:+"$EXTRA"}
-
-	PASS=$(journalctl -u "$UNIT" -o cat --no-pager 2>/dev/null |
-		sed -n 's/^ *Emergency password: //p' | tail -n 1)
+		--site "$SITE" --port "$PORT" ${EXTRA:+"$EXTRA"} >"$OUT" 2>&1; then
+		cat "$OUT"; die "安装未完成，再次运行同一命令可继续"
+	fi
+	grep -v -e '^应急密码: ' -e '^（只显示这一次' "$OUT" || true
+	PASS=$(sed -n 's/^应急密码: //p' "$OUT")
 	echo
 	echo "==== NodeHelm 已安装 ===="
 	echo "管理入口: $SITE/admin/"
-	if [ -n "$PASS" ] && [ "$EXTRA" != --reuse-data ]; then
+	if [ -n "$PASS" ]; then
 		echo "应急密码: $PASS"
-		echo "（只显示这一次，请妥善保存，勿外传）"
-	else
+		echo "（只显示这一次，请妥善保存，勿外传；首次启动写入日志的密码已失效）"
+	elif [ "$EXTRA" = --reuse-data ]; then
 		echo "沿用原有登录方式。"
 	fi
 	place_command
@@ -350,8 +354,11 @@ if [ -z "$ACTION" ]; then
 		ACTION=install
 	elif interactive; then
 		menu
-	else
+	elif [ -n "$YES" ]; then
+		# The install one-liner rerun unattended, as the update page offers it.
 		ACTION=update
+	else
+		ACTION=status
 	fi
 fi
 case $ACTION in

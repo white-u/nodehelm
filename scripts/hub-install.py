@@ -217,8 +217,25 @@ def install_hub(args, unit, data):
         os.fsync(directory)
     finally:
         os.close(directory)
-    print(f'后台已启动，仅监听 127.0.0.1:{args.port}。请将 {args.site} 的 HTTPS 反代指向该地址。')
-    print('应急密码请在本机 journalctl -u node-manager-hub 查看，勿公开日志。原 monitor 和 agent 未修改。')
+    print(f'后台已启动，仅监听 127.0.0.1:{args.port}。请将 {args.site} 的 HTTPS 反代指向该地址。原 monitor 和 agent 未修改。')
+    if not args.reuse_data:
+        password = fresh_password()
+        if password:
+            print(f'应急密码: {password}')
+            print('（只显示这一次，请妥善保存；首次启动写入日志的密码已失效）')
+        else:
+            print(f'未能生成应急密码，请运行 {CODE}/monitor-hub --db {DATA}/hub.db --reset-password')
+
+
+def fresh_password():
+    """The first start prints a password into the journal; replace it so the only valid one is shown here."""
+    try:
+        result = subprocess.run([str(CODE / 'monitor-hub'), '--db', str(DATA / 'hub.db'), '--reset-password'],
+                                capture_output=True, text=True, timeout=60, check=True)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    found = re.search(r'^Emergency password: (\S+)$', result.stdout, re.M)
+    return found and found[1]
 
 if __name__=='__main__':
     try:main()

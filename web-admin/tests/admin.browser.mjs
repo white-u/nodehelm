@@ -21,7 +21,7 @@ try {
   const context=await browser.newContext({viewport:{width:1280,height:900}}),page=await context.newPage(),errors=[]
   page.on('pageerror',error=>errors.push(error.message))
   // Version discovery is external to page wiring; all CRUD below uses real APIs.
-  await page.route('**/api/version',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({hub:'1.0.1',hub_latest:'',agent_latest:'',notice:false})}))
+  await page.route('**/api/version',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({hub:'1.0.2',hub_latest:'',agent_latest:'',notice:false})}))
   // Existing admin Field labels are display labels; scope the input to that field.
   function field(scope,label){return scope.locator('label').filter({hasText:new RegExp('^'+label.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'$')}).locator('..').locator('input').first()}
   async function api(route){const response=await context.request.get(base+route);assert(response.ok(),route);return response.json()}

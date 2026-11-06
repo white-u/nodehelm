@@ -35,8 +35,10 @@ class ComponentLifecycleTests(unittest.TestCase):
         self.purge_journal = self.root.parent / 'purge.json'
         self.units = self.root.parent / 'units'
         self.units.mkdir()
+        # Every system path the component touches, so a root test run on a real node changes nothing.
         context = patch.multiple(install, ROOT=self.root, CODE=self.code, UNITS=self.units,
-                                 PURGE_JOURNAL=self.purge_journal)
+                                 PURGE_JOURNAL=self.purge_journal, COMMAND=self.units / 'nodehelm',
+                                 LIFECYCLE_LOCK=self.units / 'lifecycle-run.lock')
         context.start()
         self.addCleanup(context.stop)
         self.before = {name: b'# previous\n' for name in OLDER_FILES}

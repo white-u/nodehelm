@@ -25,7 +25,9 @@
 curl -fsSL https://github.com/white-u/nodehelm/releases/latest/download/nodehelm.sh | sudo sh
 ```
 
-脚本识别架构，下载并校验最新发布包，只问两件事：后台 HTTPS 地址和本机端口（回车用默认 9911）。装完显示管理入口、应急密码（只显示这一次）和反向代理要求。
+以 root 登录且系统没有 `sudo` 时（常见于精简版 Debian），把本文命令中的 `sudo` 去掉即可，例如 `curl -fsSL … | sh`。
+
+脚本识别架构，下载并校验最新发布包，只问两件事：后台 HTTPS 地址和本机端口（回车用默认 9911）。装完显示管理入口、应急密码（只显示这一次，不留在日志里）和反向代理要求。
 
 不想交互时，用参数直接运行：
 

@@ -143,6 +143,9 @@ def menu():
 
 def main(argv):
     import os
+    import signal
+    # Piped into head or grep, stop quietly like any other command.
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)
     # Headings must come before the output of the tools they introduce.
     sys.stdout.reconfigure(line_buffering=True)
     if os.geteuid() != 0:

@@ -35,7 +35,7 @@
 
 `--site https://你的域名` 可明确 agent 接入地址和 cookie 的安全标志；域名必须是 HTTPS 域名入口。正常从 HTTPS 域名打开后台时可用浏览器地址生成安装命令，但通过 SSH 隧道访问、节点入口与后台域名不同、或代理不能正确表达 HTTPS 时应显式指定。添加/安装节点有额外入口保护，仅能打开页面不代表可添加节点。
 
-首次启动且数据库尚无密码时，应急密码写入本机服务日志；安装器不将密码存入发布包。遗失密码可使用下文的重置入口。登录后在后台添加节点并复制 agent 安装命令。hub 的 `/install.sh` 提供的是 [agent 安装器](install.sh)，它安装外部 `monitor-probe/agent`，不是 hub 自身。
+首次启动且数据库尚无密码时，后台把应急密码写入本机服务日志；独立安装器随后立即重置，新密码只显示在安装终端，日志中的那一个已失效。安装器不将密码存入发布包。遗失密码可使用下文的重置入口。登录后在后台添加节点并复制 agent 安装命令。hub 的 `/install.sh` 提供的是 [agent 安装器](install.sh)，它安装外部 `monitor-probe/agent`，不是 hub 自身。
 
 agent 默认路径是 `/opt/monitor/monitor-agent`、`/opt/monitor/agent.env`，服务名 `monitor-agent`，支持 systemd 或 OpenRC。hub 与 agent 可在同机共存，但服务、凭据和卸载入口不同。
 
@@ -76,7 +76,7 @@ sudo /opt/node-manager-hub/monitor-hub --db /var/lib/node-manager-hub/hub.db --r
 
 新密码只在当前终端显示；所有旧登录会话失效。不要将终端输出分享给他人。自定义部署须使用对应程序和数据库路径。
 
-后台主机上 `sudo nodehelm-hub`（安装前为 `nodehelm.sh`）的 `update`、`status`、`logs`、`reset-password`、`backup`、`uninstall` 覆盖日常维护，无参数在终端运行时显示菜单；节点上 `sudo nodehelm` 负责升级、状态、日志与恢复；`logs` 隐藏应急密码。卸载默认删除全部数据（数据库、密钥、主题、维护记录和服务器上的备份），加 `--keep-data` 保留数据；底层入口 `hub-lifecycle.py uninstall` 必须写明 `--purge` 或 `--keep-data`。维护工具保存在 `/opt/node-manager-hub/tools`，备份、恢复与卸载不需要联网。管理组件、原监控 Agent、受管业务实例各有独立生命周期，不能通过删除整个 `/opt` 目录处理。`install-hub.sh` 不支持原安装器的 `--reset-password` 或 `--uninstall` 参数。
+后台主机上 `sudo nodehelm-hub`（安装前为 `nodehelm.sh`）的 `update`、`status`、`logs`、`reset-password`、`backup`、`uninstall` 覆盖日常维护，无参数在终端运行时显示菜单，无终端时显示状态（加 `--yes` 则更新）；节点上 `sudo nodehelm` 负责升级、状态、日志与恢复；`logs` 隐藏应急密码。卸载默认删除全部数据（数据库、密钥、主题、维护记录和服务器上的备份），加 `--keep-data` 保留数据；底层入口 `hub-lifecycle.py uninstall` 必须写明 `--purge` 或 `--keep-data`。维护工具保存在 `/opt/node-manager-hub/tools`，备份、恢复与卸载不需要联网。管理组件、原监控 Agent、受管业务实例各有独立生命周期，不能通过删除整个 `/opt` 目录处理。`install-hub.sh` 不支持原安装器的 `--reset-password` 或 `--uninstall` 参数。
 
 ## 故障定位
 

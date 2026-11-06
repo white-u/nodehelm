@@ -78,6 +78,7 @@ class NodeLifecycleTests(unittest.TestCase):
         self.addCleanup(self.stack.close)
         self.stack.enter_context(patch.object(install, 'ROOT', self.root))
         self.stack.enter_context(patch.object(install, 'COMMAND', self.base / 'nodehelm'))
+        self.stack.enter_context(patch.object(install, 'LIFECYCLE_LOCK', self.base / 'lifecycle-run.lock'))
         self.stack.enter_context(patch.object(install, 'PURGE_JOURNAL', self.base / 'purge.json'))
         self.stack.enter_context(patch.object(lifecycle, 'RECOVERY', self.base / 'helper'))
         self.stack.enter_context(patch('port_monitor.snapshot', return_value={'status': 'not_installed', 'rows': []}))
@@ -438,7 +439,7 @@ class CleanupWorkerTests(unittest.TestCase):
         self.stack = contextlib.ExitStack()
         self.addCleanup(self.stack.close)
         self.stack.enter_context(patch.multiple(install, ROOT=self.root, CODE=self.code, UNITS=self.units, PURGE_JOURNAL=self.purge,
-                                                       COMMAND=self.base / 'nodehelm'))
+                                                       COMMAND=self.base / 'nodehelm', LIFECYCLE_LOCK=self.base / 'lifecycle-run.lock'))
         self.stack.enter_context(patch.object(lifecycle, 'RECOVERY', self.recovery))
         self.stack.enter_context(patch.object(install, 'ctl', return_value=types.SimpleNamespace(stdout='', returncode=0)))
         self.stack.enter_context(patch.object(install, 'unit_info', return_value={'LoadState': 'loaded', 'ActiveState': 'inactive'}))
@@ -675,10 +676,12 @@ class CleanupWorkerTests(unittest.TestCase):
         # Simulate a kill after install.py deletion; persistent terminal unit is independent of it.
         install.write_file(self.units / lifecycle.UNIT, lifecycle.terminal_unit_content().encode(), 0o644)
         install.remove(self.recovery / 'install.py')
+        install.write_file(install.LIFECYCLE_LOCK, b'', 0o600)
         with patch('subprocess.run', return_value=types.SimpleNamespace(returncode=0)):
             exec(compile(lifecycle.terminal_script(), '<test-finalizer>', 'exec'), {})
         self.assertFalse(self.recovery.exists())
         self.assertFalse((self.units / lifecycle.UNIT).exists())
+        self.assertFalse(install.LIFECYCLE_LOCK.exists(), 'nothing of the component is left in /run')
     def test_unknown_root_file_blocks_preflight_before_any_purge(self):
         (self.root / 'foreign').write_text('keep')
         with self.assertRaisesRegex(ValueError, '未登记文件'):
