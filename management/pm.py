@@ -586,6 +586,8 @@ if __name__ == '__main__':
     try:
         if os.geteuid() != 0:
             raise Rejected('PM 操作需要 root 权限')
+        # As under the PM unit: state written from a shell must stay private.
+        os.umask(0o077)
         if sys.argv[1:] == ['disable-empty']:
             Driver().disable_empty()
             print('PM 独立定时单元和空规则表已移除。')

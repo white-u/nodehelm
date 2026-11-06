@@ -185,6 +185,8 @@ def main():
     args = parser.parse_args()
     if os.geteuid() != 0:
         raise Rejected('管理组件需要 root 权限')
+    # The unit's UMask=0077, also from a shell: files created here are checked as private later.
+    os.umask(0o077)
     from install import LIFECYCLE_LOCK, PURGE_JOURNAL, lock, present
 
     try:
@@ -222,6 +224,12 @@ def run_action(action):
     if action == 'refresh':
         for current in controllers.values():
             current.refresh()
+        # An upgrade runs the old installer, which reaches the new code only here.
+        from install import place_command
+        try:
+            place_command()
+        except (OSError, ValueError) as error:
+            print(f'未安装 nodehelm 命令：{error}', file=sys.stderr)
         return
     def snapshot():
         state = controller.snapshot()

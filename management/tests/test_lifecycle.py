@@ -1,4 +1,5 @@
 import contextlib
+import io
 import importlib.util
 import json
 import pathlib
@@ -325,6 +326,35 @@ class HubLifecycleTests(unittest.TestCase):
         hub_lifecycle.replace_file(backup / 'hub.db.management.key', data=b'z' * 32)
         with self.assertRaisesRegex(ValueError, '校验失败'):
             hub_lifecycle.verify_backup(backup)
+
+    def test_uninstall_states_what_happens_to_the_data(self):
+        for argv in (['uninstall'], ['uninstall', '--purge', '--keep-data']):
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+                hub_lifecycle.main(argv)
+
+    def test_full_removal_deletes_verified_backups_and_keeps_the_rest(self):
+        hub_lifecycle.replace_file(self.key, data=b'k' * 32)
+        workspace = self.root / 'backups'
+        workspace.mkdir(mode=0o700)
+        backups = [hub_lifecycle.snapshot(workspace, self.binary, self.database, 'node-manager-test.service')
+                   for _ in range(2)]
+        hub = object.__new__(hub_lifecycle.Hub)
+        hub.workspace, hub.unit = workspace, 'node-manager-test.service'
+        hub.remove_backups()
+        self.assertFalse(workspace.exists())
+        workspace.mkdir(mode=0o700)
+        tampered = hub_lifecycle.snapshot(workspace, self.binary, self.database, 'node-manager-test.service')
+        (tampered / 'hub.db').write_bytes(b'changed')
+        other = workspace / 'notes.txt'
+        other.write_text('mine')
+        verified = hub_lifecycle.snapshot(workspace, self.binary, self.database, 'node-manager-test.service')
+        foreign = hub_lifecycle.snapshot(workspace, self.binary, self.database, 'node-manager-other.service')
+        with contextlib.redirect_stdout(io.StringIO()) as shown:
+            hub.remove_backups()
+        self.assertFalse(verified.exists())
+        self.assertTrue(tampered.exists() and other.exists() and foreign.exists())
+        self.assertIn('notes.txt', shown.getvalue())
+        self.assertFalse(any(path.exists() for path in backups))
 
     def test_snapshot_rejects_missing_key_when_encrypted_data_exists(self):
         with self.assertRaisesRegex(ValueError, '配套密钥'):

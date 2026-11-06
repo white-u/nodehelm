@@ -26,11 +26,13 @@
 
 ## 安装 NodeHelm
 
-使用本项目构建的独立安装包，核对 SHA256 后解压，在 systemd Linux 上运行：
+在 systemd Linux 上以 root 运行，按提示填写 HTTPS 地址；再次运行即更新：
 
 ```sh
-sudo sh install-hub.sh --binary ./monitor-hub --sha256 <可信构建给出的SHA256> --site https://panel.example.com
+curl -fsSL https://github.com/white-u/nodehelm/releases/latest/download/nodehelm.sh | sudo sh
 ```
+
+离线安装和全部参数见 [部署文档](DEPLOY.md)。
 
 后台默认仅监听 `127.0.0.1:9911`，使用独立 `node-manager-hub` 服务及数据目录。配置自己的 HTTPS 反代后访问 `/admin/`，先以应急密码登录，再设置 GitHub 登录。升级、备份、恢复和卸载使用随包提供的 `scripts/hub-lifecycle.py`；完整参数见 [部署说明](NODE_MANAGEMENT_DEPLOY.md)。原监控 Agent 和主题仍复用上游；不要用原 monitor 安装器升级本后台。
 

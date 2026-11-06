@@ -30,7 +30,7 @@ NodeHelm 是基于 monitor Hub 派生的独立节点管理项目，包含监控�
 | --- | --- |
 | [Cargo.toml](Cargo.toml)、[Cargo.lock](Cargo.lock) | Rust 包信息与依赖 |
 | [build.rs](build.rs)、[web-theme.pin](web-theme.pin) | 默认主题准备和固定版本信息 |
-| [install-hub.sh](install-hub.sh)、[update-hub.sh](update-hub.sh)、[install.sh](install.sh) | 后台安装与更新、外部监控 Agent 的安装入口 |
+| [nodehelm.sh](nodehelm.sh)、[install-hub.sh](install-hub.sh)、[update-hub.sh](update-hub.sh)、[install.sh](install.sh) | 后台一键入口与本机 `nodehelm-hub` 菜单、包内安装与更新、外部监控 Agent 的安装入口 |
 | [Dockerfile](Dockerfile)、[工作流目录](.github/workflows/) | 容器与自动化流程 |
 | [.gitignore](.gitignore)、[rustfmt.toml](rustfmt.toml)、[LICENSE](LICENSE) | 忽略规则、Rust 格式配置与许可证 |
 

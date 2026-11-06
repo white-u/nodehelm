@@ -248,7 +248,26 @@ pub struct Setting {
     enabled: bool,
 }
 pub async fn settings(_: Admin, State(app): State<Shared>) -> Response {
-    response(Ok(json!({"enabled":app.db.get("management_enabled").as_deref()==Some("on"),"site":app.site})))
+    response((|| {
+        // Upgrades stay a command run on each node; the hub only says which nodes need it.
+        let bound = {
+            let c = app.db.conn();
+            let mut statement = c.prepare(
+                "SELECT node,component,last_seen FROM managed_node WHERE credential!='' ORDER BY node",
+            )?;
+            let rows = statement
+                .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        let current = component_digest(FILES);
+        let outdated: Vec<_> = bound.iter().filter(|(_, c, _)| *c != current).collect();
+        // The same 30 seconds as the node page: whether the component, not the probe, is reachable.
+        let offline: Vec<i64> =
+            outdated.iter().filter(|(_, _, seen)| *seen <= now() - 30).map(|(n, ..)| *n).collect();
+        let outdated: Vec<i64> = outdated.iter().map(|(n, ..)| *n).collect();
+        Ok(json!({"enabled":app.db.get("management_enabled").as_deref()==Some("on"),"site":app.site,
+            "bound":bound.len(),"outdated":outdated,"offline":offline}))
+    })())
 }
 pub async fn configure(_: Admin, State(app): State<Shared>, Json(input): Json<Setting>) -> Response {
     response((|| {
@@ -1153,6 +1172,7 @@ const FILES: &[(&str, &str)] = &[
     ("services.py", include_str!("../../management/services.py")),
     ("port_monitor.py", include_str!("../../management/port_monitor.py")),
     ("pm.py", include_str!("../../management/pm.py")),
+    ("menu.py", include_str!("../../management/menu.py")),
     ("core_assets.json", include_str!("../../management/core_assets.json")),
 ];
 /// One value for a whole component release. `agent.py` computes the same from the
@@ -1572,7 +1592,13 @@ mod lifecycle_tests {
                 body(status(Admin, f.state(), Path(f.node)).await).await["component_current"],
                 current
             );
+            let listed = body(settings(Admin, f.state()).await).await;
+            assert_eq!(listed["bound"], 1);
+            assert_eq!(listed["outdated"], if current { json!([]) } else { json!([f.node]) });
+            assert_eq!(listed["offline"], json!([]), "the component just polled");
         }
+        f.app.db.conn().execute("UPDATE managed_node SET last_seen=?1", [now() - 31]).unwrap();
+        assert_eq!(body(settings(Admin, f.state()).await).await["offline"], json!([f.node]));
     }
     #[tokio::test]
     async fn only_unexplained_silence_and_old_finished_operations_are_acted_on() {

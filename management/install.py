@@ -54,6 +54,38 @@ WantedBy=multi-user.target
 '''
 
 
+# `sudo nodehelm` opens the node menu. It lives and goes with the component, and
+# the marker line is how it is told apart from a command someone else installed.
+COMMAND = pathlib.Path('/usr/local/sbin/nodehelm')
+COMMAND_MARKER = b'# NodeHelm node menu; installed and removed with the management component.'
+COMMAND_TEXT = (b'#!/bin/sh\n' + COMMAND_MARKER + b'\n'
+                b'[ -f /opt/node-manager/menu.py ] || { echo "nodehelm: this component version has no menu" >&2; exit 1; }\n'
+                b'exec /usr/bin/python3 -B /opt/node-manager/menu.py "$@"\n')
+
+
+def own_command():
+    try:
+        return stat.S_ISREG(COMMAND.lstat().st_mode) and COMMAND_MARKER in COMMAND.read_bytes()[:200]
+    except OSError:
+        return False
+
+
+def place_command():
+    if not COMMAND.parent.is_dir():
+        return
+    if present(COMMAND) and not own_command():
+        print(f'{COMMAND} 已被其他程序占用，未安装 nodehelm 命令')
+        return
+    if not present(COMMAND) or COMMAND.read_bytes() != COMMAND_TEXT:
+        write_file(COMMAND, COMMAND_TEXT, 0o755)
+
+
+def remove_command():
+    if own_command():
+        COMMAND.unlink()
+        sync(COMMAND.parent)
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args):
         raise ValueError('拒绝下载地址跳转')
@@ -617,7 +649,8 @@ def install(args):
              '管理组件已安装并保留原身份，但首次上报结果未确认；请检查后台与日志，使用原安装命令重试', timeout=35)
     remove(ROOT / 'connection-request.json')
     remove(ROOT / 'connection-confirmed.json')
-    print('管理组件已安装，节点授权及后台首次上报已确认。')
+    place_command()
+    print('管理组件已安装，节点授权及后台首次上报已确认。以后在本机运行 sudo nodehelm 可升级和查看状态。')
 
 
 def check_no_pm_table():
@@ -806,6 +839,7 @@ def finish_purge(plan):
     for path in local_locks:
         if path in files:
             remove(path)
+    remove_command()
     if present(ROOT):
         ROOT.rmdir()
         sync(ROOT.parent)

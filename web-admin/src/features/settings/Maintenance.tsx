@@ -356,8 +356,8 @@ export function Data() {
 }
 
 // Hub and agent are published from different accounts; the hub entry matches HUB_REPO in main.rs.
-const hubUpdate = `curl -fsSL https://github.com/white-u/nodehelm/releases/latest/download/node-manager-$(uname -m)-unknown-linux-musl.tar.gz | tar xz
-sudo sh node-manager/update-hub.sh`
+const hubUpdate = 'curl -fsSL https://github.com/white-u/nodehelm/releases/latest/download/nodehelm.sh | sudo sh'
+const componentUpgrade = "sudo python3 /opt/node-manager/install.py upgrade"
 const releaseUrl = (repo: string, version: string) => `https://github.com/${repo}/releases/tag/v${version}`
 
 /** `v1.2.0 → v1.3.0` when something is published, the running version alone otherwise. */
@@ -442,7 +442,7 @@ export function Update({ versions, reload, nodes, site, refusal }: {
         {behind(versions.hub, versions.hub_latest) && (
           <>
             <p className="text-xs leading-relaxed text-muted-foreground">
-              在后台服务器上执行，失败会自动回退。Docker 部署请更新镜像。升级后如提示组件版本不一致，再到各节点升级管理组件。
+              在后台服务器上执行，失败会自动回退。更新后再按下方「管理组件」升级各节点。
             </p>
             <Command>{hubUpdate}</Command>
             <div>
@@ -532,6 +532,8 @@ export function Update({ versions, reload, nodes, site, refusal }: {
         )}
       </Card>
 
+      <Components nodes={nodes} />
+
       <OptionRow
         title="更新提醒"
         hint="有新版本时在导航的「更新」旁显示小圆点。关闭只是不再显示圆点，这一页照常检查"
@@ -540,5 +542,51 @@ export function Update({ versions, reload, nodes, site, refusal }: {
         <Switch checked={versions.notice} disabled={saving} onCheckedChange={setNotice} />
       </OptionRow>
     </div>
+  )
+}
+
+/**
+ * Nodes whose management component is not the one this hub ships. Upgrading
+ * stays a command run on the node: the hub names who needs it and never pushes code.
+ */
+function Components({ nodes }: { nodes: Node[] }) {
+  const [state, setState] = useState<{ enabled: boolean; bound: number; outdated: number[]; offline: number[] } | null>(null)
+  useEffect(() => {
+    api<{ enabled: boolean; bound: number; outdated: number[]; offline: number[] }>("/management").then(setState, () => setState(null))
+  }, [])
+  if (!state?.enabled || !state.bound) return null
+  const names = new Map(nodes.map((n) => [n.id, n]))
+  const outdated = state.outdated.map((id) => names.get(id)).filter((n): n is Node => !!n)
+  return (
+    <Card className="gap-4 p-5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-sm font-medium">管理组件</h3>
+        <span className="text-xs text-muted-foreground">
+          {outdated.length
+            ? <><span className="font-medium text-foreground">{outdated.length} 台待升级</span> · 共 {state.bound} 台接入</>
+            : `全部 ${state.bound} 台与后台一致`}
+        </span>
+      </div>
+      {outdated.length > 0 && (
+        <>
+          <p className="text-xs leading-relaxed text-muted-foreground">
+            以 root 在下列节点上执行，从本后台下载并校验组件，失败自动回退；业务实例只在配置变化时重启。已有 nodehelm 命令的节点也可运行 sudo nodehelm upgrade，同时升级监控 Agent。
+          </p>
+          <Command>{componentUpgrade}</Command>
+          <div>
+            <Button size="sm" variant="secondary" onClick={() => copy(componentUpgrade)}>
+              <Copy className="size-4" /> 复制命令
+            </Button>
+          </div>
+          <div className="flex max-h-60 flex-wrap gap-1.5 overflow-auto border-t pt-3">
+            {outdated.map((n) => (
+              <Badge key={n.id} variant="secondary" className={`font-normal ${state.offline.includes(n.id) ? "opacity-50" : ""}`} title={state.offline.includes(n.id) ? "管理组件未连接" : undefined}>
+                {n.name}
+              </Badge>
+            ))}
+          </div>
+        </>
+      )}
+    </Card>
   )
 }

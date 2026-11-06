@@ -19,6 +19,7 @@
 | 阅读目的 | 入口 |
 | --- | --- |
 | 使用入口及安装介绍 | [README.md](README.md) |
+| 从零部署步骤 | [DEPLOY.md](DEPLOY.md) |
 | 独立部署、反代、接入和恢复 | [NODE_MANAGEMENT_DEPLOY.md](NODE_MANAGEMENT_DEPLOY.md) |
 | 日常运维速查 | [OPERATIONS.md](OPERATIONS.md) |
 | 源码构建与联调 | [DEVELOPMENT.md](DEVELOPMENT.md) |

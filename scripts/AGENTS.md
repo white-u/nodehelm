@@ -20,6 +20,7 @@
 
 | 位置 | 关系 |
 | --- | --- |
+| [nodehelm.sh](../nodehelm.sh) | 后台一键入口与维护菜单，下载校验发布包后调用包内工具；安装后作为本机 `nodehelm-hub` 命令 |
 | [install-hub.sh](../install-hub.sh) | 根目录后台安装入口，调用 `hub-install.py` |
 | [install.sh](../install.sh) | 外部 monitor-agent 安装入口 |
 | [build.rs](../build.rs) | Cargo 构建时调用 `theme.sh` |

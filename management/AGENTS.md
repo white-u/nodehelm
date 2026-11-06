@@ -18,6 +18,7 @@
 | [snell.py](snell.py) | Snell 核心、实例配置、systemd 服务及核心版本操作 |
 | [services.py](services.py) | SB／FW 驱动、配置生成、目标检查、服务与核心版本操作 |
 | [pm.py](pm.py) | 受管 PM 计量、配额、重置、到期策略、限速和定时维护 |
+| [menu.py](menu.py) | 节点本机菜单 `sudo nodehelm`：升级、状态、日志与恢复，命令随组件安装和清理 |
 | [port_monitor.py](port_monitor.py) | 原脚本 PM 配置与计数的读取和解析 |
 | [core_assets.json](core_assets.json) | 核心版本、架构、发行地址与摘要清单 |
 | [tests/](tests/) | 执行器、业务驱动、安装及后台维护工具的回归和集成脚本；[operations.json](tests/operations.json) 是后台与组件共用的操作校验样例 |

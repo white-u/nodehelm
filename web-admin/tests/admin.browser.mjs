@@ -21,7 +21,7 @@ try {
   const context=await browser.newContext({viewport:{width:1280,height:900}}),page=await context.newPage(),errors=[]
   page.on('pageerror',error=>errors.push(error.message))
   // Version discovery is external to page wiring; all CRUD below uses real APIs.
-  await page.route('**/api/version',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({hub:'1.0.0',hub_latest:'',agent_latest:'',notice:false})}))
+  await page.route('**/api/version',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({hub:'1.0.1',hub_latest:'',agent_latest:'',notice:false})}))
   // Existing admin Field labels are display labels; scope the input to that field.
   function field(scope,label){return scope.locator('label').filter({hasText:new RegExp('^'+label.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'$')}).locator('..').locator('input').first()}
   async function api(route){const response=await context.request.get(base+route);assert(response.ok(),route);return response.json()}
@@ -63,7 +63,13 @@ try {
   await section('数据','/admin/data');await page.getByRole('heading',{name:'数据库',exact:true}).waitFor()
   await page.getByRole('heading',{name:'备份',exact:true}).waitFor()
   await section('主题','/admin/themes');await page.getByRole('heading',{name:'安装主题',exact:true}).waitFor()
+  // A bound node on an older component is listed with the command to run on it.
+  const managementRoute=route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({enabled:true,site:'https://panel.example.com',bound:1,outdated:[nodes[0].id],offline:[nodes[0].id]})})
+  await page.route('**/api/management',managementRoute)
   await section('更新','/admin/update');await page.getByRole('heading',{name:'后台',exact:true}).waitFor()
+  await page.getByRole('heading',{name:'管理组件',exact:true}).waitFor();await page.getByText('1 台待升级',{exact:true}).waitFor();await page.locator('[title="管理组件未连接"]').waitFor()
+  await page.getByText('sudo python3 /opt/node-manager/install.py upgrade',{exact:true}).waitFor();await page.getByText(nodes[0].name,{exact:true}).waitFor()
+  await page.unroute('**/api/management',managementRoute)
   await section('服务管理','/admin/manage');await page.getByRole('heading',{name:'节点服务管理',exact:true}).waitFor()
   await page.getByTestId(`node-card-${nodes[0].id}`).waitFor()
   await section('节点','/admin/nodes');await page.reload()

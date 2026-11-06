@@ -46,14 +46,13 @@ systemctl status node-manager-hub --no-pager
 journalctl -u node-manager-hub -n 100 --no-pager
 ```
 
-首次安装器不会覆盖已有程序。更新时在服务器上下载最新发布包并运行其中的脚本，它校验包内文件、创建一致性备份并检查新程序；失败会回退：
+安装与更新是同一条命令。已安装时它下载并校验最新发布包，相同版本直接退出，否则创建一致性备份并检查新程序；失败会回退：
 
 ```sh
-curl -fsSL https://github.com/white-u/nodehelm/releases/latest/download/node-manager-$(uname -m)-unknown-linux-musl.tar.gz | tar xz
-sudo sh node-manager/update-hub.sh
+curl -fsSL https://github.com/white-u/nodehelm/releases/latest/download/nodehelm.sh | sudo sh
 ```
 
-连不上 GitHub 时，把发布包传到服务器后运行同一脚本。校验文件与程序来自同一发布，只能发现下载损坏；要防发布被篡改，需另行核对来源。
+连不上 GitHub 时，把发布包和 `nodehelm.sh` 传到服务器，运行 `sudo sh nodehelm.sh --package 发布包`；也可解压后直接运行包内的 `update-hub.sh`。校验文件与程序来自同一发布，只能发现下载损坏；要防发布被篡改，需另行核对来源。
 
 切换中断使用同一工具 `recover`，不能删除恢复记录绕过检查。管理组件用 `/opt/node-manager/install.py upgrade` 单独维护；完整参数见部署说明。
 
@@ -77,7 +76,7 @@ sudo /opt/node-manager-hub/monitor-hub --db /var/lib/node-manager-hub/hub.db --r
 
 新密码只在当前终端显示；所有旧登录会话失效。不要将终端输出分享给他人。自定义部署须使用对应程序和数据库路径。
 
-卸载入口为 `sudo python3 scripts/hub-lifecycle.py uninstall`，默认保留数据库、密钥、主题；显式数据清理需要外部备份并按部署说明执行。管理组件、原监控 Agent、受管业务实例各有独立生命周期，不能通过删除整个 `/opt` 目录处理。`install-hub.sh` 不支持原安装器的 `--reset-password` 或 `--uninstall` 参数。
+后台主机上 `sudo nodehelm-hub`（安装前为 `nodehelm.sh`）的 `update`、`status`、`logs`、`reset-password`、`backup`、`uninstall` 覆盖日常维护，无参数在终端运行时显示菜单；节点上 `sudo nodehelm` 负责升级、状态、日志与恢复；`logs` 隐藏应急密码。卸载默认删除全部数据（数据库、密钥、主题、维护记录和服务器上的备份），加 `--keep-data` 保留数据；底层入口 `hub-lifecycle.py uninstall` 必须写明 `--purge` 或 `--keep-data`。维护工具保存在 `/opt/node-manager-hub/tools`，备份、恢复与卸载不需要联网。管理组件、原监控 Agent、受管业务实例各有独立生命周期，不能通过删除整个 `/opt` 目录处理。`install-hub.sh` 不支持原安装器的 `--reset-password` 或 `--uninstall` 参数。
 
 ## 故障定位
 

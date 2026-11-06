@@ -21,6 +21,12 @@ python3 -m unittest discover -s management/tests -v
 新项目沿用 `monitor-hub` 二进制名。使用当前项目的本地安装器和可信发行资产的 SHA-256，在 Linux 主机上安装独立的 `node-manager-hub.service`：
 
 ```sh
+curl -fsSL https://github.com/white-u/nodehelm/releases/latest/download/nodehelm.sh | sudo sh -s -- --site https://panel.example.com
+```
+
+入口脚本 `nodehelm.sh` 下载并校验发布包后调用包内安装器；手动安装可在解压目录运行：
+
+```sh
 sudo sh ./install-hub.sh --binary /absolute/path/monitor-hub --sha256 RELEASE_SHA256 --site https://panel.example.com --port 9911
 ```
 
@@ -42,33 +48,7 @@ sudo /opt/node-manager-hub/monitor-hub --db /var/lib/node-manager-hub/hub.db --r
 
 ## 用户维护 HTTPS 反代
 
-使用已有证书。下面是 Nginx server 内的路径示例，证书路径、域名按实际设置；`map` 位于 http 层：
-
-```nginx
-map $http_upgrade $connection_upgrade {
-    default upgrade;
-    '' close;
-}
-server {
-    listen 443 ssl;
-    server_name panel.example.com;
-    ssl_certificate /your/fullchain.pem;
-    ssl_certificate_key /your/privkey.pem;
-
-    location / {
-        proxy_pass http://127.0.0.1:9911;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-Forwarded-For $remote_addr;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_read_timeout 150s;
-        proxy_cache off;
-    }
-}
-```
+反向代理由用户自行选择和维护，本项目不提供代理配置。代理把 HTTPS 域名转发到后台的本机端口，并须满足：WebSocket 转发与不低于 150 秒的读写超时、请求体上限不低于 8 MiB、`X-Forwarded-Proto: https`、放行 GET/POST/PUT/DELETE、不缓存管理接口。各项不满足时的现象见 [部署文档](DEPLOY.md#3-配置-https-反向代理)。
 
 代理必须覆盖 `X-Forwarded-For` 为实际对端地址，不能原样透传用户自填值；仅设置 `X-Real-IP` 不会被后台的登录限流采用。多级 CDN 部署按原监控设置核实真实 IP 信任边界，不在源站仍可被直连时启用“仅 CDN 访问”。
 
@@ -198,7 +178,7 @@ sudo python3 /opt/node-manager/install.py uninstall
 
 ## 后台备份、恢复、升级与卸载
 
-本地工具使用 Python 3.10+、SQLite 和 Linux systemd。保留发行包目录结构，`scripts/hub-install.py`、`scripts/hub-lifecycle.py` 与 `scripts/hub_health.py` 必须在同一目录，不能只复制一个脚本。以下命令针对独立安装器的默认路径和端口；定制部署需在子命令前指定 `--unit`、`--binary`、`--db`、`--health` 及必要的 `--backups`。后台服务的 `ExecStart` 须显式配置实际数据库和回环监听路径。工具核实实际加载的 systemd 单元，拒绝覆盖配置或原 `monitor-hub` 服务。
+本地工具使用 Python 3.10+、SQLite 和 Linux systemd。保留发行包目录结构，`scripts/hub-install.py`、`scripts/hub-lifecycle.py` 与 `scripts/hub_health.py` 必须在同一目录，不能只复制一个脚本；用 `nodehelm.sh` 安装或更新后，`hub-lifecycle.py` 与 `hub_health.py` 也保存在 `/opt/node-manager-hub/tools`，常用操作可直接用 `sudo nodehelm-hub`。以下命令针对独立安装器的默认路径和端口；定制部署需在子命令前指定 `--unit`、`--binary`、`--db`、`--health` 及必要的 `--backups`。后台服务的 `ExecStart` 须显式配置实际数据库和回环监听路径。工具核实实际加载的 systemd 单元，拒绝覆盖配置或原 `monitor-hub` 服务。
 
 ```sh
 # 更新到本发布包的程序
@@ -212,7 +192,7 @@ sudo python3 scripts/hub-lifecycle.py recover
 - `backup` 暂停后台并用 SQLite 生成一致性数据库副本，同时保存后台二进制、配套 `.management.key` 和校验清单。默认备份目录为 `/var/backups/node-manager-hub`，仅 root 可读。单独保存 systemd 配置、反代及磁盘主题。后台网页的数据库下载不含密钥，可继续用于网页恢复。
 - `upgrade` 使用校验过的本地发行二进制。升级前拒绝未完成的管理任务、节点统一卸载和正在进行的组件维护，保存停服快照，并验证新进程实际监听回环地址且 `/api/me` 正常。失败会尝试恢复原程序、数据库与密钥。切换期间请暂停后台配置变更。持久启动保护记录位于 `/var/lib/node-manager-hub-lifecycle`，切换中断时使用相同路径参数执行 `recover`。
 - `restore` 使用备份中的数据库和密钥，保留当前后台程序。候选数据库先通过后台自身的完整性和迁移检查。恢复会清除旧的后台登录会话、管理绑定及普通管理任务，保留卸载审计并撤销旧收尾授权。未完成节点卸载时拒绝恢复后台备份。恢复后重新登录和接入节点，核实本地旧卸载记录与实际业务状态，再按实际快照查看配置。历史订阅链接不再提供服务，客户端已经保存的业务凭据仍可使用。
-- `uninstall` 仅适用于此项目独立安装器登记的后台。它移除后台服务与程序，保留数据库、密钥、磁盘主题和安装标识；在首次安装命令末尾加 `--reuse-data` 可重装并使用保留的数据目录。只有明确删除数据库时才执行 `uninstall --purge --backup /绝对路径/现有备份`，它在销毁前生成最后的停服备份，然后移除数据目录、主题、安装标识和运行状态。备份目录含数据库和密钥，始终保留并在结束时提示路径，确认不再需要后手工删除。数据目录中不属于本项目的文件不会删除。若卸载中断，用 `recover` 完成记录中的卸载。
+- `uninstall` 仅适用于此项目独立安装器登记的后台，必须写明 `--purge` 或 `--keep-data`。`--purge` 移除后台服务与程序、数据库、密钥、磁盘主题、安装标识、运行状态、本机维护命令，以及备份目录中能校验且属于本后台的备份；数据目录或备份目录中不属于本项目、无法校验的文件保留并提示路径。需要留存时先在网页下载数据库备份，它不含服务管理密钥，恢复后节点需重新接入。加 `--keep-data` 只移除服务与程序，保留数据库、密钥、磁盘主题和安装标识，在首次安装命令末尾加 `--reuse-data` 可重装并使用保留的数据。若卸载中断，用 `recover` 完成记录中的卸载。
 
 ## 版本说明
 

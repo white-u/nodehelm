@@ -26,6 +26,9 @@ UNIT = 'node-manager-hub.service'
 BINARY = pathlib.Path('/opt/node-manager-hub/monitor-hub')
 DATABASE = pathlib.Path('/var/lib/node-manager-hub/hub.db')
 MARKER = '.node-manager-install'
+# nodehelm.sh keeps a copy beside the program and links it into the path.
+LOCAL_COMMAND = 'nodehelm-hub'
+COMMAND_LINK = pathlib.Path('/usr/local/sbin') / LOCAL_COMMAND
 GATE = 'hub_lifecycle_maintenance'
 HEX = re.compile(r'[0-9a-f]{64}')
 
@@ -480,21 +483,18 @@ class Hub:
                 or regular(marker).st_uid != 0 or marker.read_bytes() != b'node-manager-hub-v1\n'):
             raise ValueError('仅可卸载独立安装器登记的后台')
         active = self.info().get('ActiveState') == 'active'
-        if args.purge:
-            bundle = verify_backup(args.backup)
-            if bundle['unit'] != self.unit or self.database.parent.resolve() in args.backup.parents:
-                raise ValueError('彻底清理需要本后台在数据目录外的有效备份')
+        # Either way is stated, never assumed: one keeps the data, the other leaves
+        # nothing, and a copy to keep is the panel's backup download, taken first.
+        purge = args.purge
         ensure_idle(self.database)
         self.pause(active)
         try:
             ensure_idle(self.database)
-            final_backup = None
-            if args.purge:
+            if purge:
                 for path in self.data_files():
                     if exists(path):
                         regular(path)
-                final_backup = snapshot(self.workspace, self.binary, self.database, self.unit).name
-            record = {'identity': self.identity(), 'phase': 'uninstalling', 'backup': final_backup,
+            record = {'identity': self.identity(), 'phase': 'uninstalling', 'purge': purge,
                       'unit_sha': sha256(UNITS / self.unit), 'binary_sha': sha256(self.binary)}
             write_json(self.journal, record)
         except Exception:
@@ -518,6 +518,42 @@ class Hub:
         if data.is_symlink():
             data.unlink()
 
+    def remove_local_command(self):
+        command = self.binary.parent / LOCAL_COMMAND
+        if COMMAND_LINK.is_symlink() and os.readlink(COMMAND_LINK) == str(command):
+            COMMAND_LINK.unlink()
+            sync(COMMAND_LINK.parent)
+        for path in (command, command.with_name('nodehelm-hub.new')):
+            remove(path)
+        tools = self.binary.parent / 'tools'
+        if exists(tools):
+            for name in ('hub-lifecycle.py', 'hub_health.py'):
+                remove(tools / name)
+                remove(tools / (name + '.new'))
+            if any(tools.iterdir()):
+                print(f'工具目录有非本项目文件，已保留：{tools}')
+            else:
+                tools.rmdir()
+
+    def remove_backups(self):
+        # Only what this tool wrote and can still verify; anything else stays and is named.
+        if not exists(self.workspace):
+            return
+        kept = []
+        for entry in sorted(self.workspace.iterdir()):
+            try:
+                if not entry.name.startswith('backup-') or verify_backup(entry)['unit'] != self.unit:
+                    raise ValueError
+            except (ValueError, OSError, KeyError, TypeError):
+                kept.append(entry)
+                continue
+            shutil.rmtree(entry)
+        sync(self.workspace)
+        if kept:
+            print('备份目录中有无法核实的内容，已保留：' + '，'.join(str(path) for path in kept))
+        else:
+            self.workspace.rmdir()
+
     def remove_run_state(self):
         # The lock this process holds stays valid until exit; nothing else is left to protect.
         remove(self.state / 'lock')
@@ -528,10 +564,9 @@ class Hub:
             remove(pathlib.Path('/run/node-manager-hub-install.lock'))
 
     def finish_uninstall(self, record):
-        final_backup = None
-        if record['backup']:
-            final_backup = self.workspace / record['backup']
-            verify_backup(final_backup)
+        # An older purge record named a last backup it promised to keep.
+        purge = record.get('purge', bool(record.get('backup')))
+        legacy = 'purge' not in record
         unit_file = UNITS / self.unit
         if exists(unit_file):
             regular(unit_file)
@@ -556,27 +591,28 @@ class Hub:
                 raise ValueError('后台程序已被外部替换，拒绝删除')
             remove(self.binary)
         remove(switch_temporary(self.binary))
-        if final_backup:
+        self.remove_local_command()
+        if purge:
             for path in (*self.data_files(), switch_temporary(self.database), switch_temporary(self.key)):
                 remove(path)
-            print(f'最后停服备份保存在 {final_backup}')
         marker = self.binary.parent / MARKER
         # A purge interrupted after removing the marker resumes here without it.
-        if not (final_backup and not exists(marker)):
+        if not (purge and not exists(marker)):
             if regular(marker).st_uid != 0 or marker.read_bytes() != b'node-manager-hub-v1\n':
                 raise ValueError('后台安装标识已被外部替换，请核实卸载状态')
-        if final_backup:
+        if purge:
             self.remove_data_directories()
+            if not legacy:
+                self.remove_backups()
         remove(self.blocked)
-        if final_backup:
+        if purge:
             remove(marker)
             if self.binary.parent.exists() and not any(self.binary.parent.iterdir()):
                 self.binary.parent.rmdir()
         remove(self.journal)
-        if final_backup:
+        if purge:
             self.remove_run_state()
-            print(f'备份含数据库和密钥，确认不再需要后执行 rm -rf {self.workspace}')
-        print('后台服务及程序已卸载。' + ('已移除后台数据库和密钥。' if final_backup else '后台数据库和密钥已保留。'))
+        print('后台服务及程序已卸载。' + ('数据库、密钥、主题和备份已全部删除。' if purge else '后台数据库和密钥已保留，可用 --reuse-data 重装。'))
 
 
 def diagnostic(error):
@@ -615,13 +651,12 @@ def main(argv=None):
     restore.add_argument('--backup', type=pathlib.Path, required=True)
     actions.add_parser('recover')
     uninstall = actions.add_parser('uninstall')
-    uninstall.add_argument('--purge', action='store_true')
-    uninstall.add_argument('--backup', type=pathlib.Path)
+    scope = uninstall.add_mutually_exclusive_group(required=True)
+    scope.add_argument('--purge', action='store_true', help='删除数据库、密钥、主题、维护记录和本工具的备份')
+    scope.add_argument('--keep-data', action='store_true', help='保留数据库、密钥和主题以便重装')
     args = parser.parse_args(argv)
     if getattr(args, 'backup', None) is not None and (not args.backup.is_absolute() or args.backup.resolve() != args.backup):
         parser.error('备份必须是绝对路径且不能包含符号链接')
-    if args.action == 'uninstall' and args.purge and args.backup is None:
-        parser.error('uninstall --purge 需要 --backup')
     if os.geteuid() != 0 or not pathlib.Path('/run/systemd/system').is_dir():
         raise ValueError('请在 Linux systemd 后台主机上使用 root 执行')
     os.umask(0o077)
