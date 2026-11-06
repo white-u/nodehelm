@@ -2,7 +2,7 @@
 
 [项目说明](../AGENTS.md) · [总索引](../INDEX.md)
 
-本目录是部署到 VPS 的 Python 管理组件。Agent 主动轮询后台并交给 Controller 执行，业务模块驱动处理配置、核心与 systemd 服务。这里的 `agent.py` 与外部 monitor-agent 是两个进程。
+本目录是部署到 VPS 的 Python 管理组件。Agent 主动轮询后台并交给 Controller 执行，业务模块驱动处理配置、核心与 systemd 服务。这里的 `agent.py` 与 `agent/` 的 monitor-agent 是两个进程。
 
 ## 文件索引
 

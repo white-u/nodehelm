@@ -358,6 +358,24 @@ class HubLifecycleTests(unittest.TestCase):
         self.assertIn('notes.txt', shown.getvalue())
         self.assertFalse(any(path.exists() for path in backups))
 
+    def test_only_the_newest_automatic_backup_survives_a_switch(self):
+        hub_lifecycle.replace_file(self.key, data=b'k' * 32)
+        workspace = self.root / 'backups'
+        workspace.mkdir(mode=0o700)
+        take = lambda unit='node-manager-test.service', automatic=True: hub_lifecycle.snapshot(
+            workspace, self.binary, self.database, unit, automatic)
+        older, source, newest = take(), take(), take()
+        manual, foreign = take(automatic=False), take('node-manager-other.service')
+        tampered = take()
+        (tampered / 'hub.db').write_bytes(b'changed')
+        hub = object.__new__(hub_lifecycle.Hub)
+        hub.workspace, hub.unit = workspace, 'node-manager-test.service'
+        with contextlib.redirect_stdout(io.StringIO()) as shown:
+            hub.prune_automatic({newest, source})
+        self.assertFalse(older.exists())
+        self.assertTrue(all(path.exists() for path in (source, newest, manual, foreign, tampered)))
+        self.assertIn('1 份', shown.getvalue())
+
     def test_snapshot_rejects_missing_key_when_encrypted_data_exists(self):
         with self.assertRaisesRegex(ValueError, '配套密钥'):
             hub_lifecycle.snapshot(self.root, self.binary, self.database, 'node-manager-test.service')

@@ -46,7 +46,7 @@ systemctl status node-manager-hub --no-pager
 journalctl -u node-manager-hub -n 100 --no-pager
 ```
 
-安装与更新是同一条命令。已安装时它下载并校验最新发布包，相同版本直接退出，否则创建一致性备份并检查新程序；失败会回退：
+安装与更新是同一条命令。已安装时它下载并校验最新发布包，相同版本直接退出，否则创建一致性备份并检查新程序；失败会回退，成功后只保留最新一份自动备份（手动 `backup` 的保留）：
 
 ```sh
 curl -fsSL https://github.com/white-u/nodehelm/releases/latest/download/nodehelm.sh | sudo sh

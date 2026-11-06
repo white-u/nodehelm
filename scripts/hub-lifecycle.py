@@ -194,7 +194,7 @@ def gate(database, enabled):
             db.execute('DELETE FROM setting WHERE key=?', (GATE,))
 
 
-def snapshot(workspace, binary, database, unit):
+def snapshot(workspace, binary, database, unit, automatic=False):
     directory = pathlib.Path(tempfile.mkdtemp(prefix='backup-', dir=workspace))
     copy_db(database, directory / 'hub.db')
     key = database.with_name(database.name + '.management.key')
@@ -203,7 +203,8 @@ def snapshot(workspace, binary, database, unit):
         replace_file(directory / 'hub.db.management.key', source=key)
     replace_file(directory / 'monitor-hub', source=binary, mode=0o700)
     names = {file.name: sha256(file) for file in directory.iterdir()}
-    write_json(directory / 'manifest.json', {'unit': unit, 'files': names})
+    # Marks the copy an update or restore takes for itself, the only kind ever pruned.
+    write_json(directory / 'manifest.json', {'unit': unit, 'files': names, **({'automatic': True} if automatic else {})})
     sync(workspace)
     return directory
 
@@ -425,7 +426,7 @@ class Hub:
         self.pause(True)
         try:
             ensure_idle(self.database)
-            old = snapshot(self.workspace, self.binary, self.database, self.unit)
+            old = snapshot(self.workspace, self.binary, self.database, self.unit, automatic=True)
             record = {'identity': self.identity(), 'backup': old.name, 'phase': 'switching',
                       'db_owner': [db_meta.st_uid, db_meta.st_gid],
                       'binary_owner': [bin_meta.st_uid, bin_meta.st_gid],
@@ -472,6 +473,26 @@ class Hub:
         gate(self.database, False)
         remove(self.journal)
         print(f'后台已启动并通过回环 HTTP 检查。切换前备份 {old}')
+        # A restore source is the user's choice to keep, even an automatic one.
+        self.prune_automatic(keep={old, getattr(args, 'backup', None)})
+
+    def prune_automatic(self, keep):
+        # The switch has succeeded; a failure here only leaves an extra copy behind.
+        removed = 0
+        for entry in sorted(self.workspace.iterdir()):
+            try:
+                if entry in keep or not entry.name.startswith('backup-'):
+                    continue
+                info = verify_backup(entry)
+                if info['unit'] != self.unit or info.get('automatic') is not True:
+                    continue
+                shutil.rmtree(entry)
+                removed += 1
+            except (ValueError, OSError, KeyError, TypeError):
+                continue
+        if removed:
+            sync(self.workspace)
+            print(f'已清理 {removed} 份较早的自动备份，手动备份不受影响')
 
     def data_files(self):
         return [self.database, self.key, *(self.database.with_name(self.database.name + suffix)
