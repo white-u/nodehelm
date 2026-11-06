@@ -1,11 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Dialog, DialogDescription, DialogDrawerContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Plus, X } from "lucide-react"
-import { type ApplyIntent, type PmPolicy, type RootSnapshot, type Snapshot, confirmDiscard, pmStatus, pmAlerts, gib } from "./model"
+import { Plus } from "lucide-react"
+import { InlinePanel, useServiceConfirmation } from "./ServiceInteractions"
+import { type ApplyIntent, type PmPolicy, type RootSnapshot, type Snapshot, pmStatus, pmAlerts, gib } from "./model"
 
-export function PmPanel({ node, snapshot, view, writable, busy, feedback, refreshing, reload, onDirtyChange, run, submit }: {
+export function PmPanel({ node, snapshot, view, writable, busy, feedback, refreshing, onDirtyChange, run, submit }: {
   node: string
   snapshot?: RootSnapshot
   view?: Snapshot
@@ -13,11 +13,11 @@ export function PmPanel({ node, snapshot, view, writable, busy, feedback, refres
   busy: boolean
   feedback: ReactNode
   refreshing: boolean
-  reload: () => Promise<void>
   onDirtyChange: (dirty: boolean) => void
   run: (action: () => Promise<void>) => Promise<void>
   submit: (action: string, payload: object, revision?: string, intent?: ApplyIntent) => Promise<void>
 }) {
+  const { confirm, discard, confirmation } = useServiceConfirmation()
   const [form, setForm] = useState<PmPolicy | null>(null)
   const [revision, setRevision] = useState("")
   const [editing, setEditing] = useState(false)
@@ -43,12 +43,15 @@ export function PmPanel({ node, snapshot, view, writable, busy, feedback, refres
     setInitialForm(JSON.stringify(next)); setForm(next); setDraftNotice("")
   }
 
-  function edit(item?: PmPolicy, trigger?: HTMLElement) {
-    if (confirmDiscard(dirty)) { formTrigger.current = trigger ?? null; loadDraft(item) }
+  async function edit(item?: PmPolicy, trigger?: HTMLElement) {
+    if (busy) return
+    if (form && editing === !!item && (!item || form.port === item.port)) { await closeForm(); return }
+    if (await discard(dirty)) { formTrigger.current = trigger ?? null; loadDraft(item) }
   }
-  function closeForm() { if (!busy && confirmDiscard(dirty)) setForm(null) }
-  function reloadDraft() {
-    if (!view || !form || !confirm("重新载入最新配置将替换当前草稿，是否继续？")) return
+  function restoreFocus() { if (formTrigger.current?.isConnected) formTrigger.current.focus({ preventScroll: true }) }
+  async function closeForm() { if (!busy && await discard(dirty)) { setForm(null); requestAnimationFrame(restoreFocus) } }
+  async function reloadDraft() {
+    if (!view || !form || !await confirm("重新载入最新配置将替换当前草稿，是否继续？")) return
     const latest = editing ? rules?.find(item => item.port === form.port) : undefined
     if (editing && !latest) { setForm(null); setDraftNotice("原 PM 规则已被删除，草稿已关闭。") }
     else if (!editing && !candidates.length) { setForm(null); setDraftNotice("暂无可用业务端口，草稿已关闭。") }
@@ -56,13 +59,15 @@ export function PmPanel({ node, snapshot, view, writable, busy, feedback, refres
   }
 
   return <div className="space-y-4">
+    {feedback}
+    {!form && confirmation}
     {draftNotice && <p role="status" className="text-sm">{draftNotice}</p>}
     <div className="space-y-3">
       <p className="text-xs text-muted-foreground">统计 IPv4 TCP/UDP 流量，默认仅计量；配额、到期和出站超速策略以丢包执行，IPv6 不受影响。</p>
       {view?.blocked && <p className="text-sm text-destructive">PM 状态需要在 VPS 核实。规则表确认已缺失时，可由 root 执行 python3 /opt/node-manager/pm.py repair --confirm-checkpoint-loss，从最近的持久检查点重建。</p>}
       {!view ? <p>此管理组件尚未上报受管 PM。绑定并升级组件后可配置。</p> :
         !view.installed ? <p className="text-sm text-muted-foreground">请先启用 PM。</p> : <>
-          <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-xs text-muted-foreground">端口规则 · {rules?.length ?? 0}</span><Button className="min-h-11" disabled={!writable || !legacyReadable || !candidates.length} onClick={event => edit(undefined, event.currentTarget)}><Plus aria-hidden="true" />新增 PM 规则</Button></div>
+          <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-xs text-muted-foreground">端口规则 · {rules?.length ?? 0}</span><Button className="min-h-11" disabled={!writable || !legacyReadable || !candidates.length} aria-expanded={!!form && !editing} onClick={event => { void edit(undefined, event.currentTarget) }}><Plus aria-hidden="true" />{form && !editing ? "收起新增" : "新增 PM 规则"}</Button></div>
           {!legacyReadable && <p className="text-sm text-muted-foreground">等待原 PM 配置可读取后再添加规则。</p>}
           {legacyReadable && !candidates.length && <p className="text-sm text-muted-foreground">暂无可用业务端口。请先启动监听 1024–65535 的 Snell、SB 或 FW 实例。</p>}
           {rules?.map(rule => {
@@ -78,32 +83,29 @@ export function PmPanel({ node, snapshot, view, writable, busy, feedback, refres
                 </> : <p className="text-muted-foreground">用量未知，请核实 VPS 上的 PM 服务。</p>}
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button variant="outline" disabled={!writable || !legacyReadable} onClick={event => edit(rule, event.currentTarget)}>编辑</Button>
+                <Button variant="outline" disabled={!writable || !legacyReadable} aria-expanded={editing && form?.port === rule.port} onClick={event => { void edit(rule, event.currentTarget) }}>{editing && form?.port === rule.port ? "收起编辑" : "编辑"}</Button>
                 <Button variant="outline" disabled={!writable} onClick={() => run(async () => {
-                  if (confirm(`重置 ${node} 上端口 ${rule.port} 的入站和出站用量？重置后按当前规则重新累计。`)) await submit("reset", { port: rule.port })
+                  if (await confirm(`重置 ${node} 上端口 ${rule.port} 的入站和出站用量？重置后按当前规则重新累计。`, { destructive: true })) await submit("reset", { port: rule.port })
                 })}>重置用量</Button>
                 <Button variant="outline" disabled={!writable} onClick={() => run(async () => {
-                  if (confirm(`删除 ${node} 上端口 ${rule.port} 的 PM 规则及计数？`)) await submit("delete", { port: rule.port })
+                  if (await confirm(`删除 ${node} 上端口 ${rule.port} 的 PM 规则及计数？`, { destructive: true })) await submit("delete", { port: rule.port })
                 })}>删除</Button>
               </div>
             </div>
           })}
         </>}
-      {form && <Dialog open onOpenChange={open => { if (!open) closeForm() }}>
-        <DialogDrawerContent showCloseButton={false} onCloseAutoFocus={event => { event.preventDefault(); if (formTrigger.current?.isConnected) formTrigger.current.focus() }}>
-          <DialogHeader className="shrink-0 border-b p-4 text-left"><div className="flex items-center justify-between gap-3"><DialogTitle className="text-base leading-normal font-medium">{editing ? "编辑" : "新增"} PM 规则 · {node}</DialogTitle><Button variant="ghost" size="icon" className="size-11" aria-label="关闭面板" onClick={closeForm}><X aria-hidden="true" /></Button></div><DialogDescription className="sr-only">当前节点的 PM 端口计量及流量策略</DialogDescription></DialogHeader>
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">{feedback}
+      {form && <InlinePanel title={`${editing ? "编辑" : "新增"} PM 规则 · ${node}`} testId="pm-policy-editor" busy={busy} onClose={() => { void closeForm() }} footer={<><Button variant="outline" disabled={busy} onClick={() => { void closeForm() }}>取消</Button><Button type="submit" form="pm-policy-form" disabled={!writable || draftStale || !legacyReadable || (!editing && !candidates.some(candidate => candidate.port === form.port))}>保存并应用</Button></>}>
           <form id="pm-policy-form" className="space-y-4" onSubmit={e => {
         e.preventDefault()
         void run(async () => {
           if (draftStale) throw new Error("配置已更新，请先重新载入最新配置。")
-          if (!confirm(`在 ${node} 应用端口 ${form.port} 的 PM 规则？开启配额、到期或超速策略可能丢弃端口流量。`)) return
+          if (!await confirm(`在 ${node} 应用端口 ${form.port} 的 PM 规则？开启配额、到期或超速策略可能丢弃端口流量。`)) return
           await submit("apply", form, revision, editing ? "update" : "create")
           setForm(null)
         })
       }}>
-        {draftStale && <div role="alert" className="space-y-2 text-sm"><p>服务器配置已更新，当前草稿已保留。请先重新载入最新配置，再修改并保存。</p><Button type="button" variant="outline" disabled={busy || !view || !writable} onClick={reloadDraft}>重新载入最新配置</Button></div>}
-        <div className="grid gap-3 sm:grid-cols-2">
+        {draftStale && <div role="alert" className="space-y-2 text-sm"><p>服务器配置已更新，当前草稿已保留。请先重新载入最新配置，再修改并保存。</p><Button type="button" variant="outline" disabled={busy || refreshing || !view || !writable} onClick={() => { void reloadDraft() }}>重新载入最新配置</Button></div>}
+        <fieldset disabled={busy} className="grid gap-3 sm:grid-cols-2">
           <label>业务端口<select aria-label="业务端口" className="block w-full rounded border bg-background p-2" disabled={editing} value={form.port} onChange={e => setForm({ ...form, port: Number(e.target.value) })}>
             {editing ? <option value={form.port}>{form.port}</option> : candidates.map(candidate => <option key={candidate.port} value={candidate.port}>{candidate.port} · {candidate.name}</option>)}
           </select></label>
@@ -113,13 +115,11 @@ export function PmPanel({ node, snapshot, view, writable, busy, feedback, refres
           <label>每月重置日（0 关闭）<Input type="number" required min={0} max={31} value={form.reset_day} onChange={e => setForm({ ...form, reset_day: Number(e.target.value) })} /></label>
           <label>到期日期（可选）<Input type="date" value={form.expiry_date} onChange={e => setForm({ ...form, expiry_date: e.target.value })} /></label>
           <label>出站超速丢包（Mbps，0 关闭）<Input type="number" required min={0} max={10000} value={form.egress_mbps} onChange={e => setForm({ ...form, egress_mbps: Number(e.target.value) })} /></label>
-        </div>
+        </fieldset>
         <p className="text-xs text-muted-foreground">重置按 UTC，每月不足指定日时取月末。到期日 UTC 结束后开始阻断。定时任务约每分钟保存用量，异常重启可能丢失最近一次保存后的用量。</p>
       </form>
-          </div>
-          <div className="flex shrink-0 flex-wrap justify-end gap-2 border-t p-4 [&_button]:min-h-11"><Button variant="ghost" disabled={busy || refreshing} onClick={() => { void reload() }}>刷新此节点</Button><Button variant="outline" disabled={busy} onClick={closeForm}>取消</Button><Button type="submit" form="pm-policy-form" disabled={!writable || draftStale || !legacyReadable || (!editing && !candidates.some(candidate => candidate.port === form.port))}>保存并应用</Button></div>
-        </DialogDrawerContent>
-      </Dialog>}
+          {confirmation}
+      </InlinePanel>}
     </div>
     <details className="space-y-2 rounded border p-3">
       <summary className="cursor-pointer">原 PM · {pmStatus[legacy?.status ?? ""] ?? "等待组件上报"}</summary>

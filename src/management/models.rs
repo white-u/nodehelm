@@ -336,6 +336,52 @@ pub fn sing_box(state: &ModuleSnapshot) -> Result<String> {
     )?)
 }
 
+// Encode URI components, including Base64 key punctuation. SIP002 requires
+// plaintext, percent-encoded userinfo for AEAD-2022 rather than Base64 userinfo.
+fn uri_component(value: &str) -> String {
+    let mut encoded = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || b"-_.~".contains(&byte) {
+            encoded.push(char::from(byte));
+        } else {
+            use std::fmt::Write;
+            write!(encoded, "%{byte:02X}").expect("write to string");
+        }
+    }
+    encoded
+}
+
+pub fn share_links(state: &ModuleSnapshot) -> Result<String> {
+    state.validate("sb")?;
+    if state.blocked || state.resources.is_empty() {
+        refuse!("SB 尚无可下载配置");
+    }
+    Ok(state
+        .resources
+        .iter()
+        .map(|resource| {
+            let host = string(resource, "host");
+            let host = if host.contains(':') { format!("[{host}]") } else { host.to_owned() };
+            let port = &resource["public_port"];
+            let name = uri_component(string(resource, "name"));
+            if resource["protocol"] == "ss2022" {
+                return format!(
+                    "ss://2022-blake3-aes-128-gcm:{}@{host}:{port}#{name}",
+                    uri_component(string(resource, "psk"))
+                );
+            }
+            format!(
+                "vless://{}@{host}:{port}?encryption=none&security=reality&sni={}&fp=chrome&pbk={}&sid={}&type=tcp&flow=xtls-rprx-vision#{name}",
+                string(resource, "uuid"),
+                uri_component(string(resource, "sni")),
+                uri_component(string(resource, "public_key")),
+                uri_component(string(resource, "short_id")),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,5 +429,41 @@ mod tests {
         let text = sing_box(&s).unwrap();
         assert!(text.contains("2022-blake3-aes-128-gcm"));
         assert!(!text.contains("private_key"));
+    }
+
+    #[test]
+    fn share_links_encode_names_keys_and_ipv6_and_never_export_private_keys() {
+        let private = URL_SAFE_NO_PAD.encode([2; 32]);
+        let mut state: ModuleSnapshot = serde_json::from_value(json!({
+            "installed":true,"blocked":false,"revision":"a".repeat(64),"resources":[
+                {"name":"现实 入口","port":443,"host":"2001:db8::1","public_port":8443,
+                 "protocol":"reality","sni":"example.com","psk":"",
+                 "uuid":"11111111-1111-4111-8111-111111111111","public_key":URL_SAFE_NO_PAD.encode([1;32]),
+                 "private_key":private,"short_id":"1234abcd"},
+                {"name":"SS 入口","port":20000,"host":"example.org","public_port":30000,
+                 "protocol":"ss2022","sni":"","psk":STANDARD.encode([251;16])}
+            ]
+        }))
+        .unwrap();
+        let text = share_links(&state).unwrap();
+        let links: Vec<_> = text.lines().collect();
+        assert_eq!(links.len(), 2);
+        assert!(links[0].starts_with("vless://11111111-1111-4111-8111-111111111111@[2001:db8::1]:8443?"));
+        let url = reqwest::Url::parse(links[0]).unwrap();
+        let query: BTreeMap<_, _> = url.query_pairs().collect();
+        assert_eq!(query["sni"], "example.com");
+        assert_eq!(query["pbk"], URL_SAFE_NO_PAD.encode([1; 32]));
+        assert_eq!(query["sid"], "1234abcd");
+        assert_eq!(query["flow"], "xtls-rprx-vision");
+        assert!(!text.contains(&private) && !text.contains("private_key"));
+        assert!(links[0].contains("#%E7%8E%B0%E5%AE%9E%20%E5%85%A5%E5%8F%A3"));
+        assert!(links[1].starts_with("ss://2022-blake3-aes-128-gcm:"));
+        assert!(links[1].contains("%2B") && links[1].contains("%2F") && links[1].contains("%3D"));
+        assert!(links[1].ends_with("@example.org:30000#SS%20%E5%85%A5%E5%8F%A3"));
+        state.blocked = true;
+        assert!(share_links(&state).is_err());
+        state.blocked = false;
+        state.resources.clear();
+        assert!(share_links(&state).is_err());
     }
 }

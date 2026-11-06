@@ -23,6 +23,7 @@ try {
   browser=await chromium.launch({headless:true,...(process.env.CHROME_BINARY?{executablePath:process.env.CHROME_BINARY}:{})})
   const context=await browser.newContext({viewport:{width:1280,height:900}}),page=await context.newPage(),errors=[]
   page.on('pageerror',error=>errors.push(error.message))
+  page.on('dialog',async dialog=>{errors.push('unexpected native dialog: '+dialog.type());await dialog.dismiss()})
   await page.goto(base+'/admin/manage');await page.getByLabel('应急密码').fill(password)
   await page.getByRole('button',{name:'登录',exact:true}).click();await page.waitForURL('**/admin/nodes')
   async function api(route,data,method=data===undefined?'GET':'POST'){
@@ -63,8 +64,8 @@ try {
   })
   await page.goto(base+'/admin/manage')
   const maintenance=page.getByTestId('node-maintenance'),moduleMaintenance=page.getByTestId('module-maintenance'),instances=page.getByTestId('instance-config'),progress=maintenance.getByTestId('lifecycle-progress')
-  const panel=page.getByRole('dialog')
-  async function closePanel(){if(await panel.count()){await panel.getByRole('button',{name:'关闭',exact:true}).click();await panel.waitFor({state:'detached'})}}
+  const panel=page.getByTestId('node-management-panel')
+  async function closePanel(){if(await panel.count()){await panel.getByRole('button',{name:'收起',exact:true}).click();await panel.waitFor({state:'detached'})}}
   async function completedHistory(message){
     const history=maintenance.getByTestId('operation-history')
     await history.waitFor();await progress.waitFor({state:'detached'})
@@ -87,9 +88,8 @@ try {
   async function refresh(){await page.getByRole('button',{name:'刷新此节点',exact:true}).click()}
   const revisions=snapshot=>({snell:snapshot.revision,sb:snapshot.modules.sb.revision,fw:snapshot.modules.fw.revision,pm:snapshot.modules.pm.revision})
   async function submit(button,node,scope,resume=false,snapshot=node.snapshot,attempt){
-    page.once('dialog',async dialog=>{assert(dialog.message().includes(node.name),'lifecycle confirmation omitted target node');await dialog.accept()})
     const posted=page.waitForResponse(response=>response.request().method()==='POST'&&new URL(response.url()).pathname===`/api/management/${node.id}/lifecycle`)
-    await button.click();const response=await posted;assert(response.ok(),`lifecycle submit: HTTP ${response.status()}`)
+    await button.click();const confirmation=page.getByRole('region',{name:'操作确认'});assert((await confirmation.textContent()).includes(node.name),'lifecycle confirmation omitted target node');await confirmation.getByRole('button',{name:'确认操作',exact:true}).click();const response=await posted;assert(response.ok(),`lifecycle submit: HTTP ${response.status()}`)
     const request=response.request().postDataJSON()
     assert(/^[0-9a-f]{32}$/.test(request.id));assert.equal(request.scope,scope);assert.equal(request.resume,resume)
     assert.deepEqual(request.revisions,revisions(snapshot))
@@ -114,8 +114,8 @@ try {
     const accepted=await route.fetch();assert(accepted.ok())
     await route.abort('connectionreset')
   })
-  page.once('dialog',dialog=>dialog.accept())
   await maintenance.getByRole('button',{name:'全部卸载此节点',exact:true}).click()
+  await page.getByRole('region',{name:'操作确认'}).getByRole('button',{name:'确认操作',exact:true}).click()
   await page.getByText(/卸载请求结果未确认，已尝试读取节点进度；请核实结果，勿重复提交/).waitFor()
   await progress.getByText('正在卸载 · 此节点全部受管服务',{exact:true}).waitFor()
   assert.equal((await api(`/api/management/${lost.id}`)).lifecycle.id,lostRequest.id)
@@ -128,7 +128,7 @@ try {
   assert(await moduleMaintenance.getByRole('button',{name:'卸载 Snell',exact:true}).isEnabled(),'non-empty module could not use cascade lifecycle')
   await moduleMaintenance.getByText('卸载会先清理关联受管 PM 规则，再删除此模块的实例和核心；其他模块保留。',{exact:true}).waitFor()
   const job=await submit(moduleMaintenance.getByRole('button',{name:'卸载 Snell',exact:true}),single,'snell')
-  await panel.getByRole('button',{name:'查看进度',exact:true}).click();await progress.waitFor();const actual=await api(`/api/management/${single.id}`);assert.equal(actual.lifecycle.id,job.id)
+  await instances.getByRole('button',{name:'查看进度',exact:true}).click();await progress.waitFor();const actual=await api(`/api/management/${single.id}`);assert.equal(actual.lifecycle.id,job.id)
   const running={...actual,online:true,lifecycle:{...actual.lifecycle,status:'running',stage:'delete_related_pm',message:'fixture running',attempt:1}}
   fixtures.set(single.id,running);await refresh();await progress.getByText('fixture running',{exact:true}).waitFor()
   await closePanel()
@@ -198,11 +198,14 @@ try {
   let abandoned
   await page.route(`**/api/management/${all.id}/abandon`,route=>{abandoned=route.request().postDataJSON();fixtures.delete(all.id);return route.fulfill({status:200,contentType:'application/json',body:'{"message":"ok"}'})})
   await maintenance.getByTestId('abandon-node').locator('summary').click()
-  page.once('dialog',dialog=>dialog.dismiss())
-  await page.getByRole('button',{name:'确认节点已失效'}).click();await page.waitForTimeout(100)
-  assert.equal(abandoned,undefined)
-  page.once('dialog',dialog=>dialog.accept(all.name))
   await page.getByRole('button',{name:'确认节点已失效'}).click()
+  await page.getByRole('region',{name:'操作确认'}).getByRole('button',{name:'取消操作',exact:true}).click();await page.waitForTimeout(100)
+  assert.equal(abandoned,undefined)
+  await page.getByRole('button',{name:'确认节点已失效'}).click()
+  const abandonment=page.getByRole('region',{name:'操作确认'})
+  assert(await abandonment.getByRole('button',{name:'确认操作',exact:true}).isDisabled())
+  await abandonment.getByRole('textbox').fill(all.name)
+  await abandonment.getByRole('button',{name:'确认操作',exact:true}).click()
   for(let i=0;i<50&&!abandoned;i++)await page.waitForTimeout(50)
   assert.deepEqual(abandoned,{name:all.name})
   console.log('PASS lifecycle browser: real protocol check and scope/revision submissions; other-protocol node blocked; fixture running/paused/offline/resume-attempt and cleaning/finalizing/revoked/succeeded UI; active write/export/enrollment guards; bounded polling; unrelated modules retained')

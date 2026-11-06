@@ -4,9 +4,11 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Server, ArrowDownRight, RefreshCw, Search } from "lucide-react"
 import { ManagementDetail, NodeManagement } from "./ServiceDetail"
-import { type Module, type Status, type NodeStatus, names, modules, moduleView, lifecycleActive, confirmDiscard, defaultHost, readManagement } from "./model"
+import { useServiceConfirmation } from "./ServiceInteractions"
+import { type Module, type Status, type NodeStatus, names, modules, moduleView, lifecycleActive, defaultHost, readManagement } from "./model"
 
 export function Management({ nodes }: { nodes: Node[] }) {
+  const { discard, confirmation } = useServiceConfirmation()
   const [selectedNode, setNode] = useState(0)
   const node = nodes.some(n => n.id === selectedNode) ? selectedNode : nodes[0]?.id ?? 0
   const [module, setModule] = useState<Module>("snell")
@@ -125,11 +127,12 @@ export function Management({ nodes }: { nodes: Node[] }) {
     const first = setTimeout(() => { if (node) void refreshNode(node) }, 0)
     return () => clearTimeout(first)
   }, [node, refreshNode])
-  function select(id: number, nextModule = module, scroll = true) {
+  async function select(id: number, nextModule = module, scroll = true) {
     const changing = id !== node || nextModule !== module
-    if (changing && !confirmDiscard(dirty.current)) return false
+    if (changing && !await discard(dirty.current)) return false
     if (changing) dirty.current = false
     setNode(id); setModule(nextModule)
+    setManagedNode(0)
     if (scroll) requestAnimationFrame(() => {
       detail.current?.focus({ preventScroll: true })
       detail.current?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth", block: "start" })
@@ -144,7 +147,7 @@ export function Management({ nodes }: { nodes: Node[] }) {
   const managementTarget = nodes.find(n => n.id === managedNode)
   function openNodeManagement(id: number, trigger: HTMLElement) {
     nodeManagementTrigger.current = trigger
-    setManagedNode(id)
+    setManagedNode(previous => previous === id ? 0 : id)
     void refreshNode(id)
   }
 
@@ -189,9 +192,6 @@ export function Management({ nodes }: { nodes: Node[] }) {
       </div>}
     </div>
     <p className="text-xs text-muted-foreground">显示上次读取的状态；按需刷新，仅操作待确认时自动查询。仅管理本后台创建的服务。</p>
-    <div ref={detail} id="service-detail" tabIndex={-1} aria-label={`${nodes.find(n => n.id === node)?.name ?? "节点"} · ${names[module]}配置`} className="scroll-mt-24 focus:outline-none" data-testid="node-detail" data-node-id={node}>
-      <ManagementDetail key={`${node}/${module}`} node={node} module={module} selectedName={nodes.find(n => n.id === node)?.name ?? ""} record={record} defaultAddress={defaultHost(nodes.find(n => n.id === node))} notice={notices[node]} onSubmitted={operation => submitted(node, operation)} onDirtyChange={onDirtyChange} onNodeManagement={trigger => openNodeManagement(node, trigger)} enabled={enabled} settingsError={settingsError} reload={async (manual = false) => { await Promise.all([refreshSettings(), node ? refreshNode(node, true, manual) : Promise.resolve()]) }} />
-    </div>
     {managementTarget && <NodeManagement key={managementTarget.id} node={managementTarget} record={records[managementTarget.id]} notice={notices[managementTarget.id]} enabled={enabled} settingsError={settingsError} onSubmitted={operation => submitted(managementTarget.id, operation)} onClose={() => setManagedNode(0)} restoreFocus={() => {
       if (nodeManagementTrigger.current?.isConnected) nodeManagementTrigger.current.focus()
       else {
@@ -200,6 +200,11 @@ export function Management({ nodes }: { nodes: Node[] }) {
         else detail.current?.focus({ preventScroll: true })
       }
     }} reload={async (manual = false) => { await Promise.all([refreshSettings(), refreshNode(managementTarget.id, true, manual)]) }} />}
+    {confirmation}
+    <div ref={detail} hidden={!!managementTarget} id="service-detail" tabIndex={-1} aria-label={`${nodes.find(n => n.id === node)?.name ?? "节点"} · ${names[module]}配置`} className="scroll-mt-24 focus:outline-none" data-testid="node-detail" data-node-id={node}>
+      <ManagementDetail key={`${node}/${module}`} node={node} module={module} selectedName={nodes.find(n => n.id === node)?.name ?? ""} record={record} defaultAddress={defaultHost(nodes.find(n => n.id === node))} notice={notices[node]} onSubmitted={operation => submitted(node, operation)} onDirtyChange={onDirtyChange} onNodeManagement={trigger => openNodeManagement(node, trigger)} enabled={enabled} settingsError={settingsError} reload={async (manual = false) => { await Promise.all([refreshSettings(), node ? refreshNode(node, true, manual) : Promise.resolve()]) }} />
+    </div>
+
   </section>
 }
 

@@ -1,4 +1,4 @@
-import { api, type Node } from "@/lib/api"
+import { api, type Node } from "../../lib/api.ts"
 
 export type Module = "snell" | "sb" | "fw" | "pm"
 export type ApplyIntent = "create" | "update"
@@ -34,8 +34,8 @@ export function defaultHost(node?: Node): string {
 }
 export function newResource(module: Module, host: string): Resource {
   if (module === "fw") return { name: "转发", port: 10086, target_host: "", target_port: 10086 }
-  if (module === "sb") return { name: "Reality", port: 443, host, public_port: 443, protocol: "reality", sni: sniChoices[0], psk: "" }
-  return { name: "Snell", port: 10086, host, public_port: 10086, mode: "default", psk: "" }
+  if (module === "sb") return { name: "", port: 443, host, public_port: 443, protocol: "reality", sni: "", psk: "" }
+  return { name: "", port: 10086, host, public_port: 10086, mode: "default", psk: "" }
 }
 export function editable(module: Module, item: Resource): Resource {
   // Do not round-trip snapshot-only public keys or metadata into a write request.
@@ -44,8 +44,9 @@ export function editable(module: Module, item: Resource): Resource {
   return module === "sb" ? { ...common, protocol: item.protocol, sni: item.sni } : { ...common, mode: item.mode }
 }
 
-export function confirmDiscard(dirty: boolean) {
-  return !dirty || confirm("有尚未保存的修改，放弃草稿并继续？")
+export function instancePayload(module: Module, draft: Resource): Resource {
+  if (module !== "snell" && module !== "sb") return { ...draft }
+  return { ...draft, name: draft.name.trim() || String(draft.port), ...(module === "sb" ? { sni: draft.protocol === "reality" ? draft.sni?.trim() ?? "" : "" } : {}) }
 }
 
 export async function readManagement<T>(path: string): Promise<T> {

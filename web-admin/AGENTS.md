@@ -13,7 +13,8 @@
 | 节点控件与安装 | [nodes/NodeControls.tsx](src/features/nodes/NodeControls.tsx)：地址、筛选与节点选择；[AgentInstall.tsx](src/features/nodes/AgentInstall.tsx)：监控 Agent 安装、注册及命令辅助 |
 | 延迟探测 | [monitoring/Ping.tsx](src/features/monitoring/Ping.tsx)：探测列表、表单、节点关联与视图切换 |
 | 服务总览 | [services/Management.tsx](src/features/services/Management.tsx)：节点卡片、状态读取、选择和结果确认调度 |
-| 服务配置与维护 | [services/ServiceDetail.tsx](src/features/services/ServiceDetail.tsx)：模块配置、Snell／SB／FW 表单抽屉、配置弹窗、独立节点管理和模块维护抽屉及操作记录 |
+| 服务配置与维护 | [services/ServiceDetail.tsx](src/features/services/ServiceDetail.tsx)：模块配置、Snell／SB／FW 页内表单、配置文本、独立节点管理及顶部核心维护和操作记录 |
+| 服务页交互 | [services/ServiceInteractions.tsx](src/features/services/ServiceInteractions.tsx)：页内展开区、异步操作确认、放弃草稿和节点名称确认 |
 | PM 与管理模型 | [services/PortPolicies.tsx](src/features/services/PortPolicies.tsx)：端口策略；[model.ts](src/features/services/model.ts)：类型、固定文案和数据辅助 |
 | 常规设置 | [settings/GeneralSettings.tsx](src/features/settings/GeneralSettings.tsx)：站点设置、图标及共享设置状态逻辑 |
 | 通知与主题 | [settings/Notifications.tsx](src/features/settings/Notifications.tsx)：通知配置与离线策略；[Themes.tsx](src/features/settings/Themes.tsx)：主题安装、选择和配置 |
@@ -29,19 +30,19 @@
 | [index.html](index.html)、[src/main.tsx](src/main.tsx) | HTML 入口与 React 挂载 |
 | [src/App.tsx](src/App.tsx)、[src/components/Admin.tsx](src/components/Admin.tsx) | 身份、主题、路径切换及后台导航组合 |
 | [src/components/TrafficHistory.tsx](src/components/TrafficHistory.tsx) | 分时流量历史展示 |
-| [src/components/ui/](src/components/ui/) | Button、Dialog、DialogDrawerContent、Input 等基础组件 |
+| [src/components/ui/](src/components/ui/) | Button、Dialog、Input 等基础组件 |
 | [src/lib/api.ts](src/lib/api.ts) | API、数据类型、监控帧订阅及安装辅助逻辑 |
 | [src/lib/format.ts](src/lib/format.ts)、[src/lib/utils.ts](src/lib/utils.ts)、[src/index.css](src/index.css) | 格式化、样式辅助及主题样式 |
 | [vite.config.ts](vite.config.ts) | `/admin/` 基路径、`@` 别名与开发代理 |
 | [package.json](package.json)、[package-lock.json](package-lock.json) | 前端依赖、脚本和依赖锁定 |
 | [tsconfig.json](tsconfig.json)、[tsconfig.app.json](tsconfig.app.json)、[tsconfig.node.json](tsconfig.node.json) | TypeScript 入口、应用和工具配置 |
 | [components.json](components.json)、[.oxlintrc.json](.oxlintrc.json)、[public/](public/) | UI 组件、代码规则与静态资源 |
-| [tests/](tests/)、[src/lib/api.test.ts](src/lib/api.test.ts) | 浏览器流程与请求辅助逻辑的回归脚本 |
+| [tests/](tests/)、[src/lib/api.test.ts](src/lib/api.test.ts)、[services/model.test.ts](src/features/services/model.test.ts) | 浏览器流程、请求辅助及服务表单数据的回归脚本 |
 
 ## 服务管理页面定位
 
-节点卡片内每个模块独占一行，名称和状态横向排列；卡片保留读取时间，并提供独立的“节点管理”入口。下方配置区直接展示所选模块的实例、转发或 PM 规则，未安装时可直接安装；新增和编辑表单使用抽屉，保留未保存修改、版本过期和重新载入保护。
+节点卡片内每个模块独占一行，名称和状态横向排列；卡片保留读取时间，并提供独立的“节点管理”入口。下方配置区直接展示所选模块的实例、转发或 PM 规则，未安装时可直接安装；新增在列表上方展开，Snell／SB／FW 编辑在对应实例下方展开，再次点击可收起。保留未保存修改、版本过期和重新载入保护。Snell 只填写可选名称和监听端口；SB 将协议及 Reality 的 SNI 放在普通表单中；客户端端口默认跟随监听端口，NAT 映射时在折叠项中修改。Snell／SB 名称留空时在提交前使用端口号，保留现有节点协议与隐藏的访问地址、模式及密钥保留语义。
 
-“节点管理”抽屉由 `Management.tsx` 单独选择目标，不改变当前模块配置区；`ServiceDetail.tsx` 中的 `NodeManagement` 负责该节点的接入、全部卸载、紧急撤销授权、失效节点处理及卸载进度恢复。“模块维护”只负责当前模块的核心升级、回退和卸载。未完成或异常的卸载在配置区提供简短提示与进度入口；完整进度在节点管理中查看，卸载结果和操作记录默认折叠。Snell／SB 的客户端配置仍使用独立弹窗，PM 表单和用量逻辑位于 `PortPolicies.tsx`。状态读取及结果确认调度继续由 `Management.tsx` 负责。
+“节点管理”在页面内展开，由 `Management.tsx` 单独选择目标；打开时暂时隐藏模块配置区，保留所选模块和草稿。`ServiceDetail.tsx` 中的 `NodeManagement` 负责接入、全部卸载、紧急撤销授权、失效节点处理及卸载进度恢复。核心版本与升级入口始终位于实例列表上方，“模块维护”展开回退和卸载。完整卸载进度在节点管理中查看，卸载结果和操作记录默认折叠。服务操作、草稿放弃和名称确认均在页内完成，不使用原生确认框或侧栏。Snell 配置文本及 SB 的 vless／ss 分享链接在对应实例下方展开，只展示配置和复制按钮；实例行展示名称、运行状态和端口，映射时附客户端端口。PM 表单和用量逻辑位于 `PortPolicies.tsx`。状态读取及结果确认调度继续由 `Management.tsx` 负责。
 
 字段与动作对应 [management/mod.rs](../src/management/mod.rs)、[models.rs](../src/management/models.rs) 和 [Python 模型](../management/AGENTS.md)。页面功能及交互变化时，同步这些实际消费者与对应文档入口。

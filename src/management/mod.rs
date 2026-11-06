@@ -1068,9 +1068,9 @@ fn render_configuration(value: Value, format: &str) -> Result<String> {
     if snap.blocked {
         refuse!("节点配置待恢复，暂停下载配置");
     }
-    if format == "sing-box" {
+    if matches!(format, "sing-box" | "share") {
         let sb = snap.modules.get("sb").context(crate::Shown("SB 尚未接入".into()))?;
-        return models::sing_box(sb);
+        return if format == "share" { models::share_links(sb) } else { models::sing_box(sb) };
     }
     if !matches!(format, "" | "surge") {
         refuse!("不支持的客户端配置格式");
@@ -1089,8 +1089,11 @@ fn render_configuration(value: Value, format: &str) -> Result<String> {
     Ok(text)
 }
 fn render_instance(mut value: Value, format: &str, port: u16) -> Result<String> {
-    let resources =
-        if format == "sing-box" { &mut value["modules"]["sb"]["resources"] } else { &mut value["resources"] };
+    let resources = if matches!(format, "sing-box" | "share") {
+        &mut value["modules"]["sb"]["resources"]
+    } else {
+        &mut value["resources"]
+    };
     let rows = resources.as_array_mut().context(crate::Shown("模块尚无配置".into()))?;
     rows.retain(|r| r["port"].as_u64() == Some(u64::from(port)));
     if rows.len() != 1 {
@@ -1451,6 +1454,26 @@ mod lifecycle_tests {
         assert!(render_instance(value.clone(), "surge", 9999).is_err());
         value["blocked"] = json!(true);
         assert!(render_instance(value, "surge", 12345).is_err());
+    }
+    #[test]
+    fn sb_share_export_is_scoped_to_the_selected_instance() {
+        let mut value = serde_json::to_value(snapshot()).unwrap();
+        value["modules"] = json!({"sb": {
+            "installed":true,"blocked":false,"revision":"c".repeat(64),"resources":[
+                {"name":"one","port":12345,"host":"one.example.com","public_port":12345,
+                 "protocol":"ss2022","sni":"","psk":"AQEBAQEBAQEBAQEBAQEBAQ=="},
+                {"name":"two","port":23456,"host":"two.example.com","public_port":23456,
+                 "protocol":"ss2022","sni":"","psk":"AgICAgICAgICAgICAgICAg=="}
+            ]
+        }});
+        let text = render_instance(value.clone(), "share", 12345).unwrap();
+        assert!(text.starts_with("ss://2022-blake3-aes-128-gcm:"));
+        assert!(text.contains("@one.example.com:12345#one"));
+        assert!(!text.contains("two.example.com") && !text.contains("AgICAg"));
+        assert_eq!(text.lines().count(), 1);
+        assert!(render_instance(value.clone(), "share", 9999).is_err());
+        value["blocked"] = json!(true);
+        assert!(render_instance(value, "share", 12345).is_err());
     }
     #[tokio::test]
     async fn maintenance_lease_is_owned_expiring_and_blocks_new_work() {

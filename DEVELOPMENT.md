@@ -54,7 +54,7 @@ cargo test
 shellcheck -S warning install.sh install-hub.sh update-hub.sh nodehelm.sh scripts/*.sh
 ```
 
-`npm test` 使用 Node 直接运行 `api.test.ts`，应使用 CI 同代的 Node。它验证请求和辅助数据逻辑，并非浏览器端到端覆盖。Rust 用例主要放在各模块内，分时流量数据库测试通过 `db.rs` 引入 `src/testdata/traffic-period.rs`。
+`npm test` 使用 Node 直接运行 `api.test.ts` 和服务表单 `model.test.ts`，应使用 CI 同代的 Node。它验证请求和辅助数据逻辑，并非浏览器端到端覆盖。Rust 用例主要放在各模块内，分时流量数据库测试通过 `db.rs` 引入 `src/testdata/traffic-period.rs`。
 
 | 修改范围 | 必要关联检查 |
 | --- | --- |
