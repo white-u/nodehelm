@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input"
 import { Plus, RefreshCw } from "lucide-react"
 import { PmFields, PmPanel } from "./PortPolicies"
 import { InlinePanel, useServiceConfirmation } from "./ServiceInteractions"
-import { type Module, type ApplyIntent, type Resource, type CoreAction, type Snapshot, type Status, type NodeStatus, type FollowUp, type PmDraft, type PmPolicy, names, modules, moduleView, lifecycleActive, lifecycleLabels, runtimeLabels, actionLabels, labels, sniChoices, quote, newResource, editable, instancePayload, pmBlocked, pmDraft, pmPayload, pmSummary } from "./model"
+import { type Module, type ApplyIntent, type Resource, type CoreAction, type Snapshot, type Status, type NodeStatus, type FollowUp, type PmDraft, type PmPolicy, names, modules, moduleView, lifecycleActive, lifecycleLabels, runtimeLabels, actionLabels, labels, sniChoices, quote, newResource, editable, instancePayload, pmBlocked, pmDraft, newPmDraft, pmPayload, pmSummary } from "./model"
 
 export function ManagementDetail({ node, module, selectedName, record, defaultAddress, notice, progress = "", alerts = true, onSubmitted, onOpenPm, pmOpening, onDirtyChange, onNodeManagement, enabled, settingsError, reload }: {
   node: number; module: Module; selectedName: string; record?: NodeStatus; defaultAddress: string; notice?: string
@@ -393,7 +393,7 @@ function CorePanel({ node, module, view, writable, expanded, toggle, run, submit
 function PmOption({ port, name, blocked, draft, busy, alerts, onChange }: { port: number; name: string; blocked: string; draft: PmDraft | null; busy: boolean; alerts: boolean; onChange: (draft: PmDraft | null) => void }) {
   const on = !!draft && !blocked
   return <div className="space-y-3 text-sm">
-    <label className="flex items-center gap-2"><input type="checkbox" className="size-4" disabled={busy || !!blocked} checked={on} onChange={event => onChange(event.target.checked ? pmDraft({ port, name, quota_gb: 0, quota_mode: "in_out", reset_day: 0, expiry_date: "", egress_mbps: 0 }) : null)} />同时启用 PM 统计{blocked && <span className="text-xs text-muted-foreground">（{blocked}）</span>}</label>
+    <label className="flex items-center gap-2"><input type="checkbox" className="size-4" disabled={busy || !!blocked} checked={on} onChange={event => onChange(event.target.checked ? newPmDraft(port, name) : null)} />同时启用 PM 统计{blocked && <span className="text-xs text-muted-foreground">（{blocked}）</span>}</label>
     {on && <><PmFields form={draft} setForm={onChange} busy={busy} alerts={alerts} /><p className="text-xs text-muted-foreground">实例运行后自动应用；默认只计量，不丢包。</p></>}
   </div>
 }

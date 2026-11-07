@@ -127,11 +127,14 @@ pub fn resource(module: &str, value: &Value, snapshot: bool) -> Result<()> {
 }
 
 /// Present only when on, so a rule without it keeps the revision older components
-/// computed. The component stores the whitelist normalized.
+/// computed; `block` likewise appears only as true. The component stores the
+/// whitelist normalized.
 fn ip_limit(value: &Value) -> Result<()> {
     let Some(map) = value.as_object() else { refuse!("IP 告警设置格式错误") };
     let whitelist = value["whitelist"].as_array();
-    if map.len() != 3
+    let block = map.get("block");
+    if map.len() != 3 + usize::from(block.is_some())
+        || block.is_some_and(|b| b != true)
         || value["max_ips"].as_u64().is_none_or(|n| !(1..=65535).contains(&n))
         || value["cooldown_min"].as_u64().is_none_or(|n| !(1..=525600).contains(&n))
         || whitelist.is_none_or(|ips| {
@@ -474,6 +477,7 @@ mod tests {
             name: "PM".into(),
             count: 17,
             max: 3,
+            block: true,
             level: 2,
             ips: (1..=15).map(|n| format!("203.0.113.{n}")).collect(),
         };
@@ -481,8 +485,10 @@ mod tests {
         let note = crate::notify::ip_note("hk", &alert, &places);
         assert_eq!(note.title, "🔴 异常接入报警 · hk");
         assert!(note.message.contains("在线 17 IP · 等级 报警（6 个及以上）"));
-        let warning = crate::notify::IpAlert { level: 1, ips: vec![], ..alert.clone() };
-        assert!(crate::notify::ip_note("hk", &warning, &places).message.contains("等级 警告（4 个及以上）"));
+        assert!(note.message.contains("已开启阻断：第 7 个起的新地址自动阻断 30 分钟"));
+        let warning = crate::notify::IpAlert { level: 1, ips: vec![], block: false, ..alert.clone() };
+        let message = crate::notify::ip_note("hk", &warning, &places).message;
+        assert!(message.contains("等级 警告（4 个及以上）") && message.contains("未开启阻断，只提醒"));
         assert!(note.message.contains("1. 203.0.113.1 - 中国, 上海, 某运营商"));
         assert!(note.message.contains("2. 203.0.113.2 - (查询失败)"));
         assert!(note.message.contains("... 仅显示前 15 条"));

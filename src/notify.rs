@@ -468,6 +468,8 @@ pub struct IpAlert {
     pub name: String,
     pub count: u64,
     pub max: u64,
+    /// The rule blocks newcomers past an alarm.
+    pub block: bool,
     pub level: u64,
     pub ips: Vec<String>,
 }
@@ -554,6 +556,11 @@ pub(crate) fn ip_note(node: &str, alert: &IpAlert, places: &HashMap<String, Stri
             if alert.name.is_empty() { String::new() } else { format!("（{}）", alert.name) }
         ),
         format!("在线 {} IP · 等级 {level}", alert.count),
+        if alert.block {
+            format!("已开启阻断：第 {} 个起的新地址自动阻断 30 分钟", alert.max + 4)
+        } else {
+            "未开启阻断，只提醒".to_owned()
+        },
         "当前连接：".to_owned(),
     ];
     for (i, ip) in alert.ips.iter().enumerate() {

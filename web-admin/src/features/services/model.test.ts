@@ -1,6 +1,6 @@
 /// <reference types="node" />
 import assert from "node:assert/strict"
-import { editable, instancePayload, newResource, pmBlocked, pmDraft, pmPayload, pmSummary, type PmPolicy, type RootSnapshot } from "./model.ts"
+import { editable, instancePayload, newPmDraft, newResource, pmBlocked, pmDraft, pmPayload, pmSummary, type PmPolicy, type RootSnapshot } from "./model.ts"
 
 const draft = newResource("snell", "example.com")
 assert.equal(draft.name, "")
@@ -26,16 +26,25 @@ console.log("service name defaults, hidden configuration preservation and SB fie
 
 const pm: PmPolicy = { port: 23456, name: "PM", quota_gb: 0, quota_mode: "in_out", reset_day: 0, expiry_date: "", egress_mbps: 0 }
 assert.deepEqual(pmPayload(pmDraft(pm)), pm, "a rule without an IP limit keeps its earlier shape")
-const limitedDraft = { ...pmDraft(pm), max_ips: 3, whitelist: " 203.0.113.7,2001:db8::1\n\n198.51.100.2，" }
+// The form asks for the count that warns; the rule keeps the original PM's limit below it.
+const limitedDraft = { ...pmDraft(pm), warn_ips: 4, whitelist: " 203.0.113.7,2001:db8::1\n\n198.51.100.2，" }
 assert.deepEqual(pmPayload(limitedDraft).ip_limit, { max_ips: 3, cooldown_min: 30, whitelist: ["203.0.113.7", "2001:db8::1", "198.51.100.2"] })
 assert.deepEqual(pmPayload(pmDraft(pmPayload(limitedDraft))), pmPayload(limitedDraft))
-assert.equal("ip_limit" in pmPayload({ ...limitedDraft, max_ips: 0 }), false, "0 turns the check off")
+assert.deepEqual(pmPayload({ ...limitedDraft, block: true }).ip_limit?.block, true)
+assert.deepEqual(pmPayload(pmDraft(pmPayload({ ...limitedDraft, block: true }))), pmPayload({ ...limitedDraft, block: true }))
+assert.equal("block" in pmPayload(limitedDraft).ip_limit!, false, "off is left out")
+assert.equal("ip_limit" in pmPayload({ ...limitedDraft, warn_ips: 0 }), false, "0 turns the check off")
+assert.throws(() => pmPayload({ ...limitedDraft, warn_ips: 1 }), /2–65536/)
+const fresh = newPmDraft(40001, "新实例")
+assert.deepEqual([fresh.warn_ips, fresh.block, fresh.quota_gb], [3, true, 0], "new rules warn at 3, alarm at 5 and block from the 6th")
+assert.deepEqual(pmPayload(fresh).ip_limit, { max_ips: 2, cooldown_min: 30, whitelist: [], block: true })
 assert.throws(() => pmPayload({ ...limitedDraft, whitelist: "203.0.113.0/24" }), /203\.0\.113\.0\/24/)
 assert.throws(() => pmPayload({ ...limitedDraft, whitelist: "fe80::1%eth0" }))
 assert.throws(() => pmPayload({ ...limitedDraft, whitelist: "256.1.1.1" }))
 assert.throws(() => pmPayload({ ...limitedDraft, whitelist: Array.from({ length: 33 }, (_, n) => `192.0.2.${n}`).join(",") }), /32/)
 assert.doesNotThrow(() => pmPayload({ ...limitedDraft, whitelist: "::ffff:192.0.2.1 2001:DB8::1" }))
 assert.equal(pmSummary({ ...pm, quota_gb: 100, reset_day: 1, ip_limit: { max_ips: 3, cooldown_min: 30, whitelist: [] } }), "配额 100 GiB／每月 1 日重置／IP 4 个起警告、6 个起报警")
+assert.equal(pmSummary({ ...pm, ip_limit: { max_ips: 2, cooldown_min: 30, whitelist: [], block: true } }), "只计量／IP 3 个起警告、5 个起报警、第 6 个起阻断")
 const empty = { installed: true, blocked: false, revision: "", resources: [] }
 const root = (rows: number[] = [], rules: number[] = []): RootSnapshot => ({ ...empty, modules: { pm: { ...empty, resources: rules.map(port => ({ ...pm, port })) } }, port_monitor: { status: "ready", rows: rows.map(port => ({ port, quota_gb: 1, quota_mode: "in_out", reset_day: 0, comment: "", expiry_date: "", burst_enabled: false, state: "ready" })) } })
 assert.equal(pmBlocked(root(), 23456), "")

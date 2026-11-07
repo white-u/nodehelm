@@ -1063,6 +1063,7 @@ fn snapshot_events(old: &Value, new: &Value, thresholds: &[u64]) -> (Vec<String>
                 name: rule["name"].as_str().unwrap_or_default().to_owned(),
                 count: state["ip_count"].as_u64().unwrap_or(0),
                 max: rule["ip_limit"]["max_ips"].as_u64().unwrap_or(0),
+                block: rule["ip_limit"]["block"] == true,
                 level,
                 ips: state["ip_list"]
                     .as_array()

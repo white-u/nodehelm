@@ -45,6 +45,12 @@ Unit=node-manager-pm.service
 WantedBy=timers.target
 """
 TABLE = 'ip node_manager_pm'
+# Blocked client addresses per port, in a table of their own: its elements come
+# and go every minute, which the PM table's fingerprint must not see.
+BLOCK_TABLE = 'inet node_manager_pm_block'
+BLOCK_TIMEOUT = '30m'
+# The source of a connection that failed REALITY authentication, in sing-box's log.
+REALITY_PROBE = re.compile(r'process connection from \[?([0-9A-Fa-f:.]+?)\]?:\d+: .*REALITY: processed invalid connection')
 GIB = 1073741824
 BYTES_PER_MEGABIT = 125000
 MAX_COUNTER = (1 << 63) - 1
@@ -103,24 +109,31 @@ def address_order(value):
     return ip.version, ip
 
 
-def watch(rules, output, previous, now):
+def watch(rules, output, previous, now, excluded=None):
     """Online addresses of every rule's port. An address counts only once seen
-    in two consecutive minutes, so a port scan or a single short visit does not.
+    in two consecutive minutes, so a port scan or a single short visit does not;
+    `excluded` (blocked, or failed authentication) does not count at all.
     A rule with an IP limit adds the original PM's check: level 1 over the
     limit, 2 over limit + 2; an alert on a rise or after the cooldown, a silent
-    reset at or under the limit."""
+    reset at or under the limit. With `block`, the addresses past limit + 3 that
+    came online last are returned in `block`, the earliest keep their place."""
     current = peers(output, {str(rule['port']) for rule in rules})
     result = {}
     for rule in rules:
         port, limit = str(rule['port']), rule.get('ip_limit')
         old = previous.get(port, {})
-        seen = sorted(current.get(port, set()) - set(limit['whitelist'] if limit else ()), key=address_order)
-        before = set(old.get('seen', ()))
+        skipped = set(limit['whitelist'] if limit else ()) | (excluded or {}).get(port, set())
+        seen = sorted(current.get(port, set()) - skipped, key=address_order)[:IP_SEEN]
+        before, first = set(old.get('seen', ())), old.get('since', {})
+        since = {ip: first.get(ip, now) for ip in seen}
         online = [ip for ip in seen if ip in before]
         count = len(online)
         level = 0 if not limit else 2 if count > limit['max_ips'] + 2 else 1 if count > limit['max_ips'] else 0
-        entry = {'seen': seen[:IP_SEEN], 'count': count, 'level': level, 'ips': online[:15],
+        entry = {'seen': seen, 'since': since, 'count': count, 'level': level, 'ips': online[:15],
                  'seq': old.get('seq', 0), 'last': old.get('last', 0) if level else 0}
+        if limit and limit.get('block') and count > limit['max_ips'] + 3:
+            order = sorted(online, key=lambda ip: (since[ip], address_order(ip)))
+            entry['block'] = order[limit['max_ips'] + 3:]
         if level and (level > old.get('level', 0) or now - entry['last'] >= limit['cooldown_min'] * 60):
             entry.update(seq=entry['seq'] + 1, last=now)
         result[port] = entry
@@ -136,6 +149,58 @@ def connections():
     except (OSError, subprocess.TimeoutExpired):
         return None
     return None if result.returncode else result.stdout
+
+
+def reality_probes(ports, units):
+    """Sources of failed REALITY handshakes on managed SB ports in the last few
+    minutes. REALITY hands such a connection to its cover site, where it can
+    stay established long enough to count as a client."""
+    found = {}
+    for port in ports:
+        unit = f'node-manager-sb-{port}.service'
+        if not (units / unit).exists():
+            continue
+        try:
+            result = subprocess.run(
+                ['journalctl', '-u', unit, '--since', '-3min', '-o', 'cat', '-q', '--no-pager'],
+                text=True, capture_output=True, timeout=15, env={'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C'},
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        for match in REALITY_PROBE.finditer(result.stdout if not result.returncode else ''):
+            try:
+                ip = ipaddress.ip_address(match[1])
+            except ValueError:
+                continue
+            found.setdefault(port, set()).add(str(getattr(ip, 'ipv4_mapped', None) or ip))
+    return found
+
+
+def block_set(ip):
+    return 'v6' if ':' in ip else 'v4'
+
+
+def block_script(owner, exists, add, drop, keep):
+    """Create the table at the first block, then delete and add (address, port)
+    elements; without `keep` the whole table goes. Every rule is created once:
+    `add rule` on a table that exists would repeat it."""
+    if not keep:
+        return f'delete table {BLOCK_TABLE}\n' if exists else ''
+    if not exists and not add:
+        return ''
+    lines = [] if exists else [
+        f'add table {BLOCK_TABLE} {{ comment "{owner}"; }}',
+        f'add set {BLOCK_TABLE} v4 {{ type ipv4_addr . inet_service; flags timeout; }}',
+        f'add set {BLOCK_TABLE} v6 {{ type ipv6_addr . inet_service; flags timeout; }}',
+        # Before the PM counters at priority 10: blocked traffic is not metered.
+        f'add chain {BLOCK_TABLE} input {{ type filter hook input priority 0; policy accept; }}',
+        f'add rule {BLOCK_TABLE} input meta l4proto {{ tcp, udp }} ip saddr . th dport @v4 drop',
+        f'add rule {BLOCK_TABLE} input meta l4proto {{ tcp, udp }} ip6 saddr . th dport @v6 drop',
+    ]
+    lines += [f'delete element {BLOCK_TABLE} {block_set(ip)} {{ {ip} . {port} }}' for ip, port in sorted(drop)]
+    lines += [f'add element {BLOCK_TABLE} {block_set(ip)} {{ {ip} . {port} timeout {BLOCK_TIMEOUT} }}'
+              for ip, port in sorted(add)]
+    return '\n'.join(lines) + '\n' if lines else ''
 
 
 def nft(*args, script=None):
@@ -491,6 +556,7 @@ class Driver:
             if live:
                 # The epoch must still exist in the same atomic teardown transaction.
                 nft('-f', '-', script=f'delete chain {TABLE} epoch_{live["epoch"]}\ndelete table {TABLE}\n')
+            self.unblock_all()
             remove(self.checkpoint)
             remove(self.ip_watch)
             return
@@ -682,10 +748,37 @@ class Driver:
                 finally:
                     self.watch_ips(state)
 
+    def blocked(self):
+        """(address, port) pairs in our block table, None without one. A table
+        of that name that is not ours is never read or changed."""
+        family, name = BLOCK_TABLE.split()
+        if not any(row.get('table', {}).get('family') == family and row['table'].get('name') == name
+                   for row in entries('list', 'tables')):
+            return None
+        found = set()
+        for row in entries('list', 'table', family, name):
+            if 'table' in row and not (self.owner and row['table'].get('comment') == self.owner):
+                raise Rejected('存在同名但不属于 PM 的阻断表，已跳过阻断', 'pm_conflict')
+            for item in row.get('set', {}).get('elem', []):
+                value = item.get('elem', {}).get('val', item) if isinstance(item, dict) else item
+                pair = value.get('concat') if isinstance(value, dict) else None
+                if isinstance(pair, list) and len(pair) == 2:
+                    ip = ipaddress.ip_address(pair[0])
+                    found.add((str(getattr(ip, 'ipv4_mapped', None) or ip), str(pair[1])))
+        return found
+
+    def unblock_all(self):
+        try:
+            if self.blocked() is not None:
+                nft('-f', '-', script=block_script(self.owner, True, (), (), False))
+        except (Rejected, ValueError) as error:
+            print(f'PM 阻断表未删除：{error}', file=sys.stderr, flush=True)
+
     def watch_ips(self, state):
         rules = state['resources']
         if not rules:
             remove(self.ip_watch)
+            self.unblock_all()
             return
         output = connections()
         if output is None:
@@ -696,7 +789,30 @@ class Driver:
             previous = read(self.ip_watch, {}).get('ports', {})
         except ValueError:
             previous = {}
-        write(self.ip_watch, {'sampled_at': now, 'ports': watch(rules, output, previous, now)})
+        # Blocking is best effort: it never stops the count or the alerts.
+        try:
+            current = self.blocked()
+        except (Rejected, ValueError) as error:
+            print(f'PM 阻断状态不可读：{error}', file=sys.stderr, flush=True)
+            current = False
+        excluded = reality_probes({str(rule['port']) for rule in rules}, self.units)
+        for ip, port in current or ():
+            excluded.setdefault(port, set()).add(ip)
+        ports = watch(rules, output, previous, now, excluded)
+        changes = {port: entry.pop('block', []) for port, entry in ports.items()}
+        write(self.ip_watch, {'sampled_at': now, 'ports': ports})
+        if current is False:
+            return
+        blocking = {str(rule['port']): set(rule['ip_limit']['whitelist'])
+                    for rule in rules if rule.get('ip_limit', {}).get('block')}
+        drop = {(ip, port) for ip, port in current or () if port not in blocking or ip in blocking[port]}
+        add = {(ip, port) for port, ips in changes.items() if port in blocking for ip in ips}
+        script = block_script(self.owner, current is not None, add, drop, bool(blocking))
+        if script:
+            try:
+                nft('-f', '-', script=script)
+            except Rejected as error:
+                print(f'PM 阻断未生效：{error}', file=sys.stderr, flush=True)
 
 
 if __name__ == '__main__':

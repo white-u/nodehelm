@@ -6,11 +6,12 @@ import socket
 import subprocess
 import sys
 import tempfile
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from controller import Controller
 from model import Rejected, revision
+import pm
 from pm import Driver, TABLE, entries, nft, plan
 from storage import read, write
 
@@ -95,6 +96,37 @@ for line in sys.stdin:
                 assert initial['rx'] >= 100 and initial['tx'] > 0, initial
                 assert task(controller, 'apply', {**rule, 'name': 'Renamed'}, 3)['status'] == 'succeeded'
                 assert driver.inspect()['values'][str(port)] == initial
+
+                # Blocking with the kernel: limit 1 alarms at 4, so the 5th address to come
+                # online (the peer) is dropped from its own table, before the PM counters.
+                def minutes(rule, *rounds):
+                    write(controller.state, {**read(controller.state), 'resources': [rule]})
+                    clock = Mock(time=Mock(side_effect=[1000 + 60 * n for n in range(len(rounds))]))
+                    with patch.object(pm, 'time', clock), patch('pm.reality_probes', return_value={}):
+                        for hosts in rounds:
+                            ss = ''.join(f'0 0 192.0.2.1:{port} {host}:40000\n' for host in hosts)
+                            with patch('pm.connections', return_value=ss):
+                                driver.watch_ips(read(controller.state))
+
+                others = [f'198.51.100.{n}' for n in range(1, 5)]
+                limit = {'max_ips': 1, 'cooldown_min': 30, 'whitelist': [], 'block': True}
+                blocking = {**rule, 'name': 'Renamed', 'ip_limit': limit}
+                assert task(controller, 'apply', blocking, 30)['status'] == 'succeeded'
+                minutes(read(controller.state)['resources'][0], others, others, others + ['192.0.2.2'], others + ['192.0.2.2'])
+                assert driver.blocked() == {('192.0.2.2', str(port))}, driver.blocked()
+                before = driver.inspect()['values'][str(port)]
+                traffic(100, blocked=True)
+                assert driver.inspect()['values'][str(port)] == before, 'blocked traffic is not metered'
+                driver.sample(driver.inspect(), read(driver.checkpoint))  # the PM table is unchanged
+                listed = {**blocking, 'ip_limit': {**limit, 'whitelist': ['192.0.2.2']}}
+                assert task(controller, 'apply', listed, 31)['status'] == 'succeeded'
+                minutes(read(controller.state)['resources'][0], others + ['192.0.2.2'])
+                assert driver.blocked() == set(), 'a whitelisted address is let go at once'
+                traffic(100)
+                assert task(controller, 'apply', {**rule, 'name': 'Renamed'}, 32)['status'] == 'succeeded'
+                minutes(read(controller.state)['resources'][0], others)
+                assert driver.blocked() is None, 'no blocking rule, no table'
+                initial = driver.inspect()['values'][str(port)]
                 assert task(controller, 'reset', {'port': port}, 4)['status'] == 'succeeded'
                 assert driver.inspect()['values'][str(port)] == {'rx': 0, 'tx': 0}
 
@@ -207,7 +239,7 @@ for line in sys.stdin:
                 assert driver.inspect() is None
                 assert not read(controller.state)['installed']
         assert entries('list', 'table', 'inet', 'port_monitor')[1:] == legacy
-        print('PASS isolated Linux PM: install, counters, counter continuity, bidirectional/outbound quota, outbound policing, reset, rollback retry, reboot, expiry/renewal, legacy coexistence and cleanup')
+        print('PASS isolated Linux PM: install, counters, counter continuity, blocking (drop before metering, whitelist release, table removal), bidirectional/outbound quota, outbound policing, reset, rollback retry, reboot, expiry/renewal, legacy coexistence and cleanup')
     finally:
         peer.kill()
         peer.wait()

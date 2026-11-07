@@ -7,8 +7,10 @@ from model import Rejected, address
 
 
 def ip_limit(value):
-    """Present only when on: rules without it keep their earlier revision."""
-    if not isinstance(value, dict) or set(value) != {'max_ips', 'cooldown_min', 'whitelist'}:
+    """Present only when on: rules without it keep their earlier revision, and
+    so does `block`, present only as true."""
+    if (not isinstance(value, dict) or set(value) - {'block'} != {'max_ips', 'cooldown_min', 'whitelist'}
+            or value.get('block', True) is not True):
         raise Rejected('IP 告警设置格式错误')
     limit, cooldown, allowed = value['max_ips'], value['cooldown_min'], value['whitelist']
     if (type(limit) is not int or not 1 <= limit <= 65535 or type(cooldown) is not int
@@ -22,7 +24,7 @@ def ip_limit(value):
         raise Rejected('IP 白名单只能填写 IP 地址') from None
     whitelist = sorted({str(getattr(ip, 'ipv4_mapped', None) or ip) for ip in ips},
                        key=lambda item: (':' in item, ipaddress.ip_address(item)))
-    return dict(max_ips=limit, cooldown_min=cooldown, whitelist=whitelist)
+    return dict(max_ips=limit, cooldown_min=cooldown, whitelist=whitelist, **({'block': True} if 'block' in value else {}))
 
 
 def resource(value, module):

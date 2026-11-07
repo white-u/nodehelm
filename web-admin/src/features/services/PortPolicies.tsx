@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Plus } from "lucide-react"
 import { InlinePanel, useServiceConfirmation } from "./ServiceInteractions"
-import { type ApplyIntent, type PmDraft, type PmPolicy, type PmUsage, type RootSnapshot, type Snapshot, pmStatus, pmAlerts, gib, pmDraft, pmPayload, ipThresholds, readManagement } from "./model"
+import { type ApplyIntent, type PmDraft, type PmPolicy, type PmUsage, type RootSnapshot, type Snapshot, pmStatus, pmAlerts, gib, pmDraft, newPmDraft, pmPayload, ipThresholds, readManagement } from "./model"
 
 export function PmPanel({ node, nodeId, snapshot, view, writable, busy, feedback, refreshing, onDirtyChange, run, submit, opening, alerts = true }: {
   node: string
@@ -32,7 +32,7 @@ export function PmPanel({ node, nodeId, snapshot, view, writable, busy, feedback
   function draftFor(item?: PmPolicy, port = candidates[0]?.port, draft?: PmDraft) {
     if (item) return pmDraft(item)
     if (!candidates.some(candidate => candidate.port === port)) return null
-    return draft ?? pmDraft({ port, name: candidates.find(c => c.port === port)?.name || "端口监控", quota_gb: 0, quota_mode: "in_out", reset_day: 0, expiry_date: "", egress_mbps: 0 })
+    return draft ?? newPmDraft(port, candidates.find(c => c.port === port)?.name || "端口监控")
   }
   // Opened from an instance row, the panel starts with that port's form.
   const [start] = useState(() => {
@@ -93,7 +93,7 @@ export function PmPanel({ node, nodeId, snapshot, view, writable, busy, feedback
               <div className="space-y-1">
                 <strong>{rule.name} · {rule.port}</strong>
                 <p>{rule.quota_gb ? `配额 ${rule.quota_gb} GiB · ${rule.quota_mode === "out_only" ? "仅出站" : "双向"}` : "只计量，无配额"} · {rule.reset_day ? `每月 ${rule.reset_day} 日重置` : "无自动重置"}</p>
-                <p>到期日期 {rule.expiry_date || "未设置"} · 出站超速丢包 {rule.egress_mbps ? `${rule.egress_mbps} Mbps` : "关闭"} · IP 告警 {rule.ip_limit ? ipThresholds(rule.ip_limit.max_ips) : "关闭"}</p>
+                <p>到期日期 {rule.expiry_date || "未设置"} · 出站超速丢包 {rule.egress_mbps ? `${rule.egress_mbps} Mbps` : "关闭"} · IP 告警 {rule.ip_limit ? ipThresholds(rule.ip_limit.max_ips, rule.ip_limit.block) : "关闭"}</p>
                 {usage ? <>
                   <p>入站 {gib(usage.rx)} GiB · 出站 {gib(usage.tx)} GiB · <strong>{pmAlerts[usage.alert]}</strong></p>
                   <OnlineIps usage={usage} />
@@ -161,16 +161,17 @@ export function PmFields({ form, setForm, busy, alerts = true }: { form: PmDraft
       <label>到期日期（可选）<Input type="date" value={form.expiry_date} onChange={e => setForm({ ...form, expiry_date: e.target.value })} /></label>
       <label>出站超速丢包（Mbps，0 关闭）<Input type="number" required min={0} max={10000} value={form.egress_mbps} onChange={e => setForm({ ...form, egress_mbps: Number(e.target.value) })} /></label>
     </fieldset>
-    <details className="text-sm" open={form.max_ips > 0}>
-      <summary className="cursor-pointer text-muted-foreground">IP 告警（可选）</summary>
+    <details className="text-sm" open={form.warn_ips > 0}>
+      <summary className="cursor-pointer text-muted-foreground">IP 告警与阻断</summary>
       <fieldset disabled={busy} className="mt-3 grid gap-3 sm:grid-cols-2">
-        <label>同时在线 IP 上限（0 关闭）<Input type="number" required min={0} max={65535} value={form.max_ips} onChange={e => setForm({ ...form, max_ips: Number(e.target.value) })} />{form.max_ips > 0 && <span className="text-xs text-muted-foreground">当前设置：{ipThresholds(form.max_ips)}</span>}</label>
-        <label>重复提醒间隔（分钟）<Input type="number" required min={1} max={525600} disabled={!form.max_ips} value={form.cooldown_min} onChange={e => setForm({ ...form, cooldown_min: Number(e.target.value) })} /></label>
-        <label className="sm:col-span-2">白名单 IP（可选，每行或逗号分隔，最多 32 个）<textarea aria-label="白名单 IP（可选，每行或逗号分隔，最多 32 个）" className="block min-h-20 w-full rounded border bg-background p-2" disabled={!form.max_ips} value={form.whitelist} onChange={e => setForm({ ...form, whitelist: e.target.value })} /></label>
+        <label>起警告的 IP 数（0 关闭）<Input aria-label="起警告的 IP 数（0 关闭）" type="number" required min={0} max={65536} value={form.warn_ips} onChange={e => setForm({ ...form, warn_ips: Number(e.target.value) })} />{form.warn_ips > 1 && <span className="text-xs text-muted-foreground">当前设置：{ipThresholds(form.warn_ips - 1, form.block)}</span>}</label>
+        <label>重复提醒间隔（分钟）<Input type="number" required min={1} max={525600} disabled={!form.warn_ips} value={form.cooldown_min} onChange={e => setForm({ ...form, cooldown_min: Number(e.target.value) })} /></label>
+        <label className="flex items-center gap-2 sm:col-span-2"><input type="checkbox" className="size-4" aria-label="报警后阻断新出现的地址 30 分钟" disabled={!form.warn_ips} checked={form.block} onChange={e => setForm({ ...form, block: e.target.checked })} />报警后阻断新出现的地址 30 分钟{form.warn_ips > 1 && `（第 ${form.warn_ips + 3} 个起）`}</label>
+        <label className="sm:col-span-2">白名单 IP（可选，每行或逗号分隔，最多 32 个）<textarea aria-label="白名单 IP（可选，每行或逗号分隔，最多 32 个）" className="block min-h-20 w-full rounded border bg-background p-2" disabled={!form.warn_ips} value={form.whitelist} onChange={e => setForm({ ...form, whitelist: e.target.value })} /></label>
       </fieldset>
-      <p className="mt-2 text-xs text-muted-foreground">每分钟统计已建立 TCP 连接的不同来源 IP，连续两分钟出现才计入，避免扫描误报。超过上限为警告，超过上限 2 个以上为报警，通过服务管理提醒推送，同一等级按间隔重复提醒；只提醒，不断开连接。</p>
+      <p className="mt-2 text-xs text-muted-foreground">每分钟统计握手完成的 TCP 连接的不同来源 IP，连续两分钟出现才计入，端口扫描不计入；SB Reality 验证失败的来源也不计入。达到警告、报警数时通过服务管理提醒推送，同一等级按间隔重复提醒。开启阻断后，在线数超过报警数时保留最早在线的地址，把新出现的地址拒绝 30 分钟，到期自动解除；把地址加入白名单可立即解除。白名单地址不计入也不阻断。</p>
     </details>
-    {!alerts && (form.quota_gb > 0 || form.max_ips > 0) && <p role="status" className="text-xs text-destructive">流量阈值和 IP 告警不会推送：尚未配置通知渠道，或已关闭服务管理提醒。可在“通知”页设置；页面上仍会显示状态。</p>}
+    {!alerts && (form.quota_gb > 0 || form.warn_ips > 0) && <p role="status" className="text-xs text-destructive">流量阈值和 IP 告警不会推送：尚未配置通知渠道，或已关闭服务管理提醒。可在“通知”页设置；页面上仍会显示状态。</p>}
   </>
 }
 
