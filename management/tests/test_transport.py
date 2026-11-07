@@ -218,7 +218,6 @@ class TransportTests(unittest.TestCase):
         with patch('agent.ROOT', self.c.root), \
                 patch('agent.Driver', return_value=self.d), \
                 patch('agent.ServiceDriver', side_effect=lambda _module: Driver()), \
-                patch('agent.port_monitor.snapshot', return_value={'status': 'not_installed', 'rows': []}), \
                 patch('install.check_agent_unit', return_value=unit), patch('install.ctl') as ctl:
             unit['DropInPaths'] = '/etc/systemd/system/node-manager-agent.service.d/foreign.conf'
             with self.assertRaisesRegex(Rejected, '拒绝解绑'):

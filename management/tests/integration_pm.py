@@ -206,18 +206,6 @@ for line in sys.stdin:
                     assert driver.status(read(controller.state))[1][str(port)]['alert'] == 'quota_reached'
                     traffic(100, blocked=True)
 
-                    # A later edit of legacy PM suspends only this independent policy.
-                    state = read(controller.state)
-                    with patch('pm.legacy_snapshot', return_value={'status':'ready','rows':[{'port':port}]}):
-                        assert driver.status(state)[1][str(port)]['alert'] == 'legacy_pending'
-                        driver.maintain()
-                        assert driver.status(state)[1][str(port)]['alert'] == 'legacy_conflict'
-                        retained = driver.inspect()['values'][str(port)]
-                        traffic(100)
-                        assert driver.inspect()['values'][str(port)] == retained
-                    driver.maintain()
-                    traffic(100, blocked=True)
-
                     # Detect an external quota reset even though rule structure and counters are unchanged.
                     driver.maintain()
                     nft('reset', 'quota', *TABLE.split(), f'quota_{port}')

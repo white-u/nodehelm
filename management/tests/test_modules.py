@@ -11,7 +11,6 @@ from model import Rejected, request
 from controller import Controller
 from services import Driver
 from snell import Driver as SnellDriver, atomic
-from port_monitor import snapshot
 from test_controller import Driver as FakeDriver
 
 class TemplateRefreshTests(unittest.TestCase):
@@ -174,28 +173,5 @@ class ModuleTests(unittest.TestCase):
     def test_reality_does_not_probe_private_targets(self):
         with patch('services.socket.getaddrinfo',return_value=[(2,1,6,'',('127.0.0.1',443))]):
             with self.assertRaises(Rejected):Driver.check_reality('target.example')
-
-class PortMonitorTests(unittest.TestCase):
-    def setUp(self):
-        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
-        self.root=pathlib.Path(self.tmp.name);(self.root/'state').mkdir()
-        self.lock=self.root/'absent.lock'
-        self.config={'config_version':6,'ports':{'12345':{'quota_gb':10,'quota_mode':'in_out','reset_day':0,'comment':'demo','dyn_limit':{'enable':False}}}}
-        (self.root/'config.json').write_text(json.dumps(self.config))
-    def test_missing_or_corrupt_state_is_unknown_not_zero(self):
-        result=snapshot(self.root,self.lock)
-        self.assertEqual(result['status'],'ready');self.assertEqual(result['rows'][0]['state'],'unknown')
-        self.assertNotIn('rx',result['rows'][0])
-        target=self.root/'state/12345.txt';target.write_text('s_state_version=2\ns_acc_in=$(touch /tmp/should-not-run)')
-        before=target.read_bytes();self.assertEqual(snapshot(self.root,self.lock)['rows'][0]['state'],'unknown');self.assertEqual(target.read_bytes(),before)
-    def test_counters_are_read_without_executing_or_rewriting_state(self):
-        p=self.root/'state/12345.txt';p.write_text('s_state_version=2\ns_acc_in=123\ns_acc_out=456\ns_last_k_in=0\ns_last_k_out=0\ns_last_reset_ts=1\ns_last_sample_ts=2\n')
-        before=p.stat().st_mtime_ns;result=snapshot(self.root,self.lock)
-        self.assertEqual(result['rows'][0]['rx'],123);self.assertEqual(result['rows'][0]['tx'],456);self.assertEqual(p.stat().st_mtime_ns,before)
-    def test_symlink_and_unknown_config_versions_are_not_adopted(self):
-        self.config['config_version']=999;(self.root/'config.json').write_text(json.dumps(self.config))
-        self.assertEqual(snapshot(self.root,self.lock)['status'],'unavailable')
-        (self.root/'config.json').unlink();(self.root/'config.json').symlink_to(self.root/'anything')
-        self.assertEqual(snapshot(self.root,self.lock)['status'],'unavailable')
 
 if __name__=='__main__':unittest.main()

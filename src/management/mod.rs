@@ -696,8 +696,10 @@ struct Snapshot {
     core: Option<CoreSnapshot>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     modules: std::collections::BTreeMap<String, models::ModuleSnapshot>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    port_monitor: Option<models::PortMonitor>,
+    /// Sent by components up to 1.1.5 and kept in their stored snapshots; ignored.
+    /// Kept so those reports still parse and can receive the component upgrade.
+    #[serde(default, skip_serializing, rename = "port_monitor")]
+    _port_monitor: Option<serde::de::IgnoredAny>,
     #[serde(default)]
     runtime: std::collections::BTreeMap<String, String>,
     installed: bool,
@@ -715,9 +717,6 @@ impl Snapshot {
         }
         for (name, state) in &self.modules {
             state.validate(name)?;
-        }
-        if let Some(pm) = &self.port_monitor {
-            pm.validate()?;
         }
         if !valid_hex(&self.revision, 64) || self.resources.len() > 64 || self.runtime.len() > 64 {
             refuse!("状态快照无效");
@@ -942,7 +941,6 @@ pub async fn poll(State(app): State<Shared>, headers: HeaderMap, Json(input): Js
                     Some("target_dns") => "Reality 目标未解析到公网地址，请检查域名与 VPS DNS",
                     Some("config_changed") => "配置或实例运行状态已变化，请在 VPS 核实",
                     Some("pm_port") => "请先启动本后台创建的业务实例，再添加 PM 规则",
-                    Some("pm_legacy") => "原 PM 正忙、不可读取或已管理此端口",
                     Some("pm_dependency") => "仍有关联 PM 规则或无法确认端口策略，请在 VPS 核实",
                     Some("pm_nft") => "nftables 不可用或规则检查失败，请查看 VPS 日志",
                     Some("pm_conflict") => "检测到已存在的 PM 表或单元，请在 VPS 核实归属",
@@ -1037,7 +1035,6 @@ fn snapshot_events(old: &Value, new: &Value, thresholds: &[u64]) -> (Vec<String>
         let alert = state["alert"].as_str().unwrap_or_default();
         let what = match alert {
             "expired" => Some("已到期，匹配流量已被阻断"),
-            "legacy_conflict" => Some("与原 PM 端口冲突，受管规则已暂停"),
             _ => None,
         };
         if let Some(what) = what.filter(|_| before["alert"].as_str() != Some(alert)) {
@@ -1251,7 +1248,6 @@ const FILES: &[(&str, &str)] = &[
     ("snell.py", include_str!("../../management/snell.py")),
     ("modules_model.py", include_str!("../../management/modules_model.py")),
     ("services.py", include_str!("../../management/services.py")),
-    ("port_monitor.py", include_str!("../../management/port_monitor.py")),
     ("pm.py", include_str!("../../management/pm.py")),
     ("menu.py", include_str!("../../management/menu.py")),
     ("core_assets.json", include_str!("../../management/core_assets.json")),
@@ -1511,7 +1507,7 @@ mod lifecycle_tests {
         Snapshot {
             core: None,
             modules: Default::default(),
-            port_monitor: None,
+            _port_monitor: None,
             runtime: Default::default(),
             installed: false,
             resources: vec![],
@@ -1664,10 +1660,10 @@ mod lifecycle_tests {
         let events = |old: &Value, new: &Value| snapshot_events(old, new, &steps).0;
         assert!(events(&state(false, "normal"), &state(false, "normal")).is_empty());
         assert!(events(&state(false, "normal"), &state(false, "expired"))[0].contains("到期"));
-        let raised = events(&state(false, "normal"), &state(true, "legacy_conflict"));
+        let raised = events(&state(false, "normal"), &state(true, "expired"));
         assert_eq!(raised.len(), 2);
         assert!(raised[1].contains("12345") && !raised.concat().contains("secret-value"));
-        assert!(events(&state(true, "legacy_conflict"), &state(true, "legacy_conflict")).is_empty());
+        assert!(events(&state(true, "expired"), &state(true, "expired")).is_empty());
     }
     #[test]
     fn quota_thresholds_sound_once_per_period_and_merge_with_the_quota() {
@@ -1911,8 +1907,10 @@ mod lifecycle_tests {
         let f = Fixture::new();
         let credential = f.bind().await;
         let report = |rx: u64, tx: u64| -> Snapshot {
+            // `port_monitor` as components up to 1.1.5 still send it.
             serde_json::from_value(json!({
-                "core":null,"port_monitor":null,"runtime":{},"installed":false,"resources":[],
+                "core":null,"port_monitor":{"read_only":true,"status":"not_installed","rows":[]},
+                "runtime":{},"installed":false,"resources":[],
                 "revision":"b".repeat(64),"blocked":false,
                 "modules":{"pm":{"installed":true,"blocked":false,"revision":"a".repeat(64),
                     "resources":[{"port":12345,"name":"PM","quota_gb":0,"quota_mode":"in_out","reset_day":0,

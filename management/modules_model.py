@@ -19,11 +19,21 @@ def ip_limit(value):
     try:
         if any(not isinstance(item, str) or '%' in item for item in allowed):
             raise ValueError()
-        ips = [ipaddress.ip_address(item) for item in allowed]
+        entries = set()
+        for item in allowed:
+            # Only a numeric prefix, as the Hub accepts; never a netmask.
+            if '/' in item and not re.fullmatch(r'[0-9]{1,3}', item.split('/', 1)[1]):
+                raise ValueError()
+            network = ipaddress.ip_network(item, strict=False)
+            mapped = getattr(network.network_address, 'ipv4_mapped', None)
+            if mapped and network.prefixlen >= 96:
+                network = ipaddress.ip_network((mapped, network.prefixlen - 96))
+            entries.add(network)
     except ValueError:
-        raise Rejected('IP 白名单只能填写 IP 地址') from None
-    whitelist = sorted({str(getattr(ip, 'ipv4_mapped', None) or ip) for ip in ips},
-                       key=lambda item: (':' in item, ipaddress.ip_address(item)))
+        raise Rejected('白名单只能填写 IP 地址或 CIDR 网段') from None
+    # A single address (or /32, /128) is written bare, keeping earlier revisions.
+    whitelist = [str(n.network_address) if n.prefixlen == n.max_prefixlen else str(n)
+                 for n in sorted(entries, key=lambda n: (n.version, n.network_address, n.prefixlen))]
     return dict(max_ips=limit, cooldown_min=cooldown, whitelist=whitelist, **({'block': True} if 'block' in value else {}))
 
 

@@ -5,12 +5,14 @@ import { Input } from "@/components/ui/input"
 import { Plus, RefreshCw } from "lucide-react"
 import { PmFields, PmPanel } from "./PortPolicies"
 import { InlinePanel, useServiceConfirmation } from "./ServiceInteractions"
-import { type Module, type ApplyIntent, type Resource, type CoreAction, type Snapshot, type Status, type NodeStatus, type FollowUp, type PmDraft, type PmPolicy, names, modules, moduleView, lifecycleActive, lifecycleLabels, runtimeLabels, actionLabels, labels, sniChoices, quote, newResource, editable, instancePayload, pmBlocked, pmDraft, newPmDraft, pmPayload, pmSummary } from "./model"
+import { type Module, type ApplyIntent, type Resource, type CoreAction, type Snapshot, type Status, type NodeStatus, type FollowUp, type PmDraft, type PmPolicy, names, modules, moduleView, lifecycleActive, lifecycleLabels, runtimeLabels, actionLabels, labels, sniChoices, quote, newResource, editable, instancePayload, pmBlocked, pmDraft, newPmDraft, pmPayload, pmSummary, serviceFeedbackClass } from "./model"
 
-export function ManagementDetail({ node, module, selectedName, record, defaultAddress, notice, progress = "", alerts = true, onSubmitted, onOpenPm, pmOpening, onDirtyChange, onNodeManagement, enabled, settingsError, reload }: {
+export function ManagementDetail({ node, module, selectedName, record, defaultAddress, notice, progress = "", progressStatus = "pending", progressAction, alerts = true, onSubmitted, onOpenPm, pmOpening, onDirtyChange, onNodeManagement, enabled, settingsError, reload }: {
   node: number; module: Module; selectedName: string; record?: NodeStatus; defaultAddress: string; notice?: string
   /** A two-step change's progress; "1/2" or "2/2" while it runs. */
   progress?: string
+  progressStatus?: string
+  progressAction?: string
   /** False when PM alerts reach no channel. */
   alerts?: boolean
   onSubmitted: (operation: string, next?: FollowUp) => void; onOpenPm: (port: number) => void; pmOpening?: { port: number; draft?: PmDraft; seq: number }; onDirtyChange: (dirty: boolean) => void; onNodeManagement: (trigger: HTMLElement) => void; enabled: boolean | null; settingsError: string; reload: (manual?: boolean) => Promise<void>
@@ -133,12 +135,13 @@ export function ManagementDetail({ node, module, selectedName, record, defaultAd
     setForm({ ...form, port, ...(module === "fw" ? { target_port: form.target_port === form.port ? port : form.target_port } : { public_port: form.public_port === form.port ? port : form.public_port }) })
   }
   const feedback = <>
+    {record?.refreshed && !record.loading && !fetchError && !settingsError && <p role="status" className={`text-sm ${serviceFeedbackClass("succeeded", "refresh")}`}>配置已刷新</p>}
     {error && <p role="alert" className="text-sm text-destructive">操作失败：{error}</p>}
     {fetchError && <p role="alert" className="text-sm text-destructive">配置读取失败：{fetchError}{status ? " · 显示上次读取的配置，已暂停写入和配置查看。" : ""}</p>}
     {settingsError && <p role="alert" className="text-sm text-destructive">管理设置读取失败：{settingsError} · 已暂停写入和配置查看。</p>}
-    {notice && <p role="status" className="text-sm text-muted-foreground">{notice}</p>}
-    {progress && <p role="status" className="text-sm" data-testid="chain-progress">{progress}</p>}
-    {message && !(submittedOperation && status?.lifecycle?.id === submittedOperation && status.lifecycle.status === "succeeded") && <p role="status" className="text-sm">{submittedResult ? `${labels[submittedResult.status] ?? submittedResult.status} · ${submittedResult.message || "请展开操作记录查看详情。"}` : submittedOperation && notice ? "操作已提交，结果尚未确认，请手动刷新。" : message}</p>}
+    {notice && <p role="status" className={`text-sm ${serviceFeedbackClass("warning")}`}>{notice}</p>}
+    {progress && <p role="status" className={`text-sm ${serviceFeedbackClass(progressStatus, progressAction)}`} data-testid="chain-progress">{progress}</p>}
+    {message && !(submittedOperation && status?.lifecycle?.id === submittedOperation && status.lifecycle.status === "succeeded") && <p role={submittedResult && ["rejected", "rolled_back", "recovery_failed"].includes(submittedResult.status) ? "alert" : "status"} className={`text-sm ${serviceFeedbackClass(submittedResult?.status ?? "pending", submittedResult?.action)}`}>{submittedResult ? `${labels[submittedResult.status] ?? submittedResult.status} · ${submittedResult.message || "请展开操作记录查看详情。"}` : submittedOperation && notice ? "操作已提交，结果尚未确认，请手动刷新。" : message}</p>}
   </>
   const availability = <>
     {enabled === false && <p className="text-sm text-muted-foreground">尚未启用管理写入。后台需要配置 HTTPS 公网地址；现有监控不受此开关控制。</p>}
@@ -146,7 +149,7 @@ export function ManagementDetail({ node, module, selectedName, record, defaultAd
     {status?.bound && !status.online && <p className="text-sm text-muted-foreground">管理组件离线，配置只读。请检查 VPS 上的管理组件。</p>}
     {status?.snapshot?.blocked && <p role="alert" className="text-sm text-destructive">配置漂移或有未完成恢复，已暂停写入及配置查看。请在 VPS 执行 python3 /opt/node-manager/agent.py status；有恢复记录时执行 recover，外部修改需先人工核实。</p>}
     {view?.blocked && !status?.snapshot?.blocked && <p role="alert" className="text-sm text-destructive">此模块配置需要核实，已暂停写入和配置查看。</p>}
-    {status?.lifecycle && status.lifecycle.status !== "succeeded" ? <div role="status" className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-muted/50 px-3 py-2 text-sm" data-testid="lifecycle-summary"><span>{lifecycleLabels[status.lifecycle.status] ?? "卸载结果待确认"} · {status.lifecycle.scope === "all" ? "此节点全部受管服务" : names[status.lifecycle.scope]}</span><Button variant="ghost" onClick={event => showNodeManagement(event.currentTarget)}>查看进度</Button></div> : active && <p role="status" className="text-sm text-muted-foreground">节点有待完成操作，核实结果后可继续修改。</p>}
+    {status?.lifecycle && status.lifecycle.status !== "succeeded" ? <div role="status" className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-muted/50 px-3 py-2 text-sm" data-testid="lifecycle-summary"><span className={serviceFeedbackClass(status.lifecycle.status, "uninstall")}>{lifecycleLabels[status.lifecycle.status] ?? "卸载结果待确认"} · {status.lifecycle.scope === "all" ? "此节点全部受管服务" : names[status.lifecycle.scope]}</span><Button variant="ghost" onClick={event => showNodeManagement(event.currentTarget)}>查看进度</Button></div> : active && <p role="status" className="text-sm text-muted-foreground">节点有待完成操作，核实结果后可继续修改。</p>}
   </>
   const formPanel = form && <InlinePanel title={`${editing ? "编辑" : "新增"}${names[module]} · ${selectedName}`} testId="service-instance-editor" busy={busy} onClose={() => { void closeForm() }}>
     {feedback}
@@ -236,14 +239,14 @@ async function requestUninstall(node: number, name: string, status: Status | und
 function LifecycleProgress({ status, busy, fetchError, resume }: { status?: Status; busy: boolean; fetchError: boolean; resume: () => void }) {
   const lifecycle = status?.lifecycle
   if (!lifecycle || lifecycle.status === "succeeded") return null
-  return <div className="space-y-2 rounded-lg bg-muted/40 p-3" role="status" data-testid="lifecycle-progress"><h3 className="text-sm font-medium">{lifecycleLabels[lifecycle.status] ?? "卸载结果待确认"} · {lifecycle.scope === "all" ? "此节点全部受管服务" : names[lifecycle.scope]}</h3><p className="text-sm">{lifecycle.message}</p>{["paused", "interrupted"].includes(lifecycle.status) && <><p className="text-xs text-muted-foreground">已完成步骤保留，不会自动恢复已删除业务。请先排除错误；失联不代表卸载成功。</p>{lifecycle.status === "paused" || lifecycle.underlying_status === "paused" ? <Button variant="outline" disabled={busy || fetchError || !status?.online || !status.bound || !status.compatible} onClick={resume}>继续卸载</Button> : <p className="text-xs text-muted-foreground">等待节点恢复连接后核实进度；请勿重复发起卸载。</p>}</>}</div>
+  return <div className="space-y-2 rounded-lg bg-muted/40 p-3" role="status" data-testid="lifecycle-progress"><h3 className={`text-sm font-medium ${serviceFeedbackClass(lifecycle.status, "uninstall")}`}>{lifecycleLabels[lifecycle.status] ?? "卸载结果待确认"} · {lifecycle.scope === "all" ? "此节点全部受管服务" : names[lifecycle.scope]}</h3><p className={`text-sm ${serviceFeedbackClass(lifecycle.status, "uninstall")}`}>{lifecycle.message}</p>{["paused", "interrupted"].includes(lifecycle.status) && <><p className="text-xs text-muted-foreground">已完成步骤保留，不会自动恢复已删除业务。请先排除错误；失联不代表卸载成功。</p>{lifecycle.status === "paused" || lifecycle.underlying_status === "paused" ? <Button variant="outline" disabled={busy || fetchError || !status?.online || !status.bound || !status.compatible} onClick={resume}>继续卸载</Button> : <p className="text-xs text-muted-foreground">等待节点恢复连接后核实进度；请勿重复发起卸载。</p>}</>}</div>
 }
 
 function OperationHistory({ status }: { status?: Status }) {
   const count = (status?.operations?.length ?? 0) + (status?.lifecycle ? 1 : 0)
   if (!count) return null
   return <details className="mx-4 space-y-2 border-t py-3" data-testid="operation-history"><summary className="cursor-pointer text-xs text-muted-foreground">节点操作记录 · {count} 条</summary>
-    {status?.lifecycle && <div className="space-y-1 border-b py-2 text-sm" data-testid="lifecycle-history"><p>{lifecycleLabels[status.lifecycle.status] ?? "卸载结果待确认"} · {status.lifecycle.scope === "all" ? "此节点全部受管服务" : names[status.lifecycle.scope]}</p><p className="text-xs text-muted-foreground">{status.lifecycle.message}</p></div>}
+    {status?.lifecycle && <div className="space-y-1 border-b py-2 text-sm" data-testid="lifecycle-history"><p className={serviceFeedbackClass(status.lifecycle.status, "uninstall")}>{lifecycleLabels[status.lifecycle.status] ?? "卸载结果待确认"} · {status.lifecycle.scope === "all" ? "此节点全部受管服务" : names[status.lifecycle.scope]}</p><p className="text-xs text-muted-foreground">{status.lifecycle.message}</p></div>}
     {status?.operations?.map(operation => <OperationRow key={operation.id} operation={operation} />)}
   </details>
 }
@@ -285,11 +288,12 @@ export function NodeManagement({ node: target, record, notice, enabled, settings
   }
   return <InlinePanel title={`${selectedName} · 节点管理`} description="此节点的管理绑定、卸载进度和授权管理" testId="node-management-panel" busy={busy} onClose={() => { onClose(); requestAnimationFrame(restoreFocus) }} footer={<Button variant="outline" disabled={busy || record?.loading} onClick={() => { void reload(true) }}>{record?.loading ? "正在刷新…" : "刷新此节点"}</Button>}>
     <div className="space-y-5" data-testid="node-maintenance" data-node-id={node}>
+      {record?.refreshed && !record.loading && !fetchError && !settingsError && <p role="status" className={`text-sm ${serviceFeedbackClass("succeeded", "refresh")}`}>配置已刷新</p>}
       {error && <p role="alert" className="text-sm text-destructive">操作失败：{error}</p>}
       {fetchError && <p role="alert" className="text-sm text-destructive">配置读取失败：{fetchError} · 刷新成功后才能继续操作。</p>}
       {settingsError && <p role="alert" className="text-sm text-destructive">管理设置读取失败：{settingsError}</p>}
-      {notice && <p role="status" className="text-sm text-muted-foreground">{notice}</p>}
-      {message && !(submittedLifecycle && status?.lifecycle?.id === submittedLifecycle && status.lifecycle.status === "succeeded") && <p role="status" className="text-sm">{message}</p>}
+      {notice && <p role="status" className={`text-sm ${serviceFeedbackClass("warning")}`}>{notice}</p>}
+      {message && !(submittedLifecycle && status?.lifecycle?.id === submittedLifecycle && status.lifecycle.status === "succeeded") && <p role="status" className={`text-sm ${serviceFeedbackClass(message === "安装命令已复制" ? "succeeded" : "pending")}`}>{message}</p>}
       {confirmation}
       <dl className="space-y-3 text-sm"><div className="flex justify-between gap-3"><dt className="text-muted-foreground">节点地址</dt><dd className="min-w-0 break-all">{target.ipv4 || target.ip || target.hostname || "暂无地址"}</dd></div><div className="flex justify-between gap-3"><dt className="text-muted-foreground">管理绑定</dt><dd>{!status ? "正在读取…" : status.bound ? "已绑定" : "未绑定"}</dd></div><div className="flex justify-between gap-3"><dt className="text-muted-foreground">状态</dt><dd>{fetchError ? "读取失败" : !status ? "正在读取…" : !status.bound ? "未接入" : status.online ? "上次读取在线" : "上次读取离线"}</dd></div>{status?.last_seen ? <div className="flex flex-wrap justify-between gap-3 text-xs"><dt className="text-muted-foreground">组件最后通信</dt><dd className="tabular-nums">{new Date(status.last_seen * 1000).toLocaleString()}</dd></div> : null}</dl>
       <LifecycleProgress status={status} busy={busy} fetchError={!!fetchError || !!settingsError} resume={() => { void run(() => uninstall(true)) }} />
@@ -329,7 +333,7 @@ function ClientConfiguration({ text }: { text: string }) {
 }
 
 function OperationRow({ operation: o }: { operation: NonNullable<Status["operations"]>[number] }) {
-  return <div className="rounded border p-3 text-sm"><span>{o.module ? names[o.module as Module] ?? o.module : "历史任务"}{o.action ? ` · ${actionLabels[o.action] ?? o.action}` : ""} · {labels[o.status] ?? o.status}</span><p>{o.message || "请等待管理组件核实，勿重复执行。"}</p><p className="break-all text-xs text-muted-foreground">{new Date(o.created * 1000).toLocaleString()} · {o.id}</p></div>
+  return <div className="rounded border p-3 text-sm"><span className={serviceFeedbackClass(o.status, o.action)}>{o.module ? names[o.module as Module] ?? o.module : "历史任务"}{o.action ? ` · ${actionLabels[o.action] ?? o.action}` : ""} · {labels[o.status] ?? o.status}</span><p className={serviceFeedbackClass(o.status, o.action)}>{o.message || "请等待管理组件核实，勿重复执行。"}</p><p className="break-all text-xs text-muted-foreground">{new Date(o.created * 1000).toLocaleString()} · {o.id}</p></div>
 }
 
 function CorePanel({ node, module, view, writable, expanded, toggle, run, submit, uninstall }: {
@@ -394,6 +398,6 @@ function PmOption({ port, name, blocked, draft, busy, alerts, onChange }: { port
   const on = !!draft && !blocked
   return <div className="space-y-3 text-sm">
     <label className="flex items-center gap-2"><input type="checkbox" className="size-4" disabled={busy || !!blocked} checked={on} onChange={event => onChange(event.target.checked ? newPmDraft(port, name) : null)} />同时启用 PM 统计{blocked && <span className="text-xs text-muted-foreground">（{blocked}）</span>}</label>
-    {on && <><PmFields form={draft} setForm={onChange} busy={busy} alerts={alerts} /><p className="text-xs text-muted-foreground">实例运行后自动应用；默认只计量，不丢包。</p></>}
+    {on && <><PmFields form={draft} setForm={onChange} busy={busy} alerts={alerts} /><p className="text-xs text-muted-foreground">实例运行后自动应用。</p></>}
   </div>
 }

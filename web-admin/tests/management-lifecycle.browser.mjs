@@ -37,7 +37,7 @@ try {
     sb:{installed:true,blocked:false,revision:'b'.repeat(64),core:{...core,version:'1.12.0'},resources:[{name:'SB retained',port:34567,public_port:34567,host:'203.0.113.60',protocol:'ss2022',sni:'',psk:'AQEBAQEBAQEBAQEBAQEBAQ=='}],runtime:{'34567':'active'}},
     fw:{installed:true,blocked:false,revision:'c'.repeat(64),core:{...core,version:'1.0.0'},resources:[{name:'FW retained',port:23456,target_host:'192.0.2.1',target_port:23456}],runtime:{'23456':'active'}},
     pm:{installed:true,blocked:false,revision:'d'.repeat(64),core:emptyCore,resources:[policy(12345,'Snell policy'),policy(23456,'FW policy')],runtime:{}}
-  },port_monitor:{read_only:true,status:'not_installed',rows:[]}}
+  }}
   await api('/api/management',{enabled:true})
   async function createManaged(name,credential,supported=true,empty=false){
     const {id}=await api('/api/nodes',{name,public:false})

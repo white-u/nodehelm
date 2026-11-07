@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Plus } from "lucide-react"
 import { InlinePanel, useServiceConfirmation } from "./ServiceInteractions"
-import { type ApplyIntent, type PmDraft, type PmPolicy, type PmUsage, type RootSnapshot, type Snapshot, pmStatus, pmAlerts, gib, pmDraft, newPmDraft, pmPayload, ipThresholds, readManagement } from "./model"
+import { type ApplyIntent, type PmDraft, type PmPolicy, type PmUsage, type RootSnapshot, type Snapshot, pmAlerts, pmTrafficBars, type PmTrafficHour, type PmTrafficBar, gib, pmDraft, newPmDraft, pmPayload, ipThresholds, readManagement } from "./model"
 
 export function PmPanel({ node, nodeId, snapshot, view, writable, busy, feedback, refreshing, onDirtyChange, run, submit, opening, alerts = true }: {
   node: string
@@ -23,12 +23,10 @@ export function PmPanel({ node, nodeId, snapshot, view, writable, busy, feedback
   submit: (action: string, payload: object, revision?: string, intent?: ApplyIntent) => Promise<void>
 }) {
   const { confirm, discard, confirmation } = useServiceConfirmation()
-  const legacy = snapshot?.port_monitor
   const rules = view?.resources as PmPolicy[] | undefined
   const candidates = [snapshot, snapshot?.modules?.sb, snapshot?.modules?.fw].flatMap(s =>
     s?.resources.filter(r => r.port >= 1024 && s.runtime?.[String(r.port)] === "active"
-      && !rules?.some(rule => rule.port === r.port) && !legacy?.rows.some(row => row.port === r.port)) ?? [])
-  const legacyReadable = legacy?.status === "ready" || legacy?.status === "not_installed"
+      && !rules?.some(rule => rule.port === r.port)) ?? [])
   function draftFor(item?: PmPolicy, port = candidates[0]?.port, draft?: PmDraft) {
     if (item) return pmDraft(item)
     if (!candidates.some(candidate => candidate.port === port)) return null
@@ -39,7 +37,7 @@ export function PmPanel({ node, nodeId, snapshot, view, writable, busy, feedback
     if (!opening) return { form: null, editing: false, notice: "" }
     const rule = rules?.find(item => item.port === opening.port)
     const form = view?.installed ? draftFor(rule, opening.port, opening.draft) : null
-    return { form, editing: !!rule, notice: form ? "" : `端口 ${opening.port} 暂不能添加 PM 规则：实例需在运行中，且未由原 PM 管理。` }
+    return { form, editing: !!rule, notice: form ? "" : `端口 ${opening.port} 暂不能添加 PM 规则：实例需在运行中。` }
   })
   const [form, setForm] = useState<PmDraft | null>(start.form)
   const [revision, setRevision] = useState(start.form ? view?.revision ?? "" : "")
@@ -70,7 +68,7 @@ export function PmPanel({ node, nodeId, snapshot, view, writable, busy, feedback
   async function reloadDraft() {
     if (!view || !form || !await confirm("重新载入最新配置将替换当前草稿，是否继续？")) return
     const latest = editing ? rules?.find(item => item.port === form.port) : undefined
-    if (editing && !latest) { setForm(null); setDraftNotice("原 PM 规则已被删除，草稿已关闭。") }
+    if (editing && !latest) { setForm(null); setDraftNotice("该 PM 规则已被删除，草稿已关闭。") }
     else if (!editing && !candidates.length) { setForm(null); setDraftNotice("暂无可用业务端口，草稿已关闭。") }
     else loadDraft(latest)
   }
@@ -84,25 +82,50 @@ export function PmPanel({ node, nodeId, snapshot, view, writable, busy, feedback
       {view?.blocked && <p className="text-sm text-destructive">PM 状态需要在 VPS 核实。规则表确认已缺失时，可由 root 执行 python3 /opt/node-manager/pm.py repair --confirm-checkpoint-loss，从最近的持久检查点重建。</p>}
       {!view ? <p>此管理组件尚未上报受管 PM。绑定并升级组件后可配置。</p> :
         !view.installed ? <p className="text-sm text-muted-foreground">请先启用 PM。</p> : <>
-          <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-xs text-muted-foreground">端口规则 · {rules?.length ?? 0}</span><Button className="min-h-11" disabled={!writable || !legacyReadable || !candidates.length} aria-expanded={!!form && !editing} onClick={event => { void edit(undefined, event.currentTarget) }}><Plus aria-hidden="true" />{form && !editing ? "收起新增" : "新增 PM 规则"}</Button></div>
-          {!legacyReadable && <p className="text-sm text-muted-foreground">等待原 PM 配置可读取后再添加规则。</p>}
-          {legacyReadable && !candidates.length && <p className="text-sm text-muted-foreground">暂无可用业务端口。请先启动监听 1024–65535 的 Snell、SB 或 FW 实例。</p>}
+          <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-xs text-muted-foreground">端口规则 · {rules?.length ?? 0}</span><Button className="min-h-11" disabled={!writable || !candidates.length} aria-expanded={!!form && !editing} onClick={event => { void edit(undefined, event.currentTarget) }}><Plus aria-hidden="true" />{form && !editing ? "收起新增" : "新增 PM 规则"}</Button></div>
+          {!candidates.length && <p className="text-sm text-muted-foreground">暂无可用业务端口。请先启动监听 1024–65535 的 Snell、SB 或 FW 实例。</p>}
           {rules?.map(rule => {
             const usage = view.usage?.[String(rule.port)]
-            return <div key={rule.port} className="flex flex-wrap items-center justify-between gap-3 rounded border p-3 text-sm">
-              <div className="space-y-1">
-                <strong>{rule.name} · {rule.port}</strong>
-                <p>{rule.quota_gb ? `配额 ${rule.quota_gb} GiB · ${rule.quota_mode === "out_only" ? "仅出站" : "双向"}` : "只计量，无配额"} · {rule.reset_day ? `每月 ${rule.reset_day} 日重置` : "无自动重置"}</p>
-                <p>到期日期 {rule.expiry_date || "未设置"} · 出站超速丢包 {rule.egress_mbps ? `${rule.egress_mbps} Mbps` : "关闭"} · IP 告警 {rule.ip_limit ? ipThresholds(rule.ip_limit.max_ips, rule.ip_limit.block) : "关闭"}</p>
-                {usage ? <>
-                  <p>入站 {gib(usage.rx)} GiB · 出站 {gib(usage.tx)} GiB · <strong>{pmAlerts[usage.alert]}</strong></p>
+            const used = usage ? (rule.quota_mode === "out_only" ? usage.tx : usage.rx + usage.tx) : 0
+            const percent = rule.quota_gb ? used / (rule.quota_gb * 1073741824) * 100 : 0
+            const alert = usage?.alert ?? "normal"
+            const tone = alert === "quota_warning" ? "bg-amber-500/10 text-amber-700 dark:text-amber-400" : alert === "quota_reached" || alert === "expired" ? "bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground"
+            const label = pmAlerts[alert] ?? alert
+            return <div key={rule.port} className="min-w-0 space-y-4 rounded-lg border p-4 text-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1"><strong className="break-all font-medium">{rule.name}</strong><span className="text-xs text-muted-foreground">端口 {rule.port}</span></div>
+                {usage && <span className={`rounded px-2 py-1 text-xs ${tone}`}>{label}</span>}
+              </div>
+              {usage ? <>
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-baseline justify-between gap-2">
+                    <p className="tabular-nums"><span className="text-muted-foreground">已用 </span><strong className="font-medium">{gib(used)}</strong><span className="text-muted-foreground">{rule.quota_gb ? ` / ${rule.quota_gb} GiB` : " GiB"}</span></p>
+                    <span className="text-xs text-muted-foreground">{rule.quota_gb ? `${rule.quota_mode === "out_only" ? "仅出站" : "双向"} · ${percent.toFixed(1)}%` : "仅计量"}</span>
+                  </div>
+                  {rule.quota_gb > 0 && <div role="progressbar" aria-label={`${rule.name}配额用量`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.min(100, percent)} aria-valuetext={`已用 ${gib(used)} / ${rule.quota_gb} GiB`} className="h-1.5 overflow-hidden rounded-full bg-muted"><div className={`h-full ${alert === "quota_reached" || alert === "expired" ? "bg-destructive" : alert === "quota_warning" ? "bg-amber-500" : "bg-primary"}`} style={{ width: `${Math.min(100, percent)}%` }} /></div>}
+                </div>
+                <div className="flex flex-wrap items-start gap-x-6 gap-y-2 text-xs">
+                  <p className="tabular-nums"><span className="text-muted-foreground">入站 </span>{gib(usage.rx)} GiB</p>
+                  <p className="tabular-nums"><span className="text-muted-foreground">出站 </span>{gib(usage.tx)} GiB</p>
                   <OnlineIps usage={usage} />
-                  <p className="text-xs text-muted-foreground">采样 {new Date(usage.sampled_at * 1000).toLocaleString()}{usage.period_start && ` · 账期起始 ${usage.period_start} UTC`}</p>
-                </> : <p className="text-muted-foreground">用量未知，请核实 VPS 上的 PM 服务。</p>}
-                <PortTraffic node={nodeId} port={rule.port} />
+                </div>
+              </> : <p className="text-muted-foreground">用量未知，请核实 VPS 上的 PM 服务。</p>}
+              <div className="flex flex-wrap items-start gap-x-6 gap-y-2 text-xs">
+                <details className="min-w-0 max-w-full">
+                  <summary className="cursor-pointer text-muted-foreground">规则详情</summary>
+                  <dl className="mt-3 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2">
+                    <dt className="text-muted-foreground">配额</dt><dd>{rule.quota_gb ? `${rule.quota_gb} GiB · ${rule.quota_mode === "out_only" ? "单向-仅出站" : "双向"}` : "仅计量"}</dd>
+                    <dt className="text-muted-foreground">自动重置</dt><dd>{rule.reset_day ? `每月 ${rule.reset_day} 日` : "未设置"}</dd>
+                    {rule.expiry_date && <><dt className="text-muted-foreground">到期日期</dt><dd>{rule.expiry_date}</dd></>}
+                    {rule.egress_mbps > 0 && <><dt className="text-muted-foreground">出站限速</dt><dd>{rule.egress_mbps} Mbps</dd></>}
+                    {rule.ip_limit && <><dt className="text-muted-foreground">IP 告警</dt><dd>{ipThresholds(rule.ip_limit.max_ips, rule.ip_limit.block)}</dd></>}
+                    {usage && <><dt className="text-muted-foreground">更新时间</dt><dd>{new Date(usage.sampled_at * 1000).toLocaleString()}</dd>{usage.period_start && <><dt className="text-muted-foreground">账期起始</dt><dd>{usage.period_start} UTC</dd></>}</>}
+                  </dl>
+                </details>
+                <PortTraffic key={`${nodeId}:${rule.port}`} node={nodeId} port={rule.port} />
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button variant="outline" disabled={!writable || !legacyReadable} aria-expanded={editing && form?.port === rule.port} onClick={event => { void edit(rule, event.currentTarget) }}>{editing && form?.port === rule.port ? "收起编辑" : "编辑"}</Button>
+                <Button variant="outline" disabled={!writable} aria-expanded={editing && form?.port === rule.port} onClick={event => { void edit(rule, event.currentTarget) }}>{editing && form?.port === rule.port ? "收起编辑" : "编辑"}</Button>
                 <Button variant="outline" disabled={!writable} onClick={() => run(async () => {
                   if (await confirm(`重置 ${node} 上端口 ${rule.port} 的入站和出站用量？重置后按当前规则重新累计。`, { destructive: true })) await submit("reset", { port: rule.port })
                 })}>重置用量</Button>
@@ -113,7 +136,7 @@ export function PmPanel({ node, nodeId, snapshot, view, writable, busy, feedback
             </div>
           })}
         </>}
-      {form && <InlinePanel title={`${editing ? "编辑" : "新增"} PM 规则 · ${node}`} testId="pm-policy-editor" busy={busy} onClose={() => { void closeForm() }} footer={<><Button variant="outline" disabled={busy} onClick={() => { void closeForm() }}>取消</Button><Button type="submit" form="pm-policy-form" disabled={!writable || draftStale || !legacyReadable || (!editing && !candidates.some(candidate => candidate.port === form.port))}>保存并应用</Button></>}>
+      {form && <InlinePanel title={`${editing ? "编辑" : "新增"} PM 规则 · ${node}`} testId="pm-policy-editor" busy={busy} onClose={() => { void closeForm() }} footer={<><Button variant="outline" disabled={busy} onClick={() => { void closeForm() }}>取消</Button><Button type="submit" form="pm-policy-form" disabled={!writable || draftStale || (!editing && !candidates.some(candidate => candidate.port === form.port))}>保存并应用</Button></>}>
           <form id="pm-policy-form" className="space-y-4" onSubmit={e => {
         e.preventDefault()
         void run(async () => {
@@ -137,17 +160,6 @@ export function PmPanel({ node, nodeId, snapshot, view, writable, busy, feedback
           {confirmation}
       </InlinePanel>}
     </div>
-    <details className="space-y-2 rounded border p-3">
-      <summary className="cursor-pointer">原 PM · {pmStatus[legacy?.status ?? ""] ?? "等待组件上报"}</summary>
-      <p className="text-sm text-muted-foreground">原 PM 配置和用量以只读方式显示。</p>
-      {legacy?.rows.map(row => <div key={row.port} className="rounded border p-3 text-sm">
-        <strong>{row.comment || "端口"} · {row.port}</strong>
-        <p>配额 {row.quota_gb} GiB · {row.quota_mode === "out_only" ? "仅出站" : "双向"} · 重置日 {row.reset_day || "关闭"}</p>
-        <p>{row.state === "ready" && row.rx != null && row.tx != null ? `入站 ${gib(row.rx)} GiB · 出站 ${gib(row.tx)} GiB` : "用量未知，请检查原 PM"}</p>
-        <p>突发限速 {row.burst_enabled ? "开启" : "关闭"} · 到期日期 {row.expiry_date || "未设置"}</p>
-        <p className="text-xs text-muted-foreground">采样 {row.last_sample ? new Date(row.last_sample * 1000).toLocaleString() : "未知"}</p>
-      </div>)}
-    </details>
   </div>
 }
 
@@ -156,7 +168,7 @@ export function PmFields({ form, setForm, busy, alerts = true }: { form: PmDraft
   return <>
     <fieldset disabled={busy} className="grid gap-3 sm:grid-cols-2">
       <label>配额（GiB，0 关闭）<Input type="number" required min={0} max={8589934591} value={form.quota_gb} onChange={e => setForm({ ...form, quota_gb: Number(e.target.value) })} /></label>
-      <label>计费方向<select aria-label="计费方向" className="block w-full rounded border bg-background p-2" value={form.quota_mode} onChange={e => setForm({ ...form, quota_mode: e.target.value as PmPolicy["quota_mode"] })}><option value="in_out">双向，达到配额后丢弃双向流量</option><option value="out_only">仅出站，达到配额后丢弃出站流量</option></select></label>
+      <label>计费方向<select aria-label="计费方向" className="block h-9 w-full min-w-0 rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-xs outline-none transition-[color,box-shadow] focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 md:text-sm dark:bg-input/30" value={form.quota_mode} onChange={e => setForm({ ...form, quota_mode: e.target.value as PmPolicy["quota_mode"] })}><option value="in_out">双向</option><option value="out_only">单向-仅出站</option></select></label>
       <label>每月重置日（0 关闭）<Input type="number" required min={0} max={31} value={form.reset_day} onChange={e => setForm({ ...form, reset_day: Number(e.target.value) })} /></label>
       <label>到期日期（可选）<Input type="date" value={form.expiry_date} onChange={e => setForm({ ...form, expiry_date: e.target.value })} /></label>
       <label>出站超速丢包（Mbps，0 关闭）<Input type="number" required min={0} max={10000} value={form.egress_mbps} onChange={e => setForm({ ...form, egress_mbps: Number(e.target.value) })} /></label>
@@ -166,12 +178,13 @@ export function PmFields({ form, setForm, busy, alerts = true }: { form: PmDraft
       <fieldset disabled={busy} className="mt-3 grid gap-3 sm:grid-cols-2">
         <label>起警告的 IP 数（0 关闭）<Input aria-label="起警告的 IP 数（0 关闭）" type="number" required min={0} max={65536} value={form.warn_ips} onChange={e => setForm({ ...form, warn_ips: Number(e.target.value) })} />{form.warn_ips > 1 && <span className="text-xs text-muted-foreground">当前设置：{ipThresholds(form.warn_ips - 1, form.block)}</span>}</label>
         <label>重复提醒间隔（分钟）<Input type="number" required min={1} max={525600} disabled={!form.warn_ips} value={form.cooldown_min} onChange={e => setForm({ ...form, cooldown_min: Number(e.target.value) })} /></label>
-        <label className="flex items-center gap-2 sm:col-span-2"><input type="checkbox" className="size-4" aria-label="报警后阻断新出现的地址 30 分钟" disabled={!form.warn_ips} checked={form.block} onChange={e => setForm({ ...form, block: e.target.checked })} />报警后阻断新出现的地址 30 分钟{form.warn_ips > 1 && `（第 ${form.warn_ips + 3} 个起）`}</label>
-        <label className="sm:col-span-2">白名单 IP（可选，每行或逗号分隔，最多 32 个）<textarea aria-label="白名单 IP（可选，每行或逗号分隔，最多 32 个）" className="block min-h-20 w-full rounded border bg-background p-2" disabled={!form.warn_ips} value={form.whitelist} onChange={e => setForm({ ...form, whitelist: e.target.value })} /></label>
+        <label className="flex items-center gap-2 sm:col-span-2"><input type="checkbox" className="size-4" aria-label={form.warn_ips > 1 ? `${form.warn_ips + 3} 个起阻断` : "超限阻断"} disabled={!form.warn_ips} checked={form.block} onChange={e => setForm({ ...form, block: e.target.checked })} />{form.warn_ips > 1 ? `${form.warn_ips + 3} 个起阻断` : "超限阻断"}</label>
+        <label className="sm:col-span-2">白名单 IP / 网段（可选，最多 32 项）<textarea aria-label="白名单 IP / 网段（可选，最多 32 项）" className="block min-h-20 w-full rounded border bg-background p-2" disabled={!form.warn_ips} placeholder="例如：203.0.113.7、203.0.113.0/24、2001:db8::/64；每行或逗号分隔" value={form.whitelist} onChange={e => setForm({ ...form, whitelist: e.target.value })} /></label>
       </fieldset>
-      <p className="mt-2 text-xs text-muted-foreground">每分钟统计握手完成的 TCP 连接的不同来源 IP，连续两分钟出现才计入，端口扫描不计入；SB Reality 验证失败的来源也不计入。达到警告、报警数时通过服务管理提醒推送，同一等级按间隔重复提醒。开启阻断后，在线数超过报警数时保留最早在线的地址，把新出现的地址拒绝 30 分钟，到期自动解除；把地址加入白名单或修改 IP 数，下一分钟解除并重新判断。白名单地址不计入也不阻断。</p>
+      <p className="mt-2 text-xs text-muted-foreground">白名单内的 IP 和网段不计数、不阻断。</p>
+      <details className="mt-2 text-xs text-muted-foreground"><summary className="cursor-pointer">统计与阻断说明</summary><p className="mt-2">每分钟检查，连续两次在线才计数；扫描和 Reality 验证失败不计入。达到阈值后按提醒间隔推送。阻断保留最早在线的 IP，新增 IP 拒绝 30 分钟；白名单或数量变更后下一分钟重新判断。</p></details>
     </details>
-    {!alerts && (form.quota_gb > 0 || form.warn_ips > 0) && <p role="status" className="text-xs text-destructive">流量阈值和 IP 告警不会推送：尚未配置通知渠道，或已关闭服务管理提醒。可在“通知”页设置；页面上仍会显示状态。</p>}
+    {!alerts && (form.quota_gb > 0 || form.warn_ips > 0) && <p role="status" className="text-xs text-destructive">提醒推送未启用，可在“通知”页配置。</p>}
   </>
 }
 
@@ -189,49 +202,74 @@ function OnlineIps({ usage }: { usage: PmUsage }) {
   </details>
 }
 
-type Hour = [number, number, number]
-const dayKey = (time: Date) => `${time.getFullYear()}-${time.getMonth() + 1}-${time.getDate()}`
-
-/** The kept week of a port, by day, and a chosen day by hour, in the browser's time zone. */
+/** Lazy, bounded history: seven UTC days and a complete 24-hour drill-down. */
 function PortTraffic({ node, port }: { node: number; port: number }) {
-  const [hours, setHours] = useState<Hour[] | null>(null)
+  const [hours, setHours] = useState<PmTrafficHour[] | null>(null)
   const [error, setError] = useState("")
+  const [loading, setLoading] = useState(false)
   const [day, setDay] = useState("")
+  const [now, setNow] = useState(() => Date.now() / 1000)
+  const request = useRef(false)
   async function load() {
-    setError("")
-    try { setHours((await readManagement<{ hours: Hour[] }>(`/management/${node}/traffic?port=${port}`)).hours) }
-    catch (e) { setError((e as Error).message) }
+    if (request.current) return
+    request.current = true; setLoading(true); setError("")
+    try {
+      const data = await readManagement<{ hours: PmTrafficHour[] }>(`/management/${node}/traffic?port=${port}`)
+      setHours(data.hours); setNow(Date.now() / 1000)
+    } catch (e) { setError((e as Error).message) }
+    finally { request.current = false; setLoading(false) }
   }
-  const days = Array.from({ length: 7 }, (_, n) => {
-    const date = new Date(); date.setDate(date.getDate() - 6 + n)
-    const own = (hours ?? []).filter(([at]) => dayKey(new Date(at * 1000)) === dayKey(date))
-    return { key: dayKey(date), label: `${date.getMonth() + 1}/${date.getDate()}`, rx: own.reduce((sum, h) => sum + h[1], 0), tx: own.reduce((sum, h) => sum + h[2], 0), own }
-  })
+  const days = pmTrafficBars(hours ?? [], now)
   const chosen = days.find(item => item.key === day)
-  const byHour = chosen && Array.from({ length: 24 }, (_, hour) => {
-    const own = chosen.own.filter(([at]) => new Date(at * 1000).getHours() === hour)
-    return { key: String(hour), label: `${hour}:00`, rx: own.reduce((sum, h) => sum + h[1], 0), tx: own.reduce((sum, h) => sum + h[2], 0) }
-  })
-  return <details className="text-xs" onToggle={event => { if (event.currentTarget.open) void load() }}>
-    <summary className="cursor-pointer text-muted-foreground">流量走势（近 7 天）</summary>
-    {error ? <p role="alert" className="mt-2 text-destructive">{error}</p> : !hours ? <p className="mt-2 text-muted-foreground">读取中…</p> : <div className="mt-2 space-y-3">
-      <Bars items={days} selected={day} onSelect={key => setDay(key === day ? "" : key)} />
-      {byHour && <><p className="text-muted-foreground">{chosen.label} 按小时</p><Bars items={byHour} /></>}
-      <p className="text-muted-foreground">合计 入站 {bytes(days.reduce((sum, d) => sum + d.rx, 0))} · 出站 {bytes(days.reduce((sum, d) => sum + d.tx, 0))}。按后台收到的上报计入，节点离线期间的流量计入恢复上报的那一小时；点击某天查看小时分布。</p>
-    </div>}
+  const items = chosen ? pmTrafficBars(hours ?? [], now, chosen.key) : days
+  return <details className="min-w-0 basis-full text-xs" onToggle={event => { if (event.currentTarget.open && hours === null) void load() }}>
+    <summary className="cursor-pointer text-muted-foreground">用量详情（近 7 天）</summary>
+    <div className="mt-3 space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-3">
+          <span>{chosen ? `${chosen.key} · 小时用量` : "近 7 天用量"} <span className="text-muted-foreground">UTC</span></span>
+          {chosen && <Button size="sm" variant="ghost" onClick={() => setDay("")}>返回近 7 天</Button>}
+        </div>
+        <Button size="sm" variant="ghost" disabled={loading} onClick={() => void load()}>{loading ? "读取中…" : "刷新"}</Button>
+      </div>
+      {error && <p role="alert" className="text-destructive">{error}</p>}
+      {hours !== null && <>
+        <TrafficBars key={chosen?.key ?? "days"} items={items} hourly={!!chosen} onSelect={chosen ? undefined : setDay} />
+        <p className="tabular-nums text-muted-foreground">{chosen ? "当日已记录" : "近 7 天已记录"} 入站 {bytes(items.reduce((sum, d) => sum + d.rx, 0))} · 出站 {bytes(items.reduce((sum, d) => sum + d.tx, 0))}</p>
+        <details className="text-muted-foreground"><summary className="cursor-pointer">统计口径</summary><p className="mt-2">按 UTC 和后台收到上报的时间归集；离线期间的增量计入恢复上报的小时。仅保留滚动 7 天，不补齐首次记录前的数据；账期切换、计数重置或缺失读数可能丢失部分增量。无记录不代表零用量，图表合计不等于当前账期用量。</p></details>
+      </>}
+    </div>
   </details>
 }
 
-function Bars({ items, selected, onSelect }: { items: { key: string; label: string; rx: number; tx: number }[]; selected?: string; onSelect?: (key: string) => void }) {
-  const top = Math.max(1, ...items.map(item => item.rx + item.tx))
-  return <div className="flex h-24 items-end gap-1" role="list">
-    {items.map(item => {
-      const text = `${item.label} 入站 ${bytes(item.rx)} · 出站 ${bytes(item.tx)}`
-      const bar = <span className={`block w-full rounded-sm ${item.key === selected ? "bg-primary" : "bg-primary/60"}`} style={{ height: item.rx + item.tx ? `${Math.max(2, (item.rx + item.tx) / top * 100)}%` : "1px" }} />
-      return <div key={item.key} role="listitem" className="flex h-full flex-1 flex-col justify-end" title={text} aria-label={onSelect ? undefined : text}>
-        {onSelect ? <button type="button" className="flex h-full flex-col justify-end" aria-label={text} aria-pressed={item.key === selected} onClick={() => onSelect(item.key)}>{bar}</button> : bar}
-        {items.length <= 7 && <span className="mt-1 text-center text-muted-foreground">{item.label}</span>}
+function TrafficBars({ items, hourly, onSelect }: { items: PmTrafficBar[]; hourly: boolean; onSelect?: (key: string) => void }) {
+  const [selected, setSelected] = useState(() => Math.max(0, items.findLastIndex(item => item.state === "recorded")))
+  const top = Math.max(1, ...items.flatMap(item => [item.rx, item.tx]))
+  const current = items[selected] ?? items[0]
+  const stateLabel = (item: PmTrafficBar) => item.state === "future" ? "未到时间" : item.state === "missing" ? "无记录" : `入站 ${bytes(item.rx)} · 出站 ${bytes(item.tx)}`
+  const caption = (item: PmTrafficBar) => `${item.label}${hourly ? `–${String(Number(item.key) + 1).padStart(2, "0")}:00` : ""}`
+  return <div className="space-y-3">
+    <div className="flex flex-wrap items-center justify-between gap-2 text-muted-foreground">
+      <span>流量{hourly ? " · 每组 1 小时" : " · 点击日期查看小时"}</span>
+      <div className="flex gap-4"><span className="flex items-center gap-1"><i className="size-2 rounded-sm bg-blue-300 dark:bg-blue-400/60" />入站</span><span className="flex items-center gap-1"><i className="size-2 rounded-sm bg-blue-600 dark:bg-blue-400" />出站</span></div>
+    </div>
+    <div className="grid grid-cols-[3.5rem_minmax(0,1fr)] gap-2">
+      <div aria-hidden="true" className="flex h-40 flex-col justify-between text-right text-[11px] tabular-nums text-muted-foreground"><span>{bytes(top)}</span><span>{bytes(top / 2)}</span><span>0</span></div>
+      <div className="min-w-0">
+        <div className="relative h-40 border-b" role="group" aria-label={hourly ? "24 小时入站与出站用量" : "近 7 天入站与出站用量"}>
+          <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 border-t" /><div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-1/2 border-t" />
+          <div className="relative grid h-full gap-px" style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}>
+            {items.map((item, index) => <button key={item.key} type="button" aria-label={`${caption(item)} ${stateLabel(item)}${item.partial ? "（时段未完整覆盖）" : ""}`} aria-pressed={index === selected} className={`relative flex h-full min-w-0 items-end justify-center gap-px px-px outline-offset-2 hover:bg-muted focus-visible:bg-muted ${index === selected ? "bg-muted/60" : ""}`} onMouseEnter={() => setSelected(index)} onFocus={() => setSelected(index)} onClick={() => { setSelected(index); onSelect?.(item.key) }}>
+              {item.state === "recorded" ? <><span aria-hidden="true" className="w-2/5 rounded-t-sm bg-blue-300 dark:bg-blue-400/60" style={{ height: `${item.rx / top * 100}%`, minHeight: item.rx ? 2 : 0 }} /><span aria-hidden="true" className="w-2/5 rounded-t-sm bg-blue-600 dark:bg-blue-400" style={{ height: `${item.tx / top * 100}%`, minHeight: item.tx ? 2 : 0 }} /></> : <span aria-hidden="true" className={`mb-1 size-1 rounded-full ${item.state === "missing" ? "bg-muted-foreground/60" : "border border-muted-foreground/50"}`} />}
+            </button>)}
+          </div>
+        </div>
+        <div aria-hidden="true" className="mt-2 grid text-center text-[11px] text-muted-foreground" style={{ gridTemplateColumns: `repeat(${items.length}, minmax(0, 1fr))` }}>{items.map((item, index) => <span key={item.key} className="relative">{!hourly || [0, 6, 12, 18, 23].includes(index) ? <span className="absolute left-1/2 -translate-x-1/2 whitespace-nowrap">{hourly ? item.key.padStart(2, "0") : item.label}</span> : null}</span>)}</div>
       </div>
-    })}
+    </div>
+    <div className="pt-3">
+      {hourly && <label className="mb-2 flex items-center gap-2 text-muted-foreground">小时<select className="h-9 rounded-md border bg-background px-2 text-sm text-foreground" aria-label="查看小时用量" value={selected} onChange={event => setSelected(Number(event.target.value))}>{items.map((item, index) => <option key={item.key} value={index}>{caption(item)}</option>)}</select></label>}
+      <p aria-live="polite" className="rounded-md bg-muted/50 p-3 tabular-nums">{caption(current)} · {stateLabel(current)}{current.partial && current.state !== "future" ? " · 时段未完整覆盖" : ""}</p>
+    </div>
   </div>
 }

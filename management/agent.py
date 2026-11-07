@@ -20,7 +20,6 @@ from model import PROTOCOL, Rejected, request, revision
 from snell import Driver
 from storage import read, write, remove, private_directory
 from services import Driver as ServiceDriver
-import port_monitor
 from pm import Driver as PMDriver
 
 ROOT = pathlib.Path('/var/lib/node-manager')
@@ -154,16 +153,10 @@ def execute_module_task(controllers, task):
     if name == 'pm' and action == 'apply':
         if not any(related[module]['runtime'].get(str(port)) == 'active' for module in owners):
             return reject_module(controllers[name], req, 'pm_port', 'PM 只允许管理仍在运行的受管业务端口')
-        legacy = port_monitor.snapshot()
-        if legacy['status'] not in ('not_installed', 'ready') or any(row['port'] == port for row in legacy['rows']):
-            return reject_module(controllers[name], req, 'pm_legacy', '原 PM 正忙、不可读取或已管理该端口')
     if name != 'pm' and action == 'apply' and owners - {'pm'}:
         return reject_module(controllers[name], req, 'port_in_use', '监听端口已被其他模块保留')
     if name != 'pm' and action in ('delete', 'core_uninstall'):
-        legacy = port_monitor.snapshot()
-        if legacy['status'] not in ('not_installed', 'ready'):
-            return reject_module(controller, req, 'pm_dependency', '无法核实原 PM 策略，请在 VPS 检查原 PM')
-        if action == 'delete' and ('pm' in owners or any(row['port'] == port for row in legacy['rows'])):
+        if action == 'delete' and 'pm' in owners:
             return reject_module(controller, req, 'pm_dependency', '请先移除该端口的 PM 规则')
         if action == 'core_uninstall':
             other_ports = {r['port'] for module, state in related.items() if module != 'pm'
@@ -276,7 +269,6 @@ def run_action(action):
         state = controller.snapshot()
         state['modules'] = {name:c.snapshot() for name,c in controllers.items() if name != 'snell'}
         state['blocked'] = state['blocked'] or any(v['blocked'] for v in state['modules'].values())
-        state['port_monitor'] = port_monitor.snapshot()
         return state
     if action == 'status':
         state = snapshot()

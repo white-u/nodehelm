@@ -14,7 +14,6 @@ import sys
 import time
 
 from model import Rejected, resource, revision
-from port_monitor import snapshot as legacy_snapshot
 from snell import atomic, command
 from storage import private_directory, read, remove, write
 
@@ -68,10 +67,11 @@ def period_start(today, day):
     return candidate.isoformat()
 
 
-def plan(state, today, suspended=()):
+def plan(state, today):
+    # `suspended` is always false now; kept so saved plans still compare equal.
     return {
         str(rule['port']): {
-            'suspended': rule['port'] in suspended,
+            'suspended': False,
             'period': period_start(today, rule['reset_day']),
             'expired': bool(rule['expiry_date'] and today.isoformat() > rule['expiry_date']),
             'quota_bytes': rule['quota_gb'] * GIB,
@@ -109,6 +109,15 @@ def address_order(value):
     return ip.version, ip
 
 
+def whitelisted(address, networks):
+    ip = ipaddress.ip_address(address)
+    return any(ip in network for network in networks)
+
+
+def whitelist_networks(items):
+    return tuple(ipaddress.ip_network(item, strict=False) for item in items)
+
+
 def watch(rules, output, previous, now, excluded=None):
     """Online addresses of every rule's port. An address counts only once seen
     in two consecutive minutes, so a port scan or a single short visit does not;
@@ -122,12 +131,15 @@ def watch(rules, output, previous, now, excluded=None):
     for rule in rules:
         port, limit = str(rule['port']), rule.get('ip_limit')
         old = previous.get(port, {})
-        skipped = set(limit['whitelist'] if limit else ()) | (excluded or {}).get(port, set())
+        allowed = whitelist_networks(limit['whitelist'] if limit else ())
+        skipped = (excluded or {}).get(port, set())
         # Each address with the minute it was first seen; 1.1.4 kept a list.
         before = old.get('seen', {})
         before = before if isinstance(before, dict) else dict.fromkeys(before, now)
         seen = {ip: before.get(ip, now)
-                for ip in sorted(current.get(port, set()) - skipped, key=address_order)[:IP_SEEN]}
+                for ip in sorted(current.get(port, set()) - skipped, key=address_order)
+                if not whitelisted(ip, allowed)}
+        seen = dict(list(seen.items())[:IP_SEEN])
         online = [ip for ip in seen if ip in before]
         count = len(online)
         level = 0 if not limit else 2 if count > limit['max_ips'] + 2 else 1 if count > limit['max_ips'] else 0
@@ -261,8 +273,6 @@ def batch(owner, generation, old, new, values, reset_ports, exists):
         if new_quota and not keep_quota:
             used = min(new_quota, counted(value, current['mode']))
             lines.append(f'add quota {TABLE} quota_{port} {{ over {new_quota} bytes used {used} bytes; }}')
-        if current['suspended']:
-            continue
         for chain, iface, direction, field, counter in (
             ('input', 'iifname', 'original', 'dport', 'rx'),
             ('output', 'oifname', 'reply', 'sport', 'tx'),
@@ -393,7 +403,7 @@ class Driver:
         elif not bootstrap:
             raise Rejected('PM 检查点缺失，禁止以零用量重建', 'pm_drift')
         previous = saved['plan'] if saved else {}
-        target = self.expected_plan(state, previous)
+        target = self.expected_plan(state)
         resets = {
             port for port in previous.keys() & target.keys()
             if previous[port]['period'] != target[port]['period'] and port != keep_period_port
@@ -406,14 +416,8 @@ class Driver:
         return saved
 
     @staticmethod
-    def expected_plan(state, previous):
-        legacy = legacy_snapshot()
-        if legacy['status'] in ('ready', 'not_installed'):
-            conflicts = {row['port'] for row in legacy['rows']}
-        else:
-            # An unavailable reader is not evidence that a known conflict was removed.
-            conflicts = {int(port) for port, rule in previous.items() if rule['suspended']}
-        return plan(state, dt.datetime.now(dt.timezone.utc).date(), conflicts)
+    def expected_plan(state):
+        return plan(state, dt.datetime.now(dt.timezone.utc).date())
 
     @staticmethod
     def unit_states():
@@ -639,7 +643,7 @@ class Driver:
         except (Rejected, OSError, ValueError, subprocess.TimeoutExpired):
             return True, {}
         usage = {}
-        expected = self.expected_plan(state, data['plan'])
+        expected = self.expected_plan(state)
         limited = {str(rule['port']) for rule in state['resources'] if 'ip_limit' in rule}
         try:
             recent = read(self.ip_watch, {})
@@ -651,9 +655,7 @@ class Driver:
             rule = data['plan'][port]
             used = data['quotas'].get(port, 0)
             quota = rule['quota_bytes']
-            if expected.get(port, {}).get('suspended') or rule['suspended']:
-                alert = 'legacy_conflict' if rule['suspended'] else 'legacy_pending'
-            elif expected.get(port) != rule:
+            if expected.get(port) != rule:
                 alert = 'maintenance_pending'
             elif rule['expired']:
                 alert = 'expired'
@@ -809,13 +811,13 @@ class Driver:
         write(self.ip_watch, {'sampled_at': now, 'ports': ports})
         if current is False:
             return
-        blocking = {str(rule['port']): set(rule['ip_limit']['whitelist'])
+        blocking = {str(rule['port']): whitelist_networks(rule['ip_limit']['whitelist'])
                     for rule in rules if rule.get('ip_limit', {}).get('block')}
         # A changed limit is judged again from scratch: raising it frees the port at once.
         changed = {port for port, entry in ports.items()
                    if entry.get('max_ips') != previous.get(port, {}).get('max_ips')}
         drop = {(ip, port) for ip, port in current or ()
-                if port not in blocking or ip in blocking[port] or port in changed}
+                if port not in blocking or whitelisted(ip, blocking[port]) or port in changed}
         add = {(ip, port) for port, ips in changes.items() if port in blocking for ip in ips}
         script = block_script(self.owner, current is not None, add, drop, bool(blocking))
         if script:

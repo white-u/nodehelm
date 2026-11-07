@@ -13,8 +13,7 @@ export type PmDraft = Omit<PmPolicy, "ip_limit"> & { warn_ips: number; cooldown_
 export type CoreAction = "core_upgrade" | "core_rollback" | "core_uninstall"
 export type Core = { version: string | null; sha256: string | null; previous_version: string | null; candidates: string[] }
 export type Snapshot = { core?: Core; usage?: Record<string, PmUsage>; runtime?: Record<string, string>; installed: boolean; blocked: boolean; revision: string; resources: Resource[] }
-export type PortRow = { port: number; quota_gb: number; quota_mode: string; reset_day: number; comment: string; expiry_date: string; burst_enabled: boolean; state: string; rx?: number; tx?: number; last_sample?: number }
-export type RootSnapshot = Snapshot & { modules?: Record<string, Snapshot>; port_monitor?: { status: string; rows: PortRow[] } }
+export type RootSnapshot = Snapshot & { modules?: Record<string, Snapshot> }
 export type Lifecycle = { id: string; scope: Module | "all"; status: string; underlying_status?: string; stage: string; message: string; attempt: number }
 export const lifecycleActive = (job?: Lifecycle) => !!job && !["succeeded", "cancelled", "failed", "revoked"].includes(job.status)
 export const lifecycleLabels: Record<string, string> = { running: "正在卸载", paused: "卸载已暂停", interrupted: "节点离线，结果未确认", cleaning: "正在清理管理组件", finalizing: "正在确认清理结果", succeeded: "卸载已确认完成", revoked: "恢复备份后原卸载授权已失效" }
@@ -65,7 +64,19 @@ export async function readManagement<T>(path: string): Promise<T> {
   } finally { clearTimeout(timeout) }
 }
 
-export type NodeStatus = { status?: Status; error?: string; loading: boolean; updatedAt?: number }
+export type NodeStatus = { status?: Status; error?: string; loading: boolean; updatedAt?: number; refreshed?: boolean }
+
+/** Outcome takes precedence over action: a failed deletion must never look successful. */
+export function serviceFeedbackClass(status: string, action = "") {
+  if (["failed", "rejected", "rolled_back", "recovery_failed"].includes(status)) return "text-destructive"
+  if (["paused", "interrupted", "expired", "cancelled", "revoked", "warning"].includes(status)) return "text-amber-700 dark:text-amber-400"
+  if (status === "succeeded") {
+    if (["delete", "core_uninstall", "uninstall", "revoke"].includes(action)) return "text-orange-700 dark:text-orange-400"
+    if (["refresh", "check"].includes(action)) return "text-blue-700 dark:text-blue-400"
+    return "text-emerald-700 dark:text-emerald-400"
+  }
+  return "text-blue-700 dark:text-blue-400"
+}
 export const modules = Object.keys(names) as Module[]
 export function pmDraft({ ip_limit, ...rule }: PmPolicy): PmDraft {
   return { ...rule, warn_ips: ip_limit ? ip_limit.max_ips + 1 : 0, cooldown_min: ip_limit?.cooldown_min ?? 30, whitelist: ip_limit?.whitelist.join("\n") ?? "", block: !!ip_limit?.block }
@@ -87,8 +98,12 @@ export function pmPayload({ warn_ips, cooldown_min, whitelist, block, ...rule }:
   if (!warn_ips) return rule
   if (!Number.isInteger(warn_ips) || warn_ips < 2 || warn_ips > 65536) throw new Error("起警告的 IP 数须为 2–65536，0 关闭")
   const ips = whitelist.split(/[\s,，]+/).filter(Boolean)
-  const invalid = ips.find(ip => !ipAddress(ip))
-  if (invalid) throw new Error(`IP 白名单中的 ${invalid} 不是有效的 IP 地址`)
+  const invalid = ips.find(item => {
+    const [ip, prefix, extra] = item.split("/")
+    return !ipAddress(ip) || extra !== undefined || (prefix !== undefined &&
+      (!/^\d{1,3}$/.test(prefix) || Number(prefix) > (ip.includes(":") ? 128 : 32)))
+  })
+  if (invalid) throw new Error(`IP 白名单中的 ${invalid} 不是有效的 IP 地址或 CIDR 网段`)
   if (ips.length > 32) throw new Error("IP 白名单最多 32 个")
   return { ...rule, ip_limit: { max_ips: warn_ips - 1, cooldown_min, whitelist: ips, ...(block ? { block: true as const } : {}) } }
 }
@@ -102,12 +117,10 @@ export function pmSummary(rule: PmPolicy) {
 }
 /** Why a port cannot take a managed PM rule now, or "" when it can. */
 export function pmBlocked(snapshot: RootSnapshot | undefined, port: number) {
-  const pm = snapshot?.modules?.pm, legacy = snapshot?.port_monitor
+  const pm = snapshot?.modules?.pm
   if (!pm?.installed) return "启用 PM 后可同时添加"
   if (pm.blocked) return "PM 状态需要核实"
   if (port < 1024) return "PM 只统计 1024 以上的端口"
-  if (legacy?.status !== "ready" && legacy?.status !== "not_installed") return "原 PM 配置暂不可读取"
-  if (legacy.rows.some(row => row.port === port)) return "该端口已由原 PM 管理"
   if (pm.resources.some(rule => rule.port === port)) return "该端口已有 PM 规则"
   return ""
 }
@@ -126,7 +139,28 @@ export function moduleView(status: Status | undefined, module: Module) {
   return module === "snell" ? status?.snapshot : status?.snapshot?.modules?.[module]
 }
 
-export const pmStatus: Record<string, string> = { not_installed: "未检测到原 PM 配置", unavailable: "原 PM 配置不可读取或版本不兼容", busy: "原 PM 正在更新，等待下次读取", ready: "已读取原 PM 配置" }
-export const pmAlerts: Record<string, string> = { normal: "正常", quota_warning: "用量达到配额的 80%", quota_reached: "已达到配额", expired: "已到期，端口流量被阻断", legacy_conflict: "原 PM 已管理此端口，受管规则已暂停", legacy_pending: "发现原 PM 管理此端口，等待暂停受管规则", maintenance_pending: "日期策略等待定时任务应用" }
+export const pmAlerts: Record<string, string> = { normal: "正常", quota_warning: "配额预警", quota_reached: "配额已满", expired: "已到期 · 已阻断", maintenance_pending: "策略待应用" }
 export const gib = (bytes: number) => (bytes / 1073741824).toFixed(3)
+
+export type PmTrafficHour = [number, number, number]
+export type PmTrafficBar = { key: string; label: string; rx: number; tx: number; state: "recorded" | "missing" | "future"; partial?: boolean }
+/** UTC matches PM billing. Missing rows are unknown, never invented zero readings. */
+export function pmTrafficBars(hours: PmTrafficHour[], now: number, day?: string): PmTrafficBar[] {
+  const hourNow = Math.floor(now / 3600) * 3600
+  const today = Math.floor(now / 86400) * 86400
+  const start = day ? Date.parse(`${day}T00:00:00Z`) / 1000 : today - 6 * 86400
+  const step = day ? 3600 : 86400
+  return Array.from({ length: day ? 24 : 7 }, (_, index) => {
+    const at = start + index * step
+    const date = new Date(at * 1000)
+    const own = hours.filter(([time]) => time >= at && time < at + step && time <= hourNow)
+    return {
+      key: day ? String(index) : date.toISOString().slice(0, 10),
+      label: day ? `${String(index).padStart(2, "0")}:00` : `${date.getUTCMonth() + 1}/${date.getUTCDate()}`,
+      rx: own.reduce((sum, row) => sum + row[1], 0), tx: own.reduce((sum, row) => sum + row[2], 0),
+      state: at > now ? "future" : own.length ? "recorded" : "missing",
+      partial: at <= now && at + step > now,
+    }
+  })
+}
 

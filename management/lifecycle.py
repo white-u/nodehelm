@@ -98,7 +98,6 @@ class Lifecycle:
         return self.save(record)
 
     def preflight(self, scope):
-        import port_monitor
         if install.present(install.PURGE_JOURNAL) or install.present(self.root / install.JOURNAL):
             raise ValueError('组件维护或清理尚未完成')
         if install.present(self.root / 'pending-result.json') or install.present(self.root / 'enrollment.json'):
@@ -111,10 +110,6 @@ class Lifecycle:
                 raise ValueError('存在未恢复业务事务')
         selected = MODULES if scope == 'all' else (scope,)
         ports = {item['port'] for name in selected if name != 'pm' for item in states[name]['resources']}
-        legacy = port_monitor.snapshot()
-        if scope != 'pm' and (legacy['status'] not in ('ready', 'not_installed')
-                             or ports & {item['port'] for item in legacy['rows']}):
-            raise ValueError('原 PM 策略不可核实或与待移除业务冲突')
         for name in selected:
             controller = self.controllers[name]
             if name != 'pm':

@@ -1,6 +1,6 @@
 /// <reference types="node" />
 import assert from "node:assert/strict"
-import { editable, instancePayload, newPmDraft, newResource, pmBlocked, pmDraft, pmPayload, pmSummary, type PmPolicy, type RootSnapshot } from "./model.ts"
+import { serviceFeedbackClass, pmTrafficBars, editable, instancePayload, newPmDraft, newResource, pmBlocked, pmDraft, pmPayload, pmSummary, type PmPolicy, type RootSnapshot } from "./model.ts"
 
 const draft = newResource("snell", "example.com")
 assert.equal(draft.name, "")
@@ -38,7 +38,7 @@ assert.throws(() => pmPayload({ ...limitedDraft, warn_ips: 1 }), /2–65536/)
 const fresh = newPmDraft(40001, "新实例")
 assert.deepEqual([fresh.warn_ips, fresh.block, fresh.quota_gb], [3, true, 0], "new rules warn at 3, alarm at 5 and block from the 6th")
 assert.deepEqual(pmPayload(fresh).ip_limit, { max_ips: 2, cooldown_min: 30, whitelist: [], block: true })
-assert.throws(() => pmPayload({ ...limitedDraft, whitelist: "203.0.113.0/24" }), /203\.0\.113\.0\/24/)
+assert.doesNotThrow(() => pmPayload({ ...limitedDraft, whitelist: "203.0.113.0/24 2001:db8::/64" }))
 assert.throws(() => pmPayload({ ...limitedDraft, whitelist: "fe80::1%eth0" }))
 assert.throws(() => pmPayload({ ...limitedDraft, whitelist: "256.1.1.1" }))
 assert.throws(() => pmPayload({ ...limitedDraft, whitelist: Array.from({ length: 33 }, (_, n) => `192.0.2.${n}`).join(",") }), /32/)
@@ -46,10 +46,42 @@ assert.doesNotThrow(() => pmPayload({ ...limitedDraft, whitelist: "::ffff:192.0.
 assert.equal(pmSummary({ ...pm, quota_gb: 100, reset_day: 1, ip_limit: { max_ips: 3, cooldown_min: 30, whitelist: [] } }), "配额 100 GiB／每月 1 日重置／IP 4 个起警告、6 个起报警")
 assert.equal(pmSummary({ ...pm, ip_limit: { max_ips: 2, cooldown_min: 30, whitelist: [], block: true } }), "只计量／IP 3 个起警告、5 个起报警、第 6 个起阻断")
 const empty = { installed: true, blocked: false, revision: "", resources: [] }
-const root = (rows: number[] = [], rules: number[] = []): RootSnapshot => ({ ...empty, modules: { pm: { ...empty, resources: rules.map(port => ({ ...pm, port })) } }, port_monitor: { status: "ready", rows: rows.map(port => ({ port, quota_gb: 1, quota_mode: "in_out", reset_day: 0, comment: "", expiry_date: "", burst_enabled: false, state: "ready" })) } })
+const root = (rules: number[] = []): RootSnapshot => ({ ...empty, modules: { pm: { ...empty, resources: rules.map(port => ({ ...pm, port })) } } })
 assert.equal(pmBlocked(root(), 23456), "")
 assert.match(pmBlocked(root(), 443), /1024/)
-assert.match(pmBlocked(root([23456]), 23456), /原 PM/)
-assert.match(pmBlocked(root([], [23456]), 23456), /已有/)
+assert.match(pmBlocked(root([23456]), 23456), /已有/)
 assert.match(pmBlocked({ ...empty }, 23456), /启用 PM/)
 console.log("PM drafts, whitelist checks and eligibility passed")
+
+for (const whitelist of ["203.0.113.0/33", "2001:db8::/129", "203.0.113.0/", "203.0.113.0/24/1"]) assert.throws(() => pmPayload({ ...limitedDraft, whitelist }))
+
+// History is UTC, bounded to seven days, and never turns missing samples into zero.
+const trafficNow = Date.parse('2026-11-07T10:30:00Z') / 1000
+const trafficHours: import('./model.ts').PmTrafficHour[] = [
+  [Date.parse('2026-11-06T23:00:00Z') / 1000, 12, 40],
+  [Date.parse('2026-11-07T00:00:00Z') / 1000, 3, 9],
+  [Date.parse('2026-11-07T10:00:00Z') / 1000, 0, 0],
+]
+const trafficDays = pmTrafficBars(trafficHours, trafficNow)
+assert.equal(trafficDays.length, 7)
+assert.equal(trafficDays[0].key, '2026-11-01')
+assert.equal(trafficDays[0].partial, false, 'today and six earlier UTC dates fit within rolling seven-day retention')
+assert.equal(trafficDays[5].rx, 12, 'UTC midnight keeps adjacent dates separate')
+assert.equal(trafficDays[6].tx, 9)
+const trafficDay = pmTrafficBars(trafficHours, trafficNow, '2026-11-07')
+assert.equal(trafficDay.length, 24)
+assert.equal(trafficDay[0].state, 'recorded')
+assert.equal(trafficDay[1].state, 'missing')
+assert.equal(trafficDay[10].state, 'recorded', 'explicit zero readings remain distinct from missing rows')
+assert.equal(trafficDay[10].partial, true)
+assert.equal(trafficDay[11].state, 'future')
+assert.equal(trafficDay[23].state, 'future')
+assert.equal(pmTrafficBars(trafficHours, trafficNow, '2026-11-06')[23].tx, 40)
+console.log('PM UTC history, midnight boundaries, retention and missing/future hours passed')
+
+assert.equal(serviceFeedbackClass("rejected", "delete"), "text-destructive", "failure takes precedence over destructive action")
+assert.match(serviceFeedbackClass("succeeded", "delete"), /text-orange-/)
+assert.match(serviceFeedbackClass("succeeded", "apply"), /text-emerald-/)
+assert.match(serviceFeedbackClass("delivered", "apply"), /text-blue-/, "submission is not confirmed success")
+assert.match(serviceFeedbackClass("interrupted", "uninstall"), /text-amber-/)
+console.log("Service feedback outcome precedence passed")

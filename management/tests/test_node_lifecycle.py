@@ -81,7 +81,6 @@ class NodeLifecycleTests(unittest.TestCase):
         self.stack.enter_context(patch.object(install, 'LIFECYCLE_LOCK', self.base / 'lifecycle-run.lock'))
         self.stack.enter_context(patch.object(install, 'PURGE_JOURNAL', self.base / 'purge.json'))
         self.stack.enter_context(patch.object(lifecycle, 'RECOVERY', self.base / 'helper'))
-        self.stack.enter_context(patch('port_monitor.snapshot', return_value={'status': 'not_installed', 'rows': []}))
         self.stack.enter_context(patch.object(install, 'purge_plan', return_value={}))
     def state(self, module, ports, installed=True):
         write(self.controllers[module].state, {'installed': installed, 'resources': [{'port': port, 'name': str(port)} for port in ports]})
@@ -100,11 +99,8 @@ class NodeLifecycleTests(unittest.TestCase):
         self.assertEqual(self.calls, [('pm', 'delete', 10086), ('snell', 'delete', 10086), ('snell', 'core_uninstall', None)])
         self.assertEqual([item['port'] for item in self.controllers['pm'].snapshot()['resources']], [20086])
         self.assertTrue(self.controllers['sb'].snapshot()['installed'])
-    def test_unknown_or_legacy_conflict_pauses_before_any_effect(self):
+    def test_unknown_inventory_pauses_before_any_effect(self):
         self.state('snell', [10086])
-        with patch('port_monitor.snapshot', return_value={'status': 'ready', 'rows': [{'port': 10086}]}):
-            self.assertEqual(self.engine.advance(self.job)['status'], 'paused')
-        self.assertEqual(self.calls, [])
         self.controllers['snell'].driver.unknown = True
         self.assertEqual(self.engine.advance({**self.job, 'attempt': 2})['status'], 'paused')
         self.assertEqual(self.calls, [])

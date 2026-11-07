@@ -16,7 +16,7 @@
 | [traffic_period.rs](traffic_period.rs) | 四时段归类、扩展表、历史读取与裁剪 |
 | [management/mod.rs](management/mod.rs) | 管理开关、登记绑定、快照、普通任务、回执、配置展示和组件文件分发 |
 | [management/lifecycle.rs](management/lifecycle.rs) | 节点模块／全部卸载任务、进度、继续操作及最终确认 |
-| [management/models.rs](management/models.rs) | 模块字段、核心元数据、业务／原 PM 快照模型、SB 分享链接及 sing-box 客户端配置生成 |
+| [management/models.rs](management/models.rs) | 模块字段、核心元数据、业务快照模型、SB 分享链接及 sing-box 客户端配置生成 |
 | [management/traffic.rs](management/traffic.rs) | 受管 PM 端口的小时流量：由相邻两次上报算出增量，保留 7 天，删除规则时清除 |
 | [notify.rs](notify.rs) | 通知模板、队列及 Telegram／Webhook 发送 |
 | [frontend.rs](frontend.rs) | 管理静态资源、公开主题、主题包与图标 |

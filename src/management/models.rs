@@ -1,4 +1,4 @@
-//! Fixed module schemas and the legacy PM reader.
+//! Fixed module schemas.
 use anyhow::Result;
 use base64::{
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
@@ -126,6 +126,16 @@ pub fn resource(module: &str, value: &Value, snapshot: bool) -> Result<()> {
     Ok(())
 }
 
+fn valid_ip_or_network(value: &str) -> bool {
+    let (address, prefix) = value.split_once('/').map_or((value, None), |(ip, prefix)| (ip, Some(prefix)));
+    let Ok(ip) = address.parse::<std::net::IpAddr>() else { return false };
+    prefix.is_none_or(|prefix| {
+        !prefix.is_empty()
+            && prefix.bytes().all(|c| c.is_ascii_digit())
+            && prefix.parse::<u8>().is_ok_and(|n| n <= if ip.is_ipv4() { 32 } else { 128 })
+    })
+}
+
 /// Present only when on, so a rule without it keeps the revision older components
 /// computed; `block` likewise appears only as true. The component stores the
 /// whitelist normalized.
@@ -138,11 +148,10 @@ fn ip_limit(value: &Value) -> Result<()> {
         || value["max_ips"].as_u64().is_none_or(|n| !(1..=65535).contains(&n))
         || value["cooldown_min"].as_u64().is_none_or(|n| !(1..=525600).contains(&n))
         || whitelist.is_none_or(|ips| {
-            ips.len() > 32
-                || ips.iter().any(|ip| ip.as_str().is_none_or(|s| s.parse::<std::net::IpAddr>().is_err()))
+            ips.len() > 32 || ips.iter().any(|ip| ip.as_str().is_none_or(|s| !valid_ip_or_network(s)))
         })
     {
-        refuse!("IP 上限须为 1–65535，冷却 1–525600 分钟，白名单最多 32 个 IP 地址");
+        refuse!("IP 上限须为 1–65535，冷却 1–525600 分钟，白名单最多 32 项 IP 地址或 CIDR 网段");
     }
     Ok(())
 }
@@ -269,13 +278,7 @@ impl ModuleSnapshot {
                 || (!usage.period_start.is_empty() && !pm_date(&usage.period_start))
                 || !matches!(
                     usage.alert.as_str(),
-                    "normal"
-                        | "quota_warning"
-                        | "quota_reached"
-                        | "expired"
-                        | "legacy_conflict"
-                        | "legacy_pending"
-                        | "maintenance_pending"
+                    "normal" | "quota_warning" | "quota_reached" | "expired" | "maintenance_pending"
                 )
             {
                 refuse!("PM 用量快照无效");
@@ -289,59 +292,6 @@ impl ModuleSnapshot {
                 )
             {
                 refuse!("模块运行状态无效");
-            }
-        }
-        Ok(())
-    }
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct PortMonitor {
-    pub status: String,
-    pub read_only: bool,
-    pub rows: Vec<PortRow>,
-}
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct PortRow {
-    port: u16,
-    quota_gb: u64,
-    quota_mode: String,
-    reset_day: u8,
-    comment: String,
-    expiry_date: String,
-    burst_enabled: bool,
-    state: String,
-    #[serde(default)]
-    rx: Option<u64>,
-    #[serde(default)]
-    tx: Option<u64>,
-    #[serde(default)]
-    last_sample: Option<u64>,
-}
-impl PortMonitor {
-    pub fn validate(&self) -> Result<()> {
-        if !self.read_only
-            || !matches!(self.status.as_str(), "ready" | "not_installed" | "busy" | "unavailable")
-            || self.rows.len() > 64
-        {
-            refuse!("PM 状态无效");
-        }
-        let mut ports = HashSet::new();
-        for r in &self.rows {
-            if r.port == 0
-                || !ports.insert(r.port)
-                || r.quota_gb == 0
-                || r.quota_gb > 8589934591
-                || r.reset_day > 31
-                || r.comment.chars().count() > 128
-                || r.expiry_date.len() > 10
-                || !matches!(r.quota_mode.as_str(), "in_out" | "out_only")
-                || !matches!(r.state.as_str(), "ready" | "unknown")
-                || (r.state == "ready" && (r.rx.is_none() || r.tx.is_none() || r.last_sample.is_none()))
-            {
-                refuse!("PM 端口状态无效");
             }
         }
         Ok(())

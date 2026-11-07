@@ -19,7 +19,6 @@
 | [services.py](services.py) | SB／FW 驱动、配置生成、目标检查、服务与核心版本操作 |
 | [pm.py](pm.py) | 受管 PM 计量、配额、重置、到期策略、限速、在线 IP 统计、告警与阻断和定时维护 |
 | [menu.py](menu.py) | 节点本机菜单 `sudo nodehelm`：升级、状态、日志与恢复，命令随组件安装和清理 |
-| [port_monitor.py](port_monitor.py) | 原脚本 PM 配置与计数的读取和解析 |
 | [core_assets.json](core_assets.json) | 核心版本、架构、发行地址与摘要清单 |
 | [tests/](tests/) | 执行器、业务驱动、安装及后台维护工具的回归和集成脚本；[operations.json](tests/operations.json) 是后台与组件共用的操作校验样例 |
 
@@ -44,3 +43,5 @@
 默认程序目录为 `/opt/node-manager`，状态目录为 `/var/lib/node-manager`；SB／FW／PM 的状态在各自子目录，Snell 位于状态根目录。`management/install.py` 的 `FILES` 定义组件文件集；后台 [management/mod.rs](../src/management/mod.rs) 的 `files` 处理分发。
 
 `state.json` 表示模块状态，`recovery.json` 记录事务，`receipts/` 保存模块回执；`lifecycle-job.json` 保存节点卸载进度及本地确认，独立收尾材料位于 `/var/lib/node-manager-cleanup`。
+
+PM 仅管理当前受管业务端口，不读取旧脚本配置；IP 白名单支持单个地址与 IPv4／IPv6 CIDR 网段，匹配来源不计数、不阻断。

@@ -66,6 +66,13 @@ class PmIpTests(unittest.TestCase):
         third = watch(rules, scan, {'23456': second}, 1120)['23456']
         self.assertEqual(third['count'], 3)
 
+    def test_whitelist_networks_exclude_v4_v6_and_mapped_peers(self):
+        rules = [limited(whitelist=['203.0.113.0/24', '2001:db8::/64'])]
+        first = watch(rules, SS, {}, 1000)['23456']
+        second = watch(rules, SS, {'23456': first}, 1060)['23456']
+        self.assertEqual(second['ips'], ['fe80::3'])
+        self.assertEqual(second['count'], 1)
+
     def test_alerts_repeat_after_cooldown_or_on_a_rise_and_reset_silently(self):
         rules = [limited(max_ips=1, cooldown_min=2)]
         state = {'23456': {'seen': ['203.0.113.1', '203.0.113.2'], 'level': 1, 'seq': 4, 'last': 1000}}
@@ -136,9 +143,11 @@ class PmIpTests(unittest.TestCase):
         self.assertNotIn('ip_limit', resource(policy(), 'pm'))
         rule = resource(limited(whitelist=['::ffff:203.0.113.7', '2001:DB8::1', '203.0.113.7']), 'pm')
         self.assertEqual(rule['ip_limit']['whitelist'], ['203.0.113.7', '2001:db8::1'])
+        networks = resource(limited(whitelist=['203.0.113.7/24', '2001:DB8::1/64', '::ffff:198.51.100.7/120']), 'pm')
+        self.assertEqual(networks['ip_limit']['whitelist'], ['198.51.100.0/24', '203.0.113.0/24', '2001:db8::/64'])
         self.assertTrue(resource(limited() | {'ip_limit': limited()['ip_limit'] | {'block': True}}, 'pm')['ip_limit']['block'])
         self.assertNotIn('block', resource(limited(), 'pm')['ip_limit'], 'off is left out, keeping old revisions')
-        for bad in ({'max_ips': 0}, {'action': 'block'}, {'block': False}, {'whitelist': ['fe80::1%eth0']}):
+        for bad in ({'whitelist': ['203.0.113.0/33']}, {'whitelist': ['2001:db8::/129']}, {'max_ips': 0}, {'action': 'block'}, {'block': False}, {'whitelist': ['fe80::1%eth0']}):
             with self.assertRaises(Rejected):
                 resource(policy(ip_limit={'max_ips': 1, 'cooldown_min': 30, 'whitelist': []} | bad), 'pm')
 
@@ -218,6 +227,17 @@ class PmBlockTests(unittest.TestCase):
             with patch('pm.subprocess.run', return_value=done) as run:
                 self.assertEqual(reality_probes({'23456', '34567'}, units), {'23456': {'203.0.113.9', '2001:db8::9'}})
             self.assertEqual(run.call_count, 1, 'no SB unit on 34567, no journal read')
+
+    def test_adding_a_whitelist_network_releases_existing_blocks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            driver = Driver(directory)
+            driver.owner = 'node-manager/pm/' + 'a' * 32
+            with patch('pm.connections', return_value=online(*range(1, 8))), \
+                    patch('pm.nft') as nft, \
+                    patch.object(Driver, 'blocked', return_value={('203.0.113.6', '23456')}):
+                driver.watch_ips({'installed': True, 'resources': [blocking(whitelist=['203.0.113.0/24'])]})
+                self.assertIn('delete element inet node_manager_pm_block v4 { 203.0.113.6 . 23456 }', nft.call_args.kwargs['script'])
+                self.assertEqual(read(driver.ip_watch)['ports']['23456']['count'], 0)
 
     def test_maintenance_blocks_drops_and_never_touches_a_foreign_table(self):
         hosts = online(*range(1, 8))
@@ -407,7 +427,7 @@ class PmTests(unittest.TestCase):
             self.assertEqual(error.exception.code, 'pm_conflict')
             inspect.assert_not_called()
 
-    def test_agent_checks_listener_ownership_and_legacy_conflicts(self):
+    def test_agent_checks_listener_ownership_and_managed_pm_dependencies(self):
         class Probe(FakeDriver):
             def runtime(self, state):
                 return {str(r['port']): 'active' for r in state['resources']}
@@ -428,9 +448,9 @@ class PmTests(unittest.TestCase):
             self.assertEqual(execute_module_task(controllers, apply)['code'], 'pm_port')
             snell_state['resources'] = [{'port': 23456}]
             write(snell.state, snell_state)
-            legacy = {'status': 'ready', 'rows': [{'port': 23456}]}
-            with patch('agent.port_monitor.snapshot', return_value=legacy):
-                self.assertEqual(execute_module_task(controllers, apply)['code'], 'pm_legacy')
+            with patch('agent.execute_task', return_value={'status': 'succeeded'}) as execute:
+                self.assertEqual(execute_module_task(controllers, apply)['status'], 'succeeded')
+                execute.assert_called_once_with(pm, apply)
             pm_state['resources'] = [policy()]
             write(pm.state, pm_state)
             delete = {'expires': time.time() + 60, 'request': {

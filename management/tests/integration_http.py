@@ -27,7 +27,6 @@ def maximum_snapshot():
     modules['pm']['usage']={str(10000+i):dict(rx=9223372036854775807,tx=9223372036854775807,sampled_at=1793850000,period_start='2026-10-31',alert='quota_reached') for i in range(64)}
     for m in ('sb','fw'):modules[m]['runtime']={str(r['port']):'active' for r in modules[m]['resources']}
     state['modules']=modules
-    state['port_monitor']={'read_only':True,'status':'ready','rows':[dict(port=50000+i,quota_gb=8589934591,quota_mode='in_out',reset_day=31,comment='𠀀'*128,expiry_date='2099-12-31',burst_enabled=True,state='ready',rx=9223372036854775807,tx=9223372036854775807,last_sample=1793850000) for i in range(64)]}
     return state
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -114,7 +113,6 @@ def main():
                 # Module-specific revisions and export must use only the bound node's state.
                 ss={'name':'SS2022','port':12345,'host':'node.example.com','public_port':12345,'protocol':'ss2022','sni':'','psk':'AQEBAQEBAQEBAQEBAQEBAQ=='}
                 snapshot['modules']={'sb':{'installed':True,'resources':[ss],'revision':'d'*64,'blocked':False,'runtime':{'12345':'active'}}, 'fw':{'installed':True,'resources':[],'revision':'e'*64,'blocked':False,'runtime':{}}}
-                snapshot['port_monitor']={'status':'not_installed','read_only':True,'rows':[]}
                 call('/api/management-agent/v1/poll',{'snapshot':snapshot,'result':None},credential=credential,anonymous=True)
                 _,state=call(f'/api/management/{node}')
                 assert 'psk' not in state['snapshot']['modules']['sb']['resources'][0]

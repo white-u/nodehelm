@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input"
 import { Server, ArrowDownRight, RefreshCw, Search } from "lucide-react"
 import { ManagementDetail, NodeManagement } from "./ServiceDetail"
 import { useServiceConfirmation } from "./ServiceInteractions"
-import { type FollowUp, type Module, type PmDraft, type Status, type NodeStatus, names, modules, moduleView, lifecycleActive, defaultHost, readManagement } from "./model"
+import { type FollowUp, type Module, type PmDraft, type Status, type NodeStatus, names, modules, moduleView, lifecycleActive, defaultHost, readManagement, serviceFeedbackClass } from "./model"
 
 export function Management({ nodes }: { nodes: Node[] }) {
   const { discard, confirmation } = useServiceConfirmation()
@@ -34,17 +34,17 @@ export function Management({ nodes }: { nodes: Node[] }) {
   // its result (`next`), or the second step itself, submitted (`final`).
   const chains = useRef(new Map<number, { next?: FollowUp; final?: FollowUp; waitUntil?: number }>())
   // What the page shows of a chain; "1/2" or "2/2" while it runs, which keeps writes locked.
-  const [progress, setProgress] = useState<Record<number, string>>({})
+  const [progress, setProgress] = useState<Record<number, { text: string; status: string; action?: string }>>({})
   // PM drafts whose step did not go through, by "node:port", for "添加 PM".
   const keptDrafts = useRef(new Map<string, PmDraft>())
   const [pmOpening, setPmOpening] = useState<{ node: number; port: number; draft?: PmDraft; seq: number } | null>(null)
-  const endChain = useCallback((id: number, text: string, failed = true) => {
+  const endChain = useCallback((id: number, text: string, failed = true, outcome = failed ? "failed" : "succeeded") => {
     const chain = chains.current.get(id)
     chains.current.delete(id)
     const step = chain?.next ?? chain?.final
     if (failed && step?.draft) keptDrafts.current.set(`${id}:${step.draft.port}`, step.draft)
     const resume = failed && step?.draft ? "可在实例行点击“添加 PM”继续，已保留填写的参数。" : ""
-    setProgress(previous => ({ ...previous, [id]: text + resume }))
+    setProgress(previous => ({ ...previous, [id]: { text: text + resume, status: outcome, action: step?.action } }))
   }, [])
   const stopWatching = useCallback((id: number, notice = "", suspend = false) => {
     const watch = watches.current.get(id)
@@ -72,7 +72,7 @@ export function Management({ nodes }: { nodes: Node[] }) {
     stopped.current.delete(id)
     chains.current.delete(id)
     if (next) chains.current.set(id, { next })
-    setProgress(previous => ({ ...previous, [id]: next ? `1/2 ${next.steps[0]}… 请保持此页面打开直到完成。` : "" }))
+    setProgress(previous => ({ ...previous, [id]: { text: next ? `1/2 ${next.steps[0]}… 请保持此页面打开直到完成。` : "", status: "pending" } }))
     watches.current.set(id, { deadline: Date.now() + 120_000, operation })
     schedule(id)
   }, [schedule, stopWatching])
@@ -87,7 +87,7 @@ export function Management({ nodes }: { nodes: Node[] }) {
     }
     const next = chain?.next
     if (!chain || !next) return false
-    if (result.status !== "succeeded") { endChain(id, `${next.steps[0]}未成功，未${next.steps[1]}。`, false); return false }
+    if (result.status !== "succeeded") { endChain(id, `${next.steps[0]}未成功，未${next.steps[1]}。`, false, "failed"); return false }
     if (next.running) {
       const state = moduleView(status, next.running.module)?.runtime?.[String(next.running.port)]
       if (state !== "active") {
@@ -108,7 +108,7 @@ export function Management({ nodes }: { nodes: Node[] }) {
       return false
     }
     chains.current.set(id, { final: next })
-    setProgress(previous => ({ ...previous, [id]: `2/2 ${next.steps[1]}… 请保持此页面打开直到完成。` }))
+    setProgress(previous => ({ ...previous, [id]: { text: `2/2 ${next.steps[1]}… 请保持此页面打开直到完成。`, status: "pending" } }))
     watches.current.set(id, { deadline: Date.now() + 120_000, operation })
     return true
   }, [endChain])
@@ -142,7 +142,7 @@ export function Management({ nodes }: { nodes: Node[] }) {
       try {
         const status = await readManagement<Status>(`/management/${id}`)
         if (alive.current && sequences.current.get(id) === sequence) {
-          setRecords(previous => ({ ...previous, [id]: { status, loading: false, updatedAt: Date.now() } }))
+          setRecords(previous => ({ ...previous, [id]: { status, loading: false, updatedAt: Date.now(), refreshed: manual } }))
           const active = status.operations?.some(operation => ["queued", "delivered"].includes(operation.status))
           const blocked = status.snapshot?.blocked || Object.values(status.snapshot?.modules ?? {}).some(view => view.blocked)
           const watch = watches.current.get(id)
@@ -225,7 +225,7 @@ export function Management({ nodes }: { nodes: Node[] }) {
   }
   function openNodeManagement(id: number, trigger: HTMLElement) {
     nodeManagementTrigger.current = trigger
-    setManagedNode(previous => previous === id ? 0 : id)
+    setManagedNode(id)
     void refreshNode(id)
   }
 
@@ -262,7 +262,7 @@ export function Management({ nodes }: { nodes: Node[] }) {
               </button>
             })}</div>}
             <div className="flex flex-wrap items-center justify-between gap-2">
-              {row?.updatedAt && <p className="text-xs tabular-nums text-muted-foreground">读取于 {new Date(row.updatedAt).toLocaleTimeString()}</p>}
+              {row?.updatedAt && <p className={`text-xs tabular-nums ${row.refreshed ? serviceFeedbackClass("succeeded", "refresh") : "text-muted-foreground"}`}>{row.refreshed ? "已刷新于 " : "读取于 "} {new Date(row.updatedAt).toLocaleTimeString()}</p>}
               <Button id={`node-manage-${n.id}`} variant="ghost" className="ml-auto min-h-11 text-xs" data-testid={`node-manage-${n.id}`} onClick={event => openNodeManagement(n.id, event.currentTarget)}>节点管理</Button>
             </div>
           </article>
@@ -279,8 +279,8 @@ export function Management({ nodes }: { nodes: Node[] }) {
       }
     }} reload={async (manual = false) => { await Promise.all([refreshSettings(), refreshNode(managementTarget.id, true, manual)]) }} />}
     {confirmation}
-    <div ref={detail} hidden={!!managementTarget} id="service-detail" tabIndex={-1} aria-label={`${nodes.find(n => n.id === node)?.name ?? "节点"} · ${names[module]}配置`} className="scroll-mt-24 focus:outline-none" data-testid="node-detail" data-node-id={node}>
-      <ManagementDetail key={`${node}/${module}`} node={node} module={module} selectedName={nodes.find(n => n.id === node)?.name ?? ""} record={record} defaultAddress={defaultHost(nodes.find(n => n.id === node))} notice={notices[node]} progress={progress[node]} alerts={alerts} onSubmitted={(operation, next) => submitted(node, operation, next)} onOpenPm={port => { void openPm(port) }} pmOpening={pmOpening?.node === node && module === "pm" ? pmOpening : undefined} onDirtyChange={onDirtyChange} onNodeManagement={trigger => openNodeManagement(node, trigger)} enabled={enabled} settingsError={settingsError} reload={async (manual = false) => { await Promise.all([refreshSettings(), node ? refreshNode(node, true, manual) : Promise.resolve()]) }} />
+    <div ref={detail} hidden={!!managementTarget || !record?.status?.bound} id="service-detail" tabIndex={-1} aria-label={`${nodes.find(n => n.id === node)?.name ?? "节点"} · ${names[module]}配置`} className="scroll-mt-24 focus:outline-none" data-testid="node-detail" data-node-id={node}>
+      <ManagementDetail key={`${node}/${module}`} node={node} module={module} selectedName={nodes.find(n => n.id === node)?.name ?? ""} record={record} defaultAddress={defaultHost(nodes.find(n => n.id === node))} notice={notices[node]} progress={progress[node]?.text} progressStatus={progress[node]?.status} progressAction={progress[node]?.action} alerts={alerts} onSubmitted={(operation, next) => submitted(node, operation, next)} onOpenPm={port => { void openPm(port) }} pmOpening={pmOpening?.node === node && module === "pm" ? pmOpening : undefined} onDirtyChange={onDirtyChange} onNodeManagement={trigger => openNodeManagement(node, trigger)} enabled={enabled} settingsError={settingsError} reload={async (manual = false) => { await Promise.all([refreshSettings(), node ? refreshNode(node, true, manual) : Promise.resolve()]) }} />
     </div>
 
   </section>

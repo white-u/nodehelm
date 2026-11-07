@@ -386,11 +386,10 @@ class CoreLifecycleTests(unittest.TestCase):
             self.c.execute(self.req('core_uninstall'))
         self.assertTrue(unknown.exists())
         unknown.unlink()
-        with patch('agent.port_monitor.snapshot', return_value={'status': 'not_installed', 'rows': []}):
-            pm = Controller(self.root / 'pm', FakeDriver(), 'pm')
-            write(pm.state, {'installed': True, 'resources': [{'port': 12345}]})
-            result = execute_module_task({'snell': self.c, 'pm': pm},
-                                         {'request': self.req('core_uninstall'), 'expires': time.time() + 30})
+        pm = Controller(self.root / 'pm', FakeDriver(), 'pm')
+        write(pm.state, {'installed': True, 'resources': [{'port': 12345}]})
+        result = execute_module_task({'snell': self.c, 'pm': pm},
+                                     {'request': self.req('core_uninstall'), 'expires': time.time() + 30})
         self.assertEqual(result['code'], 'pm_dependency')
         self.assertEqual(self.c.execute(self.req('core_uninstall'))['status'], 'succeeded')
         self.assertFalse(self.driver.binary.exists())
