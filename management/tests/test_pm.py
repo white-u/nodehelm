@@ -162,7 +162,7 @@ class PmBlockTests(unittest.TestCase):
         self.assertNotIn('block', state['23456'], 'new addresses wait for their second minute')
         state = watch([blocking()], online(1, 2, 3, 4, 5, 6, 7), state, 1180)
         self.assertEqual(state['23456']['block'], ['203.0.113.6', '203.0.113.7'])
-        self.assertEqual(state['23456']['since']['203.0.113.1'], 1000)
+        self.assertEqual(state['23456']['seen']['203.0.113.1'], 1000)
         # Blocked addresses stay established for a while but are no longer counted.
         state.pop('block', None)
         after = watch([blocking()], online(1, 2, 3, 4, 5, 6, 7), state, 1240,
@@ -243,6 +243,15 @@ class PmBlockTests(unittest.TestCase):
                     driver.watch_ips({'installed': True, 'resources': [limited()]})
                     self.assertEqual(nft.call_args.kwargs['script'], 'delete table inet node_manager_pm_block\n')
                 nft.reset_mock()
+                # A changed limit lets the port's blocks go and judges again.
+                driver.watch_ips({'installed': True, 'resources': [rule]})
+                raised = blocking(max_ips=3, whitelist=['203.0.113.9'])
+                with patch.object(Driver, 'blocked', return_value={('203.0.113.6', '23456')}):
+                    driver.watch_ips({'installed': True, 'resources': [raised]})
+                    self.assertIn('delete element inet node_manager_pm_block v4 { 203.0.113.6 . 23456 }', nft.call_args.kwargs['script'])
+                    nft.reset_mock()
+                    driver.watch_ips({'installed': True, 'resources': [raised]})
+                    nft.assert_not_called()
                 with patch.object(Driver, 'blocked', side_effect=Rejected('foreign', 'pm_conflict')):
                     driver.watch_ips({'installed': True, 'resources': [rule]})
                 nft.assert_not_called()

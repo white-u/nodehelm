@@ -99,9 +99,10 @@ for line in sys.stdin:
 
                 # Blocking with the kernel: limit 1 alarms at 4, so the 5th address to come
                 # online (the peer) is dropped from its own table, before the PM counters.
+                clock = Mock(time=Mock(side_effect=range(1000, 10 ** 6, 60)))
+
                 def minutes(rule, *rounds):
                     write(controller.state, {**read(controller.state), 'resources': [rule]})
-                    clock = Mock(time=Mock(side_effect=[1000 + 60 * n for n in range(len(rounds))]))
                     with patch.object(pm, 'time', clock), patch('pm.reality_probes', return_value={}):
                         for hosts in rounds:
                             ss = ''.join(f'0 0 192.0.2.1:{port} {host}:40000\n' for host in hosts)
@@ -123,7 +124,14 @@ for line in sys.stdin:
                 minutes(read(controller.state)['resources'][0], others + ['192.0.2.2'])
                 assert driver.blocked() == set(), 'a whitelisted address is let go at once'
                 traffic(100)
-                assert task(controller, 'apply', {**rule, 'name': 'Renamed'}, 32)['status'] == 'succeeded'
+                assert task(controller, 'apply', blocking, 32)['status'] == 'succeeded'
+                minutes(read(controller.state)['resources'][0], others + ['192.0.2.2'], others + ['192.0.2.2'])
+                assert driver.blocked() == {('192.0.2.2', str(port))}, driver.blocked()
+                raised = {**blocking, 'ip_limit': {**limit, 'max_ips': 2}}
+                assert task(controller, 'apply', raised, 33)['status'] == 'succeeded'
+                minutes(read(controller.state)['resources'][0], others + ['192.0.2.2'])
+                assert driver.blocked() == set(), 'a raised limit lets the port go at once'
+                assert task(controller, 'apply', {**rule, 'name': 'Renamed'}, 34)['status'] == 'succeeded'
                 minutes(read(controller.state)['resources'][0], others)
                 assert driver.blocked() is None, 'no blocking rule, no table'
                 initial = driver.inspect()['values'][str(port)]

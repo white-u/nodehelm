@@ -169,7 +169,7 @@ export function PmFields({ form, setForm, busy, alerts = true }: { form: PmDraft
         <label className="flex items-center gap-2 sm:col-span-2"><input type="checkbox" className="size-4" aria-label="报警后阻断新出现的地址 30 分钟" disabled={!form.warn_ips} checked={form.block} onChange={e => setForm({ ...form, block: e.target.checked })} />报警后阻断新出现的地址 30 分钟{form.warn_ips > 1 && `（第 ${form.warn_ips + 3} 个起）`}</label>
         <label className="sm:col-span-2">白名单 IP（可选，每行或逗号分隔，最多 32 个）<textarea aria-label="白名单 IP（可选，每行或逗号分隔，最多 32 个）" className="block min-h-20 w-full rounded border bg-background p-2" disabled={!form.warn_ips} value={form.whitelist} onChange={e => setForm({ ...form, whitelist: e.target.value })} /></label>
       </fieldset>
-      <p className="mt-2 text-xs text-muted-foreground">每分钟统计握手完成的 TCP 连接的不同来源 IP，连续两分钟出现才计入，端口扫描不计入；SB Reality 验证失败的来源也不计入。达到警告、报警数时通过服务管理提醒推送，同一等级按间隔重复提醒。开启阻断后，在线数超过报警数时保留最早在线的地址，把新出现的地址拒绝 30 分钟，到期自动解除；把地址加入白名单可立即解除。白名单地址不计入也不阻断。</p>
+      <p className="mt-2 text-xs text-muted-foreground">每分钟统计握手完成的 TCP 连接的不同来源 IP，连续两分钟出现才计入，端口扫描不计入；SB Reality 验证失败的来源也不计入。达到警告、报警数时通过服务管理提醒推送，同一等级按间隔重复提醒。开启阻断后，在线数超过报警数时保留最早在线的地址，把新出现的地址拒绝 30 分钟，到期自动解除；把地址加入白名单或修改 IP 数，下一分钟解除并重新判断。白名单地址不计入也不阻断。</p>
     </details>
     {!alerts && (form.quota_gb > 0 || form.warn_ips > 0) && <p role="status" className="text-xs text-destructive">流量阈值和 IP 告警不会推送：尚未配置通知渠道，或已关闭服务管理提醒。可在“通知”页设置；页面上仍会显示状态。</p>}
   </>

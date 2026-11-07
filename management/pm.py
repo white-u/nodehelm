@@ -123,16 +123,20 @@ def watch(rules, output, previous, now, excluded=None):
         port, limit = str(rule['port']), rule.get('ip_limit')
         old = previous.get(port, {})
         skipped = set(limit['whitelist'] if limit else ()) | (excluded or {}).get(port, set())
-        seen = sorted(current.get(port, set()) - skipped, key=address_order)[:IP_SEEN]
-        before, first = set(old.get('seen', ())), old.get('since', {})
-        since = {ip: first.get(ip, now) for ip in seen}
+        # Each address with the minute it was first seen; 1.1.4 kept a list.
+        before = old.get('seen', {})
+        before = before if isinstance(before, dict) else dict.fromkeys(before, now)
+        seen = {ip: before.get(ip, now)
+                for ip in sorted(current.get(port, set()) - skipped, key=address_order)[:IP_SEEN]}
         online = [ip for ip in seen if ip in before]
         count = len(online)
         level = 0 if not limit else 2 if count > limit['max_ips'] + 2 else 1 if count > limit['max_ips'] else 0
-        entry = {'seen': seen, 'since': since, 'count': count, 'level': level, 'ips': online[:15],
+        entry = {'seen': seen, 'count': count, 'level': level, 'ips': online[:15],
                  'seq': old.get('seq', 0), 'last': old.get('last', 0) if level else 0}
+        if limit:
+            entry['max_ips'] = limit['max_ips']
         if limit and limit.get('block') and count > limit['max_ips'] + 3:
-            order = sorted(online, key=lambda ip: (since[ip], address_order(ip)))
+            order = sorted(online, key=lambda ip: (seen[ip], address_order(ip)))
             entry['block'] = order[limit['max_ips'] + 3:]
         if level and (level > old.get('level', 0) or now - entry['last'] >= limit['cooldown_min'] * 60):
             entry.update(seq=entry['seq'] + 1, last=now)
@@ -479,8 +483,8 @@ class Driver:
 
     def verify(self, state, _payload):
         if not state['installed']:
-            if self.inspect() or read(self.checkpoint) or read(self.transition):
-                raise Rejected('PM 规则表或检查点仍然存在', 'pm_conflict')
+            if self.inspect() or self.blocked() is not None or read(self.checkpoint) or read(self.transition):
+                raise Rejected('PM 规则表、阻断表或检查点仍然存在', 'pm_conflict')
             for path, _ in self.unit_files():
                 info = self.unit_info(path.name)
                 if (path.exists() or path.is_symlink() or info['LoadState'] != 'not-found'
@@ -556,7 +560,9 @@ class Driver:
             if live:
                 # The epoch must still exist in the same atomic teardown transaction.
                 nft('-f', '-', script=f'delete chain {TABLE} epoch_{live["epoch"]}\ndelete table {TABLE}\n')
-            self.unblock_all()
+            # Unlike the minute's check, uninstall fails rather than leave it behind.
+            if self.blocked() is not None:
+                nft('-f', '-', script=block_script(self.owner, True, (), (), False))
             remove(self.checkpoint)
             remove(self.ip_watch)
             return
@@ -805,7 +811,11 @@ class Driver:
             return
         blocking = {str(rule['port']): set(rule['ip_limit']['whitelist'])
                     for rule in rules if rule.get('ip_limit', {}).get('block')}
-        drop = {(ip, port) for ip, port in current or () if port not in blocking or ip in blocking[port]}
+        # A changed limit is judged again from scratch: raising it frees the port at once.
+        changed = {port for port, entry in ports.items()
+                   if entry.get('max_ips') != previous.get(port, {}).get('max_ips')}
+        drop = {(ip, port) for ip, port in current or ()
+                if port not in blocking or ip in blocking[port] or port in changed}
         add = {(ip, port) for port, ips in changes.items() if port in blocking for ip in ips}
         script = block_script(self.owner, current is not None, add, drop, bool(blocking))
         if script:
