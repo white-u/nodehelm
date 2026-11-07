@@ -179,7 +179,8 @@ def main():
                 assert state['operations'][0]['status']=='succeeded' and state['operations'][0]['message']=='已卸载模块'
                 large=maximum_snapshot()
                 payload={'snapshot':large,'result':None}
-                assert 256*1024 < len(json.dumps(payload).encode()) < 512*1024
+                # The largest report a component can send (about 252 KiB since the original PM rows went), under the 512 KiB limit.
+                assert 200*1024 < len(json.dumps(payload).encode()) < 512*1024
                 call('/api/management-agent/v1/poll',payload,credential=credential,anonymous=True)
                 large_op={'id':uuid.uuid4().hex,'module':'fw','action':'check','revision':'e'*64,'payload':{'port':30000}}
                 call(f'/api/management/{node}/operations',large_op)
