@@ -50,9 +50,17 @@ npm run build
 cd ..
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
+python3 -m unittest discover -s management/tests
 cargo test
+(cd agent && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked)
 shellcheck -S warning install.sh install-hub.sh update-hub.sh nodehelm.sh scripts/*.sh
+cargo build
+python3 management/tests/integration_http.py target/debug/monitor-hub
+(cd agent && cargo build --release --locked)
+scripts/e2e.sh target/debug/monitor-hub agent/target/release/monitor-agent
 ```
+
+`integration_http.py` 用真实后台和管理组件走一遍登录、绑定、上报与回执；`e2e.sh` 用后台与监控 agent 在回环上核对节点上报和公开字段。
 
 `npm test` 使用 Node 直接运行 `api.test.ts` 和服务表单 `model.test.ts`，应使用 CI 同代的 Node。它验证请求和辅助数据逻辑，并非浏览器端到端覆盖。Rust 用例主要放在各模块内，分时流量数据库测试通过 `db.rs` 引入 `src/testdata/traffic-period.rs`。
 
@@ -65,6 +73,15 @@ shellcheck -S warning install.sh install-hub.sh update-hub.sh nodehelm.sh script
 | 安装器 | ShellCheck 和语法检查；实际服务生命周期在专用 Linux 测试机验证 |
 
 定向测试通过不代替相关集成检查，测试筛选无匹配时也不视为覆盖成功。
+
+### CI 之外的验收
+
+| 范围 | 运行方式 | 说明 |
+| --- | --- | --- |
+| 管理界面流程 | `node web-admin/tests/{management,management-lifecycle,admin}.browser.mjs target/debug/monitor-hub` | 需先构建后台；Playwright 可由 `PLAYWRIGHT_PACKAGE` 指向其 `package.json`，浏览器目录用 `PLAYWRIGHT_BROWSERS_PATH`。每次启动一个临时后台，不接触真实数据。修改服务页面或管理接口时运行 |
+| 业务模块 | 在一次性 Linux 测试机以 root 运行 `python3 management/tests/integration_{snell,modules}.py` | 使用隔离的名称、路径与单元，不安装管理组件，不影响已有服务 |
+| PM | 以 root 运行 `unshare -n python3 management/tests/integration_pm.py` | 在新的网络命名空间中创建和清理 nftables 表 |
+| 核心升级回退 | `unshare -n python3 management/tests/integration_core_lifecycle.py <发布归档目录>` | 同上，需要预先下载的核心归档 |
 
 ## 修改模块与协议
 
