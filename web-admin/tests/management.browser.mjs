@@ -42,6 +42,9 @@ try {
   await unboundCard.getByRole('button',{name:'接入管理',exact:true}).click()
   const enrollmentPanel=page.getByTestId('node-management-panel')
   await enrollmentPanel.getByRole('button',{name:'安装并接入此节点',exact:true}).waitFor()
+  await enrollmentPanel.getByRole('button',{name:'安装并接入此节点',exact:true}).click()
+  const enrollCommand=await enrollmentPanel.locator('pre').textContent()
+  assert.match(enrollCommand,new RegExp(`^curl -fsS 'https://panel\\.example\\.com/management-files/enroll\\.sh' \\| sh -s -- ${id} [0-9a-f]{64}$`),enrollCommand)
   await unboundCard.getByRole('button',{name:'接入管理',exact:true}).click()
   assert(await enrollmentPanel.isVisible(),'repeated enrollment clicks must keep node management open')
   await enrollmentPanel.getByRole('button',{name:'收起',exact:true}).click()
@@ -156,7 +159,7 @@ try {
   snapshot.modules.pm.installed=false;await poll();await select('pm');await refresh()
   task=await submit(instances.getByRole('button',{name:'启用 PM',exact:true}));assert.equal(task.request.action,'install')
   snapshot.modules.pm.installed=true;await finish(task)
-  await instances.getByRole('button',{name:'新增 PM 规则',exact:true}).click();await pmEditor.getByLabel('业务端口',{exact:true}).selectOption('23456')
+  await instances.getByRole('button',{name:'新增 PM 规则',exact:true}).click();await pmEditor.getByLabel('业务端口',{exact:true}).selectOption('23456');assert.equal(await page.locator('[data-testid^="pm-rule-"] [data-testid="pm-policy-editor"]').count(),0,'a new rule opens under its button')
   // A new rule warns at 3, alarms at 5 and blocks from the 6th.
   const warnAt=pmEditor.getByLabel('起警告的 IP 数（0 关闭）',{exact:true});assert.equal(await warnAt.inputValue(),'3')
   assert(await pmEditor.getByLabel(/个起阻断/).isChecked())
@@ -168,7 +171,7 @@ try {
   await pmEditor.getByText(/提醒推送未启用/).waitFor()
   task=await submit(pmEditor.getByRole('button',{name:'保存并应用',exact:true}));assert(!('ip_limit' in task.request.payload),'an IP limit left at 0 is not sent')
   snapshot.modules.pm.resources=[task.request.payload];snapshot.modules.pm.revision='b'.repeat(64);await finish(task)
-  await instances.getByRole('button',{name:'编辑',exact:true}).click();await pmEditor.getByLabel('配额（GiB，0 关闭）',{exact:true}).fill('20')
+  await instances.getByRole('button',{name:'编辑',exact:true}).click();await page.getByTestId('pm-rule-23456').getByTestId('pm-policy-editor').waitFor();await pmEditor.getByLabel('配额（GiB，0 关闭）',{exact:true}).fill('20')
   snapshot.modules.pm.revision='c'.repeat(64);snapshot.modules.pm.resources[0]={...snapshot.modules.pm.resources[0],quota_gb:30}
   await poll();await refresh();await pmEditor.getByRole('button',{name:'重新载入最新配置',exact:true}).waitFor();assert.equal(await pmEditor.getByLabel('配额（GiB，0 关闭）',{exact:true}).inputValue(),'20')
   assert(await pmEditor.getByRole('button',{name:'保存并应用',exact:true}).isDisabled())

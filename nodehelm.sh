@@ -129,7 +129,9 @@ fetch() {
 		TAG=$(latest_tag) || die "无法访问 GitHub；可下载发布包后用 --package"
 		URL=https://github.com/$REPO/releases/download/$TAG
 		echo "下载 NodeHelm $TAG（$ARCH）"
-		curl -fsSL --proto '=https' -o "$WORK/$NAME" "$URL/$NAME" || die "下载发布包失败"
+		# A progress bar on a terminal; quiet in logs and unattended runs.
+		if [ -t 2 ]; then PROGRESS=--progress-bar; else PROGRESS=--silent; fi
+		curl "$PROGRESS" -fSL --proto '=https' -o "$WORK/$NAME" "$URL/$NAME" || die "下载发布包失败"
 		curl -fsSL --proto '=https' -o "$WORK/sha256sums.txt" "$URL/sha256sums.txt" || die "下载校验文件失败"
 		(cd "$WORK" && grep "  $NAME\$" sha256sums.txt | sha256sum --check --quiet) || die "发布包校验失败"
 	fi

@@ -279,12 +279,10 @@ export function NodeManagement({ node: target, record, notice, enabled, settings
   }
   async function enroll() {
     const data = await api<{ site: string; node: number; enrollment: string }>(`/management/${node}/enrollment`, { method: "POST" })
-    const response = await fetch("/management-files/manifest.json", { cache: "no-store" })
-    if (!response.ok) throw new Error("无法读取安装校验信息")
-    const manifest = await response.json()
     const server = data.site.replace(/\/$/, "")
     if (!mounted.current) return
-    setCommand(`(set -eu\numask 077\nd=$(mktemp -d)\ntrap 'rm -rf "$d"' EXIT\ncurl --proto '=https' --tlsv1.2 -fsS ${quote(server + "/management-files/install.py")} -o "$d/install.py"\nprintf '%s  %s\\n' ${quote(manifest["install.py"])} "$d/install.py" | sha256sum -c -\npython3 "$d/install.py" --server ${quote(server)} --node ${data.node} <<'NODE_MANAGER_ENROLLMENT'\n${JSON.stringify({ enrollment: data.enrollment })}\nNODE_MANAGER_ENROLLMENT\n)`)
+    // The hub's enroll.sh checks install.py against its digest; the code is an argument, never in the URL.
+    setCommand(`curl -fsS ${quote(server + "/management-files/enroll.sh")} | sh -s -- ${data.node} ${data.enrollment}`)
   }
   return <InlinePanel title={`${selectedName} · 节点管理`} description="此节点的管理绑定、卸载进度和授权管理" testId="node-management-panel" busy={busy} onClose={() => { onClose(); requestAnimationFrame(restoreFocus) }} footer={<Button variant="outline" disabled={busy || record?.loading} onClick={() => { void reload(true) }}>{record?.loading ? "正在刷新…" : "刷新此节点"}</Button>}>
     <div className="space-y-5" data-testid="node-maintenance" data-node-id={node}>

@@ -73,6 +73,31 @@ export function PmPanel({ node, nodeId, snapshot, view, writable, busy, feedback
     else loadDraft(latest)
   }
 
+  // Placed as in the other modules: a new rule under its button, an edited one in its own card.
+  const editor = form && <InlinePanel title={`${editing ? "编辑" : "新增"} PM 规则 · ${node}`} testId="pm-policy-editor" busy={busy} onClose={() => { void closeForm() }} footer={<><Button variant="outline" disabled={busy} onClick={() => { void closeForm() }}>取消</Button><Button type="submit" form="pm-policy-form" disabled={!writable || draftStale || (!editing && !candidates.some(candidate => candidate.port === form.port))}>保存并应用</Button></>}>
+          <form id="pm-policy-form" className="space-y-4" onSubmit={e => {
+        e.preventDefault()
+        void run(async () => {
+          if (draftStale) throw new Error("配置已更新，请先重新载入最新配置。")
+          const payload = pmPayload(form)
+          if (!await confirm(`在 ${node} 应用端口 ${form.port} 的 PM 规则？开启配额、到期或超速策略可能丢弃端口流量。`)) return
+          await submit("apply", payload, revision, editing ? "update" : "create")
+          setForm(null)
+        })
+      }}>
+        {draftStale && <div role="alert" className="space-y-2 text-sm"><p>服务器配置已更新，当前草稿已保留。请先重新载入最新配置，再修改并保存。</p><Button type="button" variant="outline" disabled={busy || refreshing || !view || !writable} onClick={() => { void reloadDraft() }}>重新载入最新配置</Button></div>}
+        <fieldset disabled={busy} className="grid gap-3 sm:grid-cols-2">
+          <label>业务端口<select aria-label="业务端口" className="block w-full rounded border bg-background p-2" disabled={editing} value={form.port} onChange={e => setForm({ ...form, port: Number(e.target.value) })}>
+            {editing ? <option value={form.port}>{form.port}</option> : candidates.map(candidate => <option key={candidate.port} value={candidate.port}>{candidate.port} · {candidate.name}</option>)}
+          </select></label>
+          <label>名称／备注<Input required maxLength={48} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></label>
+        </fieldset>
+        <PmFields form={form} setForm={setForm} busy={busy} alerts={alerts} />
+        <p className="text-xs text-muted-foreground">重置按 UTC，每月不足指定日时取月末。到期日 UTC 结束后开始阻断。定时任务约每分钟保存用量，异常重启可能丢失最近一次保存后的用量。</p>
+      </form>
+          {confirmation}
+      </InlinePanel>
+
   return <div className="space-y-4">
     {feedback}
     {!form && confirmation}
@@ -83,6 +108,7 @@ export function PmPanel({ node, nodeId, snapshot, view, writable, busy, feedback
       {!view ? <p>此管理组件尚未上报受管 PM。绑定并升级组件后可配置。</p> :
         !view.installed ? <p className="text-sm text-muted-foreground">请先启用 PM。</p> : <>
           <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-xs text-muted-foreground">端口规则 · {rules?.length ?? 0}</span><Button className="min-h-11" disabled={!writable || !candidates.length} aria-expanded={!!form && !editing} onClick={event => { void edit(undefined, event.currentTarget) }}><Plus aria-hidden="true" />{form && !editing ? "收起新增" : "新增 PM 规则"}</Button></div>
+          {form && (!editing || !rules?.some(rule => rule.port === form.port)) && editor}
           {!candidates.length && <p className="text-sm text-muted-foreground">暂无可用业务端口。请先启动监听 1024–65535 的 Snell、SB 或 FW 实例。</p>}
           {rules?.map(rule => {
             const usage = view.usage?.[String(rule.port)]
@@ -91,7 +117,7 @@ export function PmPanel({ node, nodeId, snapshot, view, writable, busy, feedback
             const alert = usage?.alert ?? "normal"
             const tone = alert === "quota_warning" ? "bg-amber-500/10 text-amber-700 dark:text-amber-400" : alert === "quota_reached" || alert === "expired" ? "bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground"
             const label = pmAlerts[alert] ?? alert
-            return <div key={rule.port} className="min-w-0 space-y-4 rounded-lg border p-4 text-sm">
+            return <div key={rule.port} data-testid={`pm-rule-${rule.port}`} className="min-w-0 space-y-4 rounded-lg border p-4 text-sm">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1"><strong className="break-all font-medium">{rule.name}</strong><span className="text-xs text-muted-foreground">端口 {rule.port}</span></div>
                 {usage && <span className={`rounded px-2 py-1 text-xs ${tone}`}>{label}</span>}
@@ -133,32 +159,10 @@ export function PmPanel({ node, nodeId, snapshot, view, writable, busy, feedback
                   if (await confirm(`删除 ${node} 上端口 ${rule.port} 的 PM 规则及计数？`, { destructive: true })) await submit("delete", { port: rule.port })
                 })}>删除</Button>
               </div>
+              {editing && form?.port === rule.port && editor}
             </div>
           })}
         </>}
-      {form && <InlinePanel title={`${editing ? "编辑" : "新增"} PM 规则 · ${node}`} testId="pm-policy-editor" busy={busy} onClose={() => { void closeForm() }} footer={<><Button variant="outline" disabled={busy} onClick={() => { void closeForm() }}>取消</Button><Button type="submit" form="pm-policy-form" disabled={!writable || draftStale || (!editing && !candidates.some(candidate => candidate.port === form.port))}>保存并应用</Button></>}>
-          <form id="pm-policy-form" className="space-y-4" onSubmit={e => {
-        e.preventDefault()
-        void run(async () => {
-          if (draftStale) throw new Error("配置已更新，请先重新载入最新配置。")
-          const payload = pmPayload(form)
-          if (!await confirm(`在 ${node} 应用端口 ${form.port} 的 PM 规则？开启配额、到期或超速策略可能丢弃端口流量。`)) return
-          await submit("apply", payload, revision, editing ? "update" : "create")
-          setForm(null)
-        })
-      }}>
-        {draftStale && <div role="alert" className="space-y-2 text-sm"><p>服务器配置已更新，当前草稿已保留。请先重新载入最新配置，再修改并保存。</p><Button type="button" variant="outline" disabled={busy || refreshing || !view || !writable} onClick={() => { void reloadDraft() }}>重新载入最新配置</Button></div>}
-        <fieldset disabled={busy} className="grid gap-3 sm:grid-cols-2">
-          <label>业务端口<select aria-label="业务端口" className="block w-full rounded border bg-background p-2" disabled={editing} value={form.port} onChange={e => setForm({ ...form, port: Number(e.target.value) })}>
-            {editing ? <option value={form.port}>{form.port}</option> : candidates.map(candidate => <option key={candidate.port} value={candidate.port}>{candidate.port} · {candidate.name}</option>)}
-          </select></label>
-          <label>名称／备注<Input required maxLength={48} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></label>
-        </fieldset>
-        <PmFields form={form} setForm={setForm} busy={busy} alerts={alerts} />
-        <p className="text-xs text-muted-foreground">重置按 UTC，每月不足指定日时取月末。到期日 UTC 结束后开始阻断。定时任务约每分钟保存用量，异常重启可能丢失最近一次保存后的用量。</p>
-      </form>
-          {confirmation}
-      </InlinePanel>}
     </div>
   </div>
 }

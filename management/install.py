@@ -207,7 +207,12 @@ def manifest(value):
 def download(server):
     expected = manifest(json.loads(request(server, '/management-files/manifest.json')))
     data = {}
-    for name, sha in expected.items():
+    # A counter on a terminal; unattended runs log only the outcome.
+    shown = sys.stderr.isatty()
+    for number, (name, sha) in enumerate(expected.items(), 1):
+        if shown:
+            print(f'\r下载组件文件 {number}/{len(expected)}', end='\n' if number == len(expected) else '',
+                  file=sys.stderr, flush=True)
         payload = request(server, '/management-files/' + name)
         if digest(payload) != sha:
             raise ValueError(f'组件 {name} 下载校验失败')

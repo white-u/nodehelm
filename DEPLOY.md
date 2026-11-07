@@ -117,7 +117,7 @@ sudo nodehelm-hub reset-password
 
 多台机器可用节点页的「批量添加」：同一条命令在窗口期内发给所有机器执行（例如 `for h in node1 node2; do ssh root@$h '命令'; done`），每台自动换取自己的令牌。
 
-接入命令含一次性登记凭据，10 分钟内有效，过期后在同一节点重新生成即可。组件安装在 `/opt/node-manager`，服务名 `node-manager-agent`；节点主动通过 HTTPS 轮询后台，不开放入站端口。
+接入命令形如 `curl -fsS https://你的域名/management-files/enroll.sh | sh -s -- <节点编号> <登记码>`：后台生成的脚本写入本后台地址和 `install.py` 的校验值，下载后先校验再执行，校验不符即停止；登记码作为参数传入，不出现在网址和代理日志中。登记码一次性使用，10 分钟内有效，过期后在同一节点重新生成即可。在终端执行时，后台更新包、监控 Agent 和组件文件的下载会显示进度。组件安装在 `/opt/node-manager`，服务名 `node-manager-agent`；节点主动通过 HTTPS 轮询后台，不开放入站端口。
 
 接入后节点上多出 `nodehelm` 命令。`sudo nodehelm` 打开节点菜单：升级管理组件和监控 Agent、运行状态、最近日志、恢复中断的操作。接入、配置和卸载仍在后台网页完成。
 

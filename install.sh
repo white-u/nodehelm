@@ -253,7 +253,9 @@ trap 'rm -f "$TMP"' EXIT
 
 echo "downloading monitor-agent ($ARCH)"
 # A refusal is shown with the hub's own reason, which --fail would discard.
-CODE=$(curl -sSL --max-time 300 -w '%{http_code}' "$URL" -o "$TMP") || exit 1
+# A progress bar on a terminal; quiet in logs and unattended runs.
+if [ -t 2 ]; then PROGRESS=--progress-bar; else PROGRESS=--silent; fi
+CODE=$(curl "$PROGRESS" -SL --max-time 300 -w '%{http_code}' "$URL" -o "$TMP") || exit 1
 [ "$CODE" = 200 ] ||
 	{ printf 'download failed (HTTP %s): %s\n' "$CODE" "$(head -n 1 "$TMP" | cut -c1-500)" >&2; exit 1; }
 # A reverse proxy or CDN can answer 200 with something other than the program,
