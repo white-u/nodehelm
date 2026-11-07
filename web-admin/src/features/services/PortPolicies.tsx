@@ -5,8 +5,9 @@ import { Plus } from "lucide-react"
 import { InlinePanel, useServiceConfirmation } from "./ServiceInteractions"
 import { type ApplyIntent, type PmDraft, type PmPolicy, type RootSnapshot, type Snapshot, pmStatus, pmAlerts, gib, pmDraft, pmPayload } from "./model"
 
-export function PmPanel({ node, snapshot, view, writable, busy, feedback, refreshing, onDirtyChange, run, submit, opening }: {
+export function PmPanel({ node, snapshot, view, writable, busy, feedback, refreshing, onDirtyChange, run, submit, opening, alerts = true }: {
   node: string
+  alerts?: boolean
   /** Opened from an instance row: edit its rule, or add one for its port, with a kept draft if any. */
   opening?: { port: number; draft?: PmDraft; seq: number }
   snapshot?: RootSnapshot
@@ -127,7 +128,7 @@ export function PmPanel({ node, snapshot, view, writable, busy, feedback, refres
           </select></label>
           <label>名称／备注<Input required maxLength={48} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></label>
         </fieldset>
-        <PmFields form={form} setForm={setForm} busy={busy} />
+        <PmFields form={form} setForm={setForm} busy={busy} alerts={alerts} />
         <p className="text-xs text-muted-foreground">重置按 UTC，每月不足指定日时取月末。到期日 UTC 结束后开始阻断。定时任务约每分钟保存用量，异常重启可能丢失最近一次保存后的用量。</p>
       </form>
           {confirmation}
@@ -148,7 +149,7 @@ export function PmPanel({ node, snapshot, view, writable, busy, feedback, refres
 }
 
 /** The PM policy fields, shared by the PM form and the new-instance form. */
-export function PmFields({ form, setForm, busy }: { form: PmDraft; setForm: (form: PmDraft) => void; busy: boolean }) {
+export function PmFields({ form, setForm, busy, alerts = true }: { form: PmDraft; setForm: (form: PmDraft) => void; busy: boolean; alerts?: boolean }) {
   return <>
     <fieldset disabled={busy} className="grid gap-3 sm:grid-cols-2">
       <label>配额（GiB，0 关闭）<Input type="number" required min={0} max={8589934591} value={form.quota_gb} onChange={e => setForm({ ...form, quota_gb: Number(e.target.value) })} /></label>
@@ -166,5 +167,6 @@ export function PmFields({ form, setForm, busy }: { form: PmDraft; setForm: (for
       </fieldset>
       <p className="mt-2 text-xs text-muted-foreground">每分钟统计已建立 TCP 连接的不同来源 IP，连续两分钟出现才计入，避免扫描误报。超过上限时通过服务管理提醒推送，超过上限 2 个以上为高风险，同一等级按间隔重复提醒；只提醒，不断开连接。</p>
     </details>
+    {!alerts && (form.quota_gb > 0 || form.max_ips > 0) && <p role="status" className="text-xs text-destructive">流量阈值和 IP 告警不会推送：尚未配置通知渠道，或已关闭服务管理提醒。可在“通知”页设置；页面上仍会显示状态。</p>}
   </>
 }

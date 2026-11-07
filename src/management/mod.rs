@@ -266,7 +266,7 @@ pub async fn settings(_: Admin, State(app): State<Shared>) -> Response {
             outdated.iter().filter(|(_, _, seen)| *seen <= now() - 30).map(|(n, ..)| *n).collect();
         let outdated: Vec<i64> = outdated.iter().map(|(n, ..)| *n).collect();
         Ok(json!({"enabled":app.db.get("management_enabled").as_deref()==Some("on"),"site":app.site,
-            "bound":bound.len(),"outdated":outdated,"offline":offline}))
+            "bound":bound.len(),"outdated":outdated,"offline":offline,"alerts":notify::management_delivered(&app)}))
     })())
 }
 pub async fn configure(_: Admin, State(app): State<Shared>, Json(input): Json<Setting>) -> Response {

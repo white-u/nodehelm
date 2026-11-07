@@ -20,6 +20,8 @@ export function Management({ nodes }: { nodes: Node[] }) {
   const [records, setRecords] = useState<Record<number, NodeStatus>>({})
   const [enabled, setEnabled] = useState<boolean | null>(null)
   const [settingsError, setSettingsError] = useState("")
+  // Whether PM alerts are pushed anywhere; unknown counts as yes, so no false warning.
+  const [alerts, setAlerts] = useState(true)
   const alive = useRef(false)
   const sequences = useRef(new Map<number, number>())
   const pending = useRef(new Map<number, Promise<void>>())
@@ -116,8 +118,8 @@ export function Management({ nodes }: { nodes: Node[] }) {
   const refreshSettings = useCallback(async () => {
     const sequence = ++settingsSequence.current
     try {
-      const settings = await readManagement<{ enabled: boolean }>("/management")
-      if (alive.current && sequence === settingsSequence.current) { setEnabled(settings.enabled); setSettingsError("") }
+      const settings = await readManagement<{ enabled: boolean; alerts?: boolean }>("/management")
+      if (alive.current && sequence === settingsSequence.current) { setEnabled(settings.enabled); setAlerts(settings.alerts !== false); setSettingsError("") }
     } catch (e) {
       if (alive.current && sequence === settingsSequence.current) setSettingsError(String(e))
     }
@@ -278,7 +280,7 @@ export function Management({ nodes }: { nodes: Node[] }) {
     }} reload={async (manual = false) => { await Promise.all([refreshSettings(), refreshNode(managementTarget.id, true, manual)]) }} />}
     {confirmation}
     <div ref={detail} hidden={!!managementTarget} id="service-detail" tabIndex={-1} aria-label={`${nodes.find(n => n.id === node)?.name ?? "节点"} · ${names[module]}配置`} className="scroll-mt-24 focus:outline-none" data-testid="node-detail" data-node-id={node}>
-      <ManagementDetail key={`${node}/${module}`} node={node} module={module} selectedName={nodes.find(n => n.id === node)?.name ?? ""} record={record} defaultAddress={defaultHost(nodes.find(n => n.id === node))} notice={notices[node]} progress={progress[node]} onSubmitted={(operation, next) => submitted(node, operation, next)} onOpenPm={port => { void openPm(port) }} pmOpening={pmOpening?.node === node && module === "pm" ? pmOpening : undefined} onDirtyChange={onDirtyChange} onNodeManagement={trigger => openNodeManagement(node, trigger)} enabled={enabled} settingsError={settingsError} reload={async (manual = false) => { await Promise.all([refreshSettings(), node ? refreshNode(node, true, manual) : Promise.resolve()]) }} />
+      <ManagementDetail key={`${node}/${module}`} node={node} module={module} selectedName={nodes.find(n => n.id === node)?.name ?? ""} record={record} defaultAddress={defaultHost(nodes.find(n => n.id === node))} notice={notices[node]} progress={progress[node]} alerts={alerts} onSubmitted={(operation, next) => submitted(node, operation, next)} onOpenPm={port => { void openPm(port) }} pmOpening={pmOpening?.node === node && module === "pm" ? pmOpening : undefined} onDirtyChange={onDirtyChange} onNodeManagement={trigger => openNodeManagement(node, trigger)} enabled={enabled} settingsError={settingsError} reload={async (manual = false) => { await Promise.all([refreshSettings(), node ? refreshNode(node, true, manual) : Promise.resolve()]) }} />
     </div>
 
   </section>

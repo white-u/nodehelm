@@ -382,6 +382,7 @@ def run_action(action):
     lifecycle = Lifecycle(controllers, execute_module_task, snapshot, binding, ROOT)
     # Never automatically erase an unresolved journal on boot.
     while True:
+        executed = False
         try:
             receipt_path = ROOT / 'pending-result.json'
             pending = read(receipt_path)
@@ -401,6 +402,7 @@ def run_action(action):
             elif reply.get('task'):
                 result = execute_module_task(controllers, reply['task'])
                 write(ROOT / 'pending-result.json', result)
+                executed = True
         except urllib.error.HTTPError as error:
             if error.code == 409:
                 # Nothing was exchanged, so pending results survive until both sides match.
@@ -412,7 +414,11 @@ def run_action(action):
             print(f'HTTPS 连接失败（{type(error.reason).__name__}）；检查证书、DNS 和后台可达性。', file=sys.stderr, flush=True)
         except (OSError, ValueError, KeyError) as error:
             print(f'本地状态或响应异常（{type(error).__name__}）；保留操作记录，请执行 status 检查。', file=sys.stderr, flush=True)
-        time.sleep(5)
+        # A finished task is reported at once with the state after it: the page
+        # waits on that result. Lifecycle steps keep the interval, as a step can
+        # be waiting on the Hub without doing anything.
+        if not executed:
+            time.sleep(5)
 
 if __name__ == '__main__':
     try: main()

@@ -483,6 +483,13 @@ mod tests {
         assert!(note.message.contains("1. 203.0.113.1 - 中国, 上海, 某运营商"));
         assert!(note.message.contains("2. 203.0.113.2 - (查询失败)"));
         assert!(note.message.contains("... 仅显示前 15 条"));
+        let mut local = alert;
+        local.ips = ["127.0.0.1", "10.0.0.2", "100.64.1.1", "fd00::1", "fe80::1", "::1", "100.128.0.1"]
+            .map(String::from)
+            .to_vec();
+        let message = crate::notify::ip_note("hk", &local, &std::collections::HashMap::new()).message;
+        assert_eq!(message.matches("本机／内网地址").count(), 6, "{message}");
+        assert!(message.contains("100.128.0.1 - (查询失败)"), "the shared range ends at 100.127");
     }
     #[test]
     fn ss_export_excludes_private_server_fields() {

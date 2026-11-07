@@ -455,6 +455,12 @@ pub fn pm_thresholds(app: &App) -> Vec<u64> {
     app.db.get("notify_pm_thresholds").and_then(|v| thresholds(&v)).unwrap_or_else(|| vec![50, 80, 100])
 }
 
+/// Whether PM thresholds and IP alerts reach anyone: a channel is configured and
+/// service-management alerts are on. The service page warns otherwise.
+pub fn management_delivered(app: &App) -> bool {
+    app.db.get("notify_management").as_deref() != Some("off") && !channels(app).is_empty()
+}
+
 /// One PM port with more distinct client addresses than its limit allows.
 #[derive(Debug)]
 pub struct IpAlert {
@@ -494,10 +500,15 @@ pub fn management(app: &Shared, node: i64, items: Vec<String>, ips: Vec<IpAlert>
 /// as the original PM tool asks. It only answers over plain HTTP; addresses it
 /// cannot place are left out and shown as failed.
 async fn places(ips: &[String]) -> HashMap<String, String> {
+    // Loopback and private addresses have no place, and stay off the network.
+    let public: Vec<&String> = ips.iter().filter(|ip| !internal(ip)).collect();
+    if public.is_empty() {
+        return HashMap::new();
+    }
     let request = client()
         .post("http://ip-api.com/batch?fields=status,country,regionName,isp,query&lang=zh-CN")
         .timeout(Duration::from_secs(3))
-        .json(ips);
+        .json(&public);
     let Ok(response) = request.send().await else { return HashMap::new() };
     let rows: Vec<Value> = response.json().await.unwrap_or_default();
     rows.iter()
@@ -511,6 +522,21 @@ async fn places(ips: &[String]) -> HashMap<String, String> {
             Some((row["query"].as_str()?.to_owned(), place))
         })
         .collect()
+}
+
+/// Loopback, private, shared (CGNAT) and link-local addresses.
+fn internal(ip: &str) -> bool {
+    match ip.parse::<IpAddr>() {
+        Ok(IpAddr::V4(v4)) => {
+            let [a, b, ..] = v4.octets();
+            v4.is_loopback() || v4.is_private() || v4.is_link_local() || (a == 100 && (64..128).contains(&b))
+        }
+        Ok(IpAddr::V6(v6)) => {
+            let first = v6.segments()[0];
+            v6.is_loopback() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
+        }
+        Err(_) => false,
+    }
 }
 
 /// The original PM tool's wording, in plain text like every other alert.
@@ -530,7 +556,11 @@ pub(crate) fn ip_note(node: &str, alert: &IpAlert, places: &HashMap<String, Stri
         "当前连接：".to_owned(),
     ];
     for (i, ip) in alert.ips.iter().enumerate() {
-        let place = places.get(ip).filter(|p| !p.is_empty()).map_or("(查询失败)", String::as_str);
+        let place = if internal(ip) {
+            "本机／内网地址"
+        } else {
+            places.get(ip).filter(|p| !p.is_empty()).map_or("(查询失败)", String::as_str)
+        };
         lines.push(format!("{}. {ip} - {place}", i + 1));
     }
     if alert.count > alert.ips.len() as u64 {
@@ -845,6 +875,16 @@ mod tests {
     /// Offline alerts are only marked while a channel exists to carry them.
     fn with_channel(app: &App) {
         app.db.set("notify_webhook_url", "http://127.0.0.1:9/").unwrap();
+    }
+
+    #[test]
+    fn management_alerts_need_a_channel_and_the_switch() {
+        let app = app();
+        assert!(!management_delivered(&app), "no channel");
+        with_channel(&app);
+        assert!(management_delivered(&app));
+        app.db.set("notify_management", "off").unwrap();
+        assert!(!management_delivered(&app), "switched off");
     }
 
     #[test]

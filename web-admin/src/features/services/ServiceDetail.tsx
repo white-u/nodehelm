@@ -7,10 +7,12 @@ import { PmFields, PmPanel } from "./PortPolicies"
 import { InlinePanel, useServiceConfirmation } from "./ServiceInteractions"
 import { type Module, type ApplyIntent, type Resource, type CoreAction, type Snapshot, type Status, type NodeStatus, type FollowUp, type PmDraft, type PmPolicy, names, modules, moduleView, lifecycleActive, lifecycleLabels, runtimeLabels, actionLabels, labels, sniChoices, quote, newResource, editable, instancePayload, pmBlocked, pmDraft, pmPayload, pmSummary } from "./model"
 
-export function ManagementDetail({ node, module, selectedName, record, defaultAddress, notice, progress = "", onSubmitted, onOpenPm, pmOpening, onDirtyChange, onNodeManagement, enabled, settingsError, reload }: {
+export function ManagementDetail({ node, module, selectedName, record, defaultAddress, notice, progress = "", alerts = true, onSubmitted, onOpenPm, pmOpening, onDirtyChange, onNodeManagement, enabled, settingsError, reload }: {
   node: number; module: Module; selectedName: string; record?: NodeStatus; defaultAddress: string; notice?: string
   /** A two-step change's progress; "1/2" or "2/2" while it runs. */
   progress?: string
+  /** False when PM alerts reach no channel. */
+  alerts?: boolean
   onSubmitted: (operation: string, next?: FollowUp) => void; onOpenPm: (port: number) => void; pmOpening?: { port: number; draft?: PmDraft; seq: number }; onDirtyChange: (dirty: boolean) => void; onNodeManagement: (trigger: HTMLElement) => void; enabled: boolean | null; settingsError: string; reload: (manual?: boolean) => Promise<void>
 }) {
   const status = record?.status
@@ -167,7 +169,7 @@ export function ManagementDetail({ node, module, selectedName, record, defaultAd
         {module === "fw" && <><label>目标 IPv4 地址<Input required value={form.target_host ?? ""} onChange={event => setForm({ ...form, target_host: event.target.value })} /></label><label>目标端口<Input type="number" required min={1} max={65535} value={form.target_port} onChange={event => setForm({ ...form, target_port: Number(event.target.value) })} /></label></>}
       </fieldset>
       {module !== "fw" && <details className="text-sm" open={form.public_port !== form.port}><summary className="cursor-pointer text-muted-foreground">客户端端口（NAT 端口映射时修改）</summary><div className="mt-3 space-y-1 sm:max-w-[calc(50%-0.375rem)]"><label className="block">客户端访问端口<Input type="number" required min={1} max={65535} disabled={busy} aria-describedby="client-port-hint" value={form.public_port} onChange={event => setForm({ ...form, public_port: Number(event.target.value) })} /></label><p id="client-port-hint" className="text-xs text-muted-foreground">默认与监听端口相同；写入客户端配置和分享链接。</p></div></details>}
-      {!editing && <PmOption port={form.port} blocked={pmBlocked(status?.snapshot, form.port)} draft={withPm} busy={busy} onChange={setWithPm} name={form.name} />}
+      {!editing && <PmOption port={form.port} blocked={pmBlocked(status?.snapshot, form.port)} draft={withPm} busy={busy} onChange={setWithPm} name={form.name} alerts={alerts} />}
       {module !== "fw" && !form.host && <p role="alert" className="text-sm text-destructive">此节点尚无可用的客户端访问地址，请先在节点信息中设置公网地址，再重新打开表单。</p>}
       <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-muted-foreground">{module === "fw" ? "请确认目标认证与入口限制。" : `名称留空使用 ${form.port || "监听端口"}。凭据自动生成，编辑时保留。`}</p><div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={busy} onClick={() => { void closeForm() }}>取消</Button><Button type="submit" disabled={!writable || draftStale || (module !== "fw" && !form.host)}>保存并应用</Button></div></div>
     </form>
@@ -187,7 +189,7 @@ export function ManagementDetail({ node, module, selectedName, record, defaultAd
         {status?.bound && view && !view.installed && <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg bg-muted/40 p-4"><div><h3 className="text-sm font-medium">{module === "pm" ? "尚未启用" : "尚未安装"}</h3><p className="mt-1 text-xs text-muted-foreground">{module === "pm" ? "启用后可配置端口计量、配额和到期策略。" : `安装后即可新增${module === "fw" ? "转发规则" : "实例"}。`}</p></div><Button className="min-h-11" disabled={!writable} onClick={() => { void run(install) }}>{module === "pm" ? "启用 PM" : `安装 ${names[module]}`}</Button></div>}
         {status?.bound && view?.installed && <>
           <div data-testid="module-maintenance"><CorePanel node={selectedName} module={module} view={view} writable={Boolean(writable)} expanded={maintenanceOpen} toggle={() => setMaintenanceOpen(value => !value)} run={run} submit={submit} uninstall={() => { void run(uninstall) }} /></div>
-          {module === "pm" ? <PmPanel key={`${node}/${status.lifecycle?.id ?? ""}/${pmOpening?.seq ?? ""}`} node={selectedName} snapshot={status.snapshot} view={view} writable={Boolean(writable)} busy={busy} feedback={feedback} refreshing={Boolean(record?.loading)} onDirtyChange={reportPmDirty} run={run} submit={submit} opening={pmOpening} /> : <div className="space-y-3">
+          {module === "pm" ? <PmPanel key={`${node}/${status.lifecycle?.id ?? ""}/${pmOpening?.seq ?? ""}`} node={selectedName} snapshot={status.snapshot} view={view} writable={Boolean(writable)} busy={busy} feedback={feedback} refreshing={Boolean(record?.loading)} onDirtyChange={reportPmDirty} run={run} submit={submit} opening={pmOpening} alerts={alerts} /> : <div className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-xs text-muted-foreground">{module === "fw" ? "转发规则" : "实例"} · {view.resources.length}</span><Button className="min-h-11" disabled={!writable} aria-expanded={!!form && !editing} onClick={event => { void edit(undefined, event.currentTarget) }}><Plus aria-hidden="true" />{form && !editing ? "收起新增" : `新增${module === "fw" ? "转发规则" : "实例"}`}</Button></div>
             {form && (!editing || !view.resources.some(item => item.port === form.port)) && formPanel}
             {view.resources.map(item => <div key={item.port} data-testid={`instance-${item.port}`} className="space-y-3 rounded border p-3">
@@ -387,10 +389,10 @@ function CorePanel({ node, module, view, writable, expanded, toggle, run, submit
 
 /** "同时启用 PM 统计" in the new-instance form. The rule takes the instance's
  *  port and name, and is applied once the instance runs. */
-function PmOption({ port, name, blocked, draft, busy, onChange }: { port: number; name: string; blocked: string; draft: PmDraft | null; busy: boolean; onChange: (draft: PmDraft | null) => void }) {
+function PmOption({ port, name, blocked, draft, busy, alerts, onChange }: { port: number; name: string; blocked: string; draft: PmDraft | null; busy: boolean; alerts: boolean; onChange: (draft: PmDraft | null) => void }) {
   const on = !!draft && !blocked
   return <div className="space-y-3 text-sm">
     <label className="flex items-center gap-2"><input type="checkbox" className="size-4" disabled={busy || !!blocked} checked={on} onChange={event => onChange(event.target.checked ? pmDraft({ port, name, quota_gb: 0, quota_mode: "in_out", reset_day: 0, expiry_date: "", egress_mbps: 0 }) : null)} />同时启用 PM 统计{blocked && <span className="text-xs text-muted-foreground">（{blocked}）</span>}</label>
-    {on && <><PmFields form={draft} setForm={onChange} busy={busy} /><p className="text-xs text-muted-foreground">实例运行后自动应用；默认只计量，不丢包。</p></>}
+    {on && <><PmFields form={draft} setForm={onChange} busy={busy} alerts={alerts} /><p className="text-xs text-muted-foreground">实例运行后自动应用；默认只计量，不丢包。</p></>}
   </div>
 }

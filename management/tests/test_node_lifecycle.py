@@ -393,6 +393,21 @@ class NodeLifecycleTests(unittest.TestCase):
                         agent.run_action('run')
                 self.assertEqual(read(self.engine.path).get('confirmed', False), confirmed)
 
+    def test_a_finished_task_is_reported_without_waiting(self):
+        write(self.root / 'binding.json', self.binding)
+        replies = iter([{'task': {'request': {'id': 'a' * 32}}}, {'task': None}])
+        sent = []
+        def poll(_binding, _path, payload):
+            sent.append(payload['result']); return next(replies)
+        outcome = {'id': 'a' * 32, 'status': 'succeeded'}
+        with self.agent_runtime(), patch.object(agent, 'exchange', side_effect=poll), \
+                patch.object(agent, 'execute_module_task', return_value=outcome), \
+                patch.object(agent.time, 'sleep', side_effect=KeyboardInterrupt) as sleep:
+            with self.assertRaises(KeyboardInterrupt):
+                agent.run_action('run')
+        self.assertEqual(sent, [None, outcome], 'the result goes out on the very next poll')
+        sleep.assert_called_once_with(5)
+
     def test_poll_acknowledges_old_receipt_before_advancing_new_job(self):
         self.assertEqual(self.finish()['status'], 'succeeded')
         write(self.root / 'binding.json', self.binding)
