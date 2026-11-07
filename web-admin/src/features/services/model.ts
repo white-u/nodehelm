@@ -85,9 +85,13 @@ export function pmPayload({ max_ips, cooldown_min, whitelist, ...rule }: PmDraft
   if (ips.length > 32) throw new Error("IP 白名单最多 32 个")
   return { ...rule, ip_limit: { max_ips, cooldown_min, whitelist: ips } }
 }
+/** The original PM levels by count: over the limit warns, over limit + 2 alarms. */
+export function ipThresholds(max: number) {
+  return `${max + 1} 个起警告、${max + 3} 个起报警`
+}
 export function pmSummary(rule: PmPolicy) {
   return [rule.quota_gb ? `配额 ${rule.quota_gb} GiB` : "只计量", rule.reset_day ? `每月 ${rule.reset_day} 日重置` : "", rule.expiry_date ? `${rule.expiry_date} 到期` : "",
-    rule.egress_mbps ? `出站超速 ${rule.egress_mbps} Mbps 丢包` : "", rule.ip_limit ? `IP 告警 ${rule.ip_limit.max_ips} 个` : ""].filter(Boolean).join("／")
+    rule.egress_mbps ? `出站超速 ${rule.egress_mbps} Mbps 丢包` : "", rule.ip_limit ? `IP ${ipThresholds(rule.ip_limit.max_ips)}` : ""].filter(Boolean).join("／")
 }
 /** Why a port cannot take a managed PM rule now, or "" when it can. */
 export function pmBlocked(snapshot: RootSnapshot | undefined, port: number) {

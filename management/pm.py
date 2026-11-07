@@ -104,21 +104,22 @@ def address_order(value):
 
 
 def watch(rules, output, previous, now):
-    """The original PM's IP check: level 1 over the limit, 2 over limit + 2; an
-    alert on a rise or after the cooldown, a silent reset at or under the limit.
-    An address counts only once seen in two consecutive minutes, so a port scan
-    or a single short visit does not raise an alert."""
+    """Online addresses of every rule's port. An address counts only once seen
+    in two consecutive minutes, so a port scan or a single short visit does not.
+    A rule with an IP limit adds the original PM's check: level 1 over the
+    limit, 2 over limit + 2; an alert on a rise or after the cooldown, a silent
+    reset at or under the limit."""
     current = peers(output, {str(rule['port']) for rule in rules})
     result = {}
     for rule in rules:
-        port, limit = str(rule['port']), rule['ip_limit']
+        port, limit = str(rule['port']), rule.get('ip_limit')
         old = previous.get(port, {})
-        seen = sorted(current.get(port, set()) - set(limit['whitelist']), key=address_order)
+        seen = sorted(current.get(port, set()) - set(limit['whitelist'] if limit else ()), key=address_order)
         before = set(old.get('seen', ()))
         online = [ip for ip in seen if ip in before]
         count = len(online)
-        level = 2 if count > limit['max_ips'] + 2 else 1 if count > limit['max_ips'] else 0
-        entry = {'seen': seen[:IP_SEEN], 'count': count, 'level': level, 'ips': online[:15] if level else [],
+        level = 0 if not limit else 2 if count > limit['max_ips'] + 2 else 1 if count > limit['max_ips'] else 0
+        entry = {'seen': seen[:IP_SEEN], 'count': count, 'level': level, 'ips': online[:15],
                  'seq': old.get('seq', 0), 'last': old.get('last', 0) if level else 0}
         if level and (level > old.get('level', 0) or now - entry['last'] >= limit['cooldown_min'] * 60):
             entry.update(seq=entry['seq'] + 1, last=now)
@@ -567,14 +568,13 @@ class Driver:
             return True, {}
         usage = {}
         expected = self.expected_plan(state, data['plan'])
-        watched = {str(rule['port']) for rule in state['resources'] if 'ip_limit' in rule}
+        limited = {str(rule['port']) for rule in state['resources'] if 'ip_limit' in rule}
         try:
             recent = read(self.ip_watch, {})
         except ValueError:
             recent = {}
         # A stopped check must not keep showing its last count as current.
-        ips = {port: entry for port, entry in recent.get('ports', {}).items() if port in watched
-               } if time.time() - recent.get('sampled_at', 0) <= 150 else {}
+        ips = recent.get('ports', {}) if time.time() - recent.get('sampled_at', 0) <= 150 else {}
         for port, values in data['values'].items():
             rule = data['plan'][port]
             used = data['quotas'].get(port, 0)
@@ -594,8 +594,9 @@ class Driver:
             usage[port] = {**values, 'sampled_at': data['sampled_at'], 'period_start': rule['period'], 'alert': alert}
             if port in ips:
                 entry = ips[port]
-                usage[port].update(ip_count=entry['count'], ip_level=entry['level'],
-                                   ip_alert=entry['seq'], ip_list=entry['ips'])
+                usage[port].update(ip_count=entry['count'], ip_list=entry['ips'])
+                if port in limited:
+                    usage[port].update(ip_level=entry['level'], ip_alert=entry['seq'])
         return failed or time.time() - saved['sampled_at'] > 150, usage
 
     @staticmethod
@@ -682,7 +683,7 @@ class Driver:
                     self.watch_ips(state)
 
     def watch_ips(self, state):
-        rules = [rule for rule in state['resources'] if 'ip_limit' in rule]
+        rules = state['resources']
         if not rules:
             remove(self.ip_watch)
             return

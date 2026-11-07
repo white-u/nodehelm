@@ -462,7 +462,7 @@ pub fn management_delivered(app: &App) -> bool {
 }
 
 /// One PM port with more distinct client addresses than its limit allows.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct IpAlert {
     pub port: String,
     pub name: String,
@@ -539,12 +539,13 @@ fn internal(ip: &str) -> bool {
     }
 }
 
-/// The original PM tool's wording, in plain text like every other alert.
+/// The original PM tool's layout, in plain text like every other alert. The
+/// levels are named by count: limit + 1 warns, limit + 3 alarms.
 pub(crate) fn ip_note(node: &str, alert: &IpAlert, places: &HashMap<String, String>) -> Note {
     let (title, level) = if alert.level >= 2 {
-        ("🔴 异常接入升级", format!("高风险（超过 {} IP）", alert.max + 2))
+        ("🔴 异常接入报警", format!("报警（{} 个及以上）", alert.max + 3))
     } else {
-        ("🚨 异常接入警报", "普通超限".to_owned())
+        ("🚨 异常接入警告", format!("警告（{} 个及以上）", alert.max + 1))
     };
     let mut lines = vec![
         format!(
@@ -552,7 +553,7 @@ pub(crate) fn ip_note(node: &str, alert: &IpAlert, places: &HashMap<String, Stri
             alert.port,
             if alert.name.is_empty() { String::new() } else { format!("（{}）", alert.name) }
         ),
-        format!("在线 {} IP · 阈值 {} IP · 等级 {level}", alert.count, alert.max),
+        format!("在线 {} IP · 等级 {level}", alert.count),
         "当前连接：".to_owned(),
     ];
     for (i, ip) in alert.ips.iter().enumerate() {

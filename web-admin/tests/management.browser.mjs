@@ -164,8 +164,16 @@ try {
   assert.deepEqual(task.request.payload.ip_limit,{max_ips:2,cooldown_min:30,whitelist:['203.0.113.9','2001:db8::9']})
   snapshot.modules.pm.resources=[task.request.payload];snapshot.modules.pm.revision='d'.repeat(64)
   snapshot.modules.pm.usage={'23456':{rx:0,tx:0,sampled_at:Math.floor(Date.now()/1000),period_start:'',alert:'normal',ip_count:4,ip_level:1,ip_alert:1,ip_list:['198.51.100.1','198.51.100.2','198.51.100.3','198.51.100.4']}}
-  await finish(task);await instances.getByText('在线 IP 4 / 2 · 198.51.100.1、198.51.100.2、198.51.100.3、198.51.100.4',{exact:true}).waitFor()
-  assert.match(await instances.getByText(/^在线 IP 4 \/ 2/).getAttribute('class'),/text-destructive/)
+  await finish(task);await instances.getByText(/IP 告警 3 个起警告、5 个起报警/).waitFor()
+  const online=instances.locator('details').filter({hasText:'TCP 在线 IP 4 个 · 警告'})
+  assert.match(await online.getAttribute('class'),/text-amber/)
+  await online.locator('summary').click();await online.getByText('198.51.100.1、198.51.100.2、198.51.100.3、198.51.100.4',{exact:true}).waitFor()
+  // The week's chart is the Hub's difference between two reports.
+  snapshot.modules.pm.usage['23456']={...snapshot.modules.pm.usage['23456'],rx:3*1048576,tx:1048576};await poll();await refresh()
+  await instances.locator('summary').filter({hasText:'流量走势（近 7 天）'}).click()
+  await instances.getByText(/^合计 入站 3\.00 MB · 出站 1\.00 MB/).waitFor()
+  const today=new Date();await instances.getByRole('button',{name:new RegExp(`^${today.getMonth()+1}/${today.getDate()} 入站 3\\.00 MB`)}).click()
+  await instances.getByText(/按小时$/).waitFor()
 
   // A new instance with PM: the rule waits for the instance to run, and writes stay locked in between.
   await select('snell');const progress=page.getByTestId('chain-progress')
@@ -178,7 +186,7 @@ try {
   await editor.getByRole('button',{name:'保存并应用',exact:true}).click();await editor.getByText(/203\.0\.113\.0\/24 不是有效的 IP 地址/).waitFor()
   assert.equal(await decision().count(),0,'an invalid PM field stops before anything is submitted')
   await editor.getByLabel('白名单 IP（可选，每行或逗号分隔，最多 32 个）',{exact:true}).fill('203.0.113.5')
-  await editor.getByRole('button',{name:'保存并应用',exact:true}).click();assert.match(await decision().textContent(),/实例运行后应用 PM 规则（配额 100 GiB／IP 告警 3 个）/)
+  await editor.getByRole('button',{name:'保存并应用',exact:true}).click();assert.match(await decision().textContent(),/实例运行后应用 PM 规则（配额 100 GiB／IP 4 个起警告、6 个起报警）/)
   let response=posted();await accept();await response;task=(await poll()).task
   assert.equal(task.request.module,undefined);assert.equal(task.request.payload.port,40001)
   addSnell(snellRow(40001,'activating'));await poll({id:task.request.id,status:'succeeded',message:'fixture applied'})

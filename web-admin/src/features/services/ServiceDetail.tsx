@@ -111,7 +111,8 @@ export function ManagementDetail({ node, module, selectedName, record, defaultAd
   function pmLink(item: Resource) {
     const linked = !!pmRule(item.port)
     if (!linked && (pmBlocked(status?.snapshot, item.port) || view?.runtime?.[String(item.port)] !== "active")) return null
-    return <> · <button type="button" className="text-primary underline-offset-2 hover:underline" onClick={() => onOpenPm(item.port)}>{linked ? "PM 已统计" : "添加 PM"}</button></>
+    const online = pmView?.usage?.[String(item.port)]?.ip_count
+    return <> · <button type="button" className="text-primary underline-offset-2 hover:underline" onClick={() => onOpenPm(item.port)}>{linked ? "PM 已统计" : "添加 PM"}</button>{linked && online != null && ` · 在线 IP ${online}`}</>
   }
   async function remove(item: Resource) {
     const rule = pmRule(item.port)
@@ -189,7 +190,7 @@ export function ManagementDetail({ node, module, selectedName, record, defaultAd
         {status?.bound && view && !view.installed && <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg bg-muted/40 p-4"><div><h3 className="text-sm font-medium">{module === "pm" ? "尚未启用" : "尚未安装"}</h3><p className="mt-1 text-xs text-muted-foreground">{module === "pm" ? "启用后可配置端口计量、配额和到期策略。" : `安装后即可新增${module === "fw" ? "转发规则" : "实例"}。`}</p></div><Button className="min-h-11" disabled={!writable} onClick={() => { void run(install) }}>{module === "pm" ? "启用 PM" : `安装 ${names[module]}`}</Button></div>}
         {status?.bound && view?.installed && <>
           <div data-testid="module-maintenance"><CorePanel node={selectedName} module={module} view={view} writable={Boolean(writable)} expanded={maintenanceOpen} toggle={() => setMaintenanceOpen(value => !value)} run={run} submit={submit} uninstall={() => { void run(uninstall) }} /></div>
-          {module === "pm" ? <PmPanel key={`${node}/${status.lifecycle?.id ?? ""}/${pmOpening?.seq ?? ""}`} node={selectedName} snapshot={status.snapshot} view={view} writable={Boolean(writable)} busy={busy} feedback={feedback} refreshing={Boolean(record?.loading)} onDirtyChange={reportPmDirty} run={run} submit={submit} opening={pmOpening} alerts={alerts} /> : <div className="space-y-3">
+          {module === "pm" ? <PmPanel key={`${node}/${status.lifecycle?.id ?? ""}/${pmOpening?.seq ?? ""}`} node={selectedName} nodeId={node} snapshot={status.snapshot} view={view} writable={Boolean(writable)} busy={busy} feedback={feedback} refreshing={Boolean(record?.loading)} onDirtyChange={reportPmDirty} run={run} submit={submit} opening={pmOpening} alerts={alerts} /> : <div className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-xs text-muted-foreground">{module === "fw" ? "转发规则" : "实例"} · {view.resources.length}</span><Button className="min-h-11" disabled={!writable} aria-expanded={!!form && !editing} onClick={event => { void edit(undefined, event.currentTarget) }}><Plus aria-hidden="true" />{form && !editing ? "收起新增" : `新增${module === "fw" ? "转发规则" : "实例"}`}</Button></div>
             {form && (!editing || !view.resources.some(item => item.port === form.port)) && formPanel}
             {view.resources.map(item => <div key={item.port} data-testid={`instance-${item.port}`} className="space-y-3 rounded border p-3">

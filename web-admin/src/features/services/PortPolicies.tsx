@@ -1,12 +1,14 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react"
+import { bytes } from "@/lib/format"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Plus } from "lucide-react"
 import { InlinePanel, useServiceConfirmation } from "./ServiceInteractions"
-import { type ApplyIntent, type PmDraft, type PmPolicy, type RootSnapshot, type Snapshot, pmStatus, pmAlerts, gib, pmDraft, pmPayload } from "./model"
+import { type ApplyIntent, type PmDraft, type PmPolicy, type PmUsage, type RootSnapshot, type Snapshot, pmStatus, pmAlerts, gib, pmDraft, pmPayload, ipThresholds, readManagement } from "./model"
 
-export function PmPanel({ node, snapshot, view, writable, busy, feedback, refreshing, onDirtyChange, run, submit, opening, alerts = true }: {
+export function PmPanel({ node, nodeId, snapshot, view, writable, busy, feedback, refreshing, onDirtyChange, run, submit, opening, alerts = true }: {
   node: string
+  nodeId: number
   alerts?: boolean
   /** Opened from an instance row: edit its rule, or add one for its port, with a kept draft if any. */
   opening?: { port: number; draft?: PmDraft; seq: number }
@@ -91,12 +93,13 @@ export function PmPanel({ node, snapshot, view, writable, busy, feedback, refres
               <div className="space-y-1">
                 <strong>{rule.name} · {rule.port}</strong>
                 <p>{rule.quota_gb ? `配额 ${rule.quota_gb} GiB · ${rule.quota_mode === "out_only" ? "仅出站" : "双向"}` : "只计量，无配额"} · {rule.reset_day ? `每月 ${rule.reset_day} 日重置` : "无自动重置"}</p>
-                <p>到期日期 {rule.expiry_date || "未设置"} · 出站超速丢包 {rule.egress_mbps ? `${rule.egress_mbps} Mbps` : "关闭"} · IP 告警 {rule.ip_limit ? `超过 ${rule.ip_limit.max_ips} 个` : "关闭"}</p>
+                <p>到期日期 {rule.expiry_date || "未设置"} · 出站超速丢包 {rule.egress_mbps ? `${rule.egress_mbps} Mbps` : "关闭"} · IP 告警 {rule.ip_limit ? ipThresholds(rule.ip_limit.max_ips) : "关闭"}</p>
                 {usage ? <>
                   <p>入站 {gib(usage.rx)} GiB · 出站 {gib(usage.tx)} GiB · <strong>{pmAlerts[usage.alert]}</strong></p>
-                  {rule.ip_limit && usage.ip_count != null && <p className={usage.ip_level ? "text-destructive" : undefined}>在线 IP {usage.ip_count} / {rule.ip_limit.max_ips}{usage.ip_list?.length ? ` · ${usage.ip_list.join("、")}` : ""}</p>}
+                  <OnlineIps usage={usage} />
                   <p className="text-xs text-muted-foreground">采样 {new Date(usage.sampled_at * 1000).toLocaleString()}{usage.period_start && ` · 账期起始 ${usage.period_start} UTC`}</p>
                 </> : <p className="text-muted-foreground">用量未知，请核实 VPS 上的 PM 服务。</p>}
+                <PortTraffic node={nodeId} port={rule.port} />
               </div>
               <div className="flex flex-wrap gap-2">
                 <Button variant="outline" disabled={!writable || !legacyReadable} aria-expanded={editing && form?.port === rule.port} onClick={event => { void edit(rule, event.currentTarget) }}>{editing && form?.port === rule.port ? "收起编辑" : "编辑"}</Button>
@@ -161,12 +164,73 @@ export function PmFields({ form, setForm, busy, alerts = true }: { form: PmDraft
     <details className="text-sm" open={form.max_ips > 0}>
       <summary className="cursor-pointer text-muted-foreground">IP 告警（可选）</summary>
       <fieldset disabled={busy} className="mt-3 grid gap-3 sm:grid-cols-2">
-        <label>同时在线 IP 上限（0 关闭）<Input type="number" required min={0} max={65535} value={form.max_ips} onChange={e => setForm({ ...form, max_ips: Number(e.target.value) })} /></label>
+        <label>同时在线 IP 上限（0 关闭）<Input type="number" required min={0} max={65535} value={form.max_ips} onChange={e => setForm({ ...form, max_ips: Number(e.target.value) })} />{form.max_ips > 0 && <span className="text-xs text-muted-foreground">当前设置：{ipThresholds(form.max_ips)}</span>}</label>
         <label>重复提醒间隔（分钟）<Input type="number" required min={1} max={525600} disabled={!form.max_ips} value={form.cooldown_min} onChange={e => setForm({ ...form, cooldown_min: Number(e.target.value) })} /></label>
         <label className="sm:col-span-2">白名单 IP（可选，每行或逗号分隔，最多 32 个）<textarea aria-label="白名单 IP（可选，每行或逗号分隔，最多 32 个）" className="block min-h-20 w-full rounded border bg-background p-2" disabled={!form.max_ips} value={form.whitelist} onChange={e => setForm({ ...form, whitelist: e.target.value })} /></label>
       </fieldset>
-      <p className="mt-2 text-xs text-muted-foreground">每分钟统计已建立 TCP 连接的不同来源 IP，连续两分钟出现才计入，避免扫描误报。超过上限时通过服务管理提醒推送，超过上限 2 个以上为高风险，同一等级按间隔重复提醒；只提醒，不断开连接。</p>
+      <p className="mt-2 text-xs text-muted-foreground">每分钟统计已建立 TCP 连接的不同来源 IP，连续两分钟出现才计入，避免扫描误报。超过上限为警告，超过上限 2 个以上为报警，通过服务管理提醒推送，同一等级按间隔重复提醒；只提醒，不断开连接。</p>
     </details>
     {!alerts && (form.quota_gb > 0 || form.max_ips > 0) && <p role="status" className="text-xs text-destructive">流量阈值和 IP 告警不会推送：尚未配置通知渠道，或已关闭服务管理提醒。可在“通知”页设置；页面上仍会显示状态。</p>}
   </>
+}
+
+/** Online TCP addresses, counted for every rule; coloured by level when the rule has a limit. */
+function OnlineIps({ usage }: { usage: PmUsage }) {
+  if (usage.ip_count == null) return null
+  const list = usage.ip_list ?? []
+  const tone = usage.ip_level === 2 ? "text-destructive" : usage.ip_level === 1 ? "text-amber-600 dark:text-amber-400" : undefined
+  const label = `TCP 在线 IP ${usage.ip_count} 个${usage.ip_level === 2 ? " · 报警" : usage.ip_level === 1 ? " · 警告" : ""}`
+  if (!list.length) return <p className={tone}>{label}</p>
+  return <details className={tone}>
+    <summary className="cursor-pointer">{label}</summary>
+    <p className="break-all">{list.join("、")}{usage.ip_count > list.length ? `（显示前 ${list.length} 个）` : ""}</p>
+    <p className="text-xs text-muted-foreground">连续两分钟以上的 TCP 来源地址，不含 UDP 与白名单。</p>
+  </details>
+}
+
+type Hour = [number, number, number]
+const dayKey = (time: Date) => `${time.getFullYear()}-${time.getMonth() + 1}-${time.getDate()}`
+
+/** The kept week of a port, by day, and a chosen day by hour, in the browser's time zone. */
+function PortTraffic({ node, port }: { node: number; port: number }) {
+  const [hours, setHours] = useState<Hour[] | null>(null)
+  const [error, setError] = useState("")
+  const [day, setDay] = useState("")
+  async function load() {
+    setError("")
+    try { setHours((await readManagement<{ hours: Hour[] }>(`/management/${node}/traffic?port=${port}`)).hours) }
+    catch (e) { setError((e as Error).message) }
+  }
+  const days = Array.from({ length: 7 }, (_, n) => {
+    const date = new Date(); date.setDate(date.getDate() - 6 + n)
+    const own = (hours ?? []).filter(([at]) => dayKey(new Date(at * 1000)) === dayKey(date))
+    return { key: dayKey(date), label: `${date.getMonth() + 1}/${date.getDate()}`, rx: own.reduce((sum, h) => sum + h[1], 0), tx: own.reduce((sum, h) => sum + h[2], 0), own }
+  })
+  const chosen = days.find(item => item.key === day)
+  const byHour = chosen && Array.from({ length: 24 }, (_, hour) => {
+    const own = chosen.own.filter(([at]) => new Date(at * 1000).getHours() === hour)
+    return { key: String(hour), label: `${hour}:00`, rx: own.reduce((sum, h) => sum + h[1], 0), tx: own.reduce((sum, h) => sum + h[2], 0) }
+  })
+  return <details className="text-xs" onToggle={event => { if (event.currentTarget.open) void load() }}>
+    <summary className="cursor-pointer text-muted-foreground">流量走势（近 7 天）</summary>
+    {error ? <p role="alert" className="mt-2 text-destructive">{error}</p> : !hours ? <p className="mt-2 text-muted-foreground">读取中…</p> : <div className="mt-2 space-y-3">
+      <Bars items={days} selected={day} onSelect={key => setDay(key === day ? "" : key)} />
+      {byHour && <><p className="text-muted-foreground">{chosen.label} 按小时</p><Bars items={byHour} /></>}
+      <p className="text-muted-foreground">合计 入站 {bytes(days.reduce((sum, d) => sum + d.rx, 0))} · 出站 {bytes(days.reduce((sum, d) => sum + d.tx, 0))}。按后台收到的上报计入，节点离线期间的流量计入恢复上报的那一小时；点击某天查看小时分布。</p>
+    </div>}
+  </details>
+}
+
+function Bars({ items, selected, onSelect }: { items: { key: string; label: string; rx: number; tx: number }[]; selected?: string; onSelect?: (key: string) => void }) {
+  const top = Math.max(1, ...items.map(item => item.rx + item.tx))
+  return <div className="flex h-24 items-end gap-1" role="list">
+    {items.map(item => {
+      const text = `${item.label} 入站 ${bytes(item.rx)} · 出站 ${bytes(item.tx)}`
+      const bar = <span className={`block w-full rounded-sm ${item.key === selected ? "bg-primary" : "bg-primary/60"}`} style={{ height: item.rx + item.tx ? `${Math.max(2, (item.rx + item.tx) / top * 100)}%` : "1px" }} />
+      return <div key={item.key} role="listitem" className="flex h-full flex-1 flex-col justify-end" title={text} aria-label={onSelect ? undefined : text}>
+        {onSelect ? <button type="button" className="flex h-full flex-col justify-end" aria-label={text} aria-pressed={item.key === selected} onClick={() => onSelect(item.key)}>{bar}</button> : bar}
+        {items.length <= 7 && <span className="mt-1 text-center text-muted-foreground">{item.label}</span>}
+      </div>
+    })}
+  </div>
 }

@@ -35,7 +35,7 @@ assert.throws(() => pmPayload({ ...limitedDraft, whitelist: "fe80::1%eth0" }))
 assert.throws(() => pmPayload({ ...limitedDraft, whitelist: "256.1.1.1" }))
 assert.throws(() => pmPayload({ ...limitedDraft, whitelist: Array.from({ length: 33 }, (_, n) => `192.0.2.${n}`).join(",") }), /32/)
 assert.doesNotThrow(() => pmPayload({ ...limitedDraft, whitelist: "::ffff:192.0.2.1 2001:DB8::1" }))
-assert.equal(pmSummary({ ...pm, quota_gb: 100, reset_day: 1, ip_limit: { max_ips: 3, cooldown_min: 30, whitelist: [] } }), "配额 100 GiB／每月 1 日重置／IP 告警 3 个")
+assert.equal(pmSummary({ ...pm, quota_gb: 100, reset_day: 1, ip_limit: { max_ips: 3, cooldown_min: 30, whitelist: [] } }), "配额 100 GiB／每月 1 日重置／IP 4 个起警告、6 个起报警")
 const empty = { installed: true, blocked: false, revision: "", resources: [] }
 const root = (rows: number[] = [], rules: number[] = []): RootSnapshot => ({ ...empty, modules: { pm: { ...empty, resources: rules.map(port => ({ ...pm, port })) } }, port_monitor: { status: "ready", rows: rows.map(port => ({ port, quota_gb: 1, quota_mode: "in_out", reset_day: 0, comment: "", expiry_date: "", burst_enabled: false, state: "ready" })) } })
 assert.equal(pmBlocked(root(), 23456), "")

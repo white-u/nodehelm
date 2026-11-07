@@ -29,6 +29,7 @@ use std::{
 
 mod lifecycle;
 mod models;
+mod traffic;
 
 /// What a component and this hub must agree on, as one number: bump it whenever a
 /// request or report changes shape. While they differ the node keeps running and
@@ -52,6 +53,7 @@ pub fn ensure(c: &Connection) -> Result<()> {
       module TEXT NOT NULL DEFAULT '', action TEXT NOT NULL DEFAULT '');",
     )?;
     c.execute_batch("CREATE TABLE IF NOT EXISTS managed_maintenance (node INTEGER PRIMARY KEY REFERENCES managed_node(node) ON DELETE CASCADE, token TEXT NOT NULL, expires INTEGER NOT NULL);")?;
+    c.execute_batch(traffic::SCHEMA)?;
     let columns = {
         let mut statement = c.prepare("PRAGMA table_info(managed_operation)")?;
         let result = statement
@@ -93,7 +95,7 @@ pub fn ensure(c: &Connection) -> Result<()> {
 
 // Restore candidates lose authority before replacing the live DB. Never resurrect bindings.
 pub fn reset_after_restore(c: &Connection) -> Result<()> {
-    c.execute_batch("DROP TABLE IF EXISTS managed_maintenance; DROP TABLE IF EXISTS managed_operation; DROP TABLE IF EXISTS managed_node;")?;
+    c.execute_batch("DROP TABLE IF EXISTS managed_port_traffic; DROP TABLE IF EXISTS managed_maintenance; DROP TABLE IF EXISTS managed_operation; DROP TABLE IF EXISTS managed_node;")?;
     ensure(c)?;
     lifecycle::reset_after_restore(c)?;
     Ok(())
@@ -888,12 +890,12 @@ pub async fn poll(State(app): State<Shared>, headers: HeaderMap, Json(input): Js
             tx.query_row("SELECT snapshot FROM managed_node WHERE node=?1", [node], |r| r.get(0))?;
         // The first report after binding has nothing to compare against, and an
         // unreadable one must not cost the poll that replaces it.
-        let (mut notes, ip_alerts) = if previous.is_empty() {
-            Default::default()
-        } else {
-            open(&bytes, node, &previous)
-                .map_or_else(|_| Default::default(), |old| snapshot_events(&old, &plain, &thresholds))
-        };
+        let old = if previous.is_empty() { None } else { open(&bytes, node, &previous).ok() };
+        let (mut notes, ip_alerts) =
+            old.as_ref().map_or_else(Default::default, |old| snapshot_events(old, &plain, &thresholds));
+        if let Some(old) = &old {
+            traffic::record(&tx, node, old, &plain, now())?;
+        }
         if let Some(result) = &input.result {
             if !valid_hex(&result.id, 32)
                 || !matches!(
@@ -955,6 +957,12 @@ pub async fn poll(State(app): State<Shared>, headers: HeaderMap, Json(input): Js
                 };
                 let mut message =
                     if detail.is_empty() { message.to_owned() } else { format!("{message}：{detail}") };
+                if (module.as_str(), action.as_str(), result.status.as_str()) == ("pm", "delete", "succeeded")
+                {
+                    if let Some(port) = open(&bytes, node, &payload)?["payload"]["port"].as_i64() {
+                        traffic::forget(&tx, node, port)?;
+                    }
+                }
                 if matches!(action.as_str(), "core_upgrade" | "core_rollback") {
                     let request = open(&bytes, node, &payload)?;
                     if let Some(version) = request["payload"]["version"].as_str().filter(|v| core_version(v))
@@ -1104,11 +1112,25 @@ pub fn silent_components(db: &Db, now: i64) -> Result<Vec<i64>> {
 /// Finished operations outlive their usefulness: the page lists the latest 30.
 const OPERATION_DAYS: i64 = 90;
 pub fn prune_operations(db: &Db, now: i64) -> Result<usize> {
-    Ok(db.conn().execute(
+    let c = db.conn();
+    let operations = c.execute(
         "DELETE FROM managed_operation WHERE created<?1 AND status IN
          ('succeeded','rolled_back','rejected','expired','checked','cancelled')",
         [now - OPERATION_DAYS * 86_400],
-    )?)
+    )?;
+    Ok(operations + traffic::prune(&c, now)?)
+}
+#[derive(Deserialize)]
+pub struct TrafficPort {
+    port: u16,
+}
+pub async fn port_traffic(
+    _: Admin,
+    State(app): State<Shared>,
+    Path(node): Path<i64>,
+    Query(input): Query<TrafficPort>,
+) -> Response {
+    response(traffic::read(&app.db.conn(), node, input.port.into(), now()))
 }
 #[derive(Deserialize, Default)]
 pub struct ExportFormat {
@@ -1209,6 +1231,7 @@ pub fn admin_routes() -> Router<Shared> {
         .route("/api/management/{node}/operations", post(submit))
         .route("/api/management/{node}/lifecycle", post(lifecycle::start))
         .route("/api/management/{node}/export", get(export_configuration))
+        .route("/api/management/{node}/traffic", get(port_traffic))
 }
 pub fn agent_routes() -> Router<Shared> {
     Router::new()
@@ -1881,6 +1904,51 @@ mod lifecycle_tests {
         body(unbind(Admin, f.state(), Path(f.node)).await).await;
         assert!(identity(&f.app.db, &headers()).is_err());
         assert!(f.app.db.delete_node(f.node).unwrap());
+    }
+    #[tokio::test]
+    async fn pm_traffic_follows_reports_and_ends_with_the_rule() {
+        let f = Fixture::new();
+        let credential = f.bind().await;
+        let report = |rx: u64, tx: u64| -> Snapshot {
+            serde_json::from_value(json!({
+                "core":null,"port_monitor":null,"runtime":{},"installed":false,"resources":[],
+                "revision":"b".repeat(64),"blocked":false,
+                "modules":{"pm":{"installed":true,"blocked":false,"revision":"a".repeat(64),
+                    "resources":[{"port":12345,"name":"PM","quota_gb":0,"quota_mode":"in_out","reset_day":0,
+                        "egress_mbps":0,"expiry_date":""}],
+                    "usage":{"12345":{"rx":rx,"tx":tx,"sampled_at":1,"period_start":"","alert":"normal"}}}}
+            }))
+            .unwrap()
+        };
+        let send = |snapshot: Snapshot, result: Option<Receipt>| {
+            poll(f.state(), f.headers(&credential), Json(Poll { snapshot, result, lifecycle_result: None }))
+        };
+        let read = || async {
+            body(port_traffic(Admin, f.state(), Path(f.node), Query(TrafficPort { port: 12345 })).await).await
+        };
+        body(send(report(100, 10), None).await).await;
+        body(send(report(150, 30), None).await).await;
+        assert_eq!(read().await["hours"][0].as_array().unwrap()[1..], [json!(50), json!(20)]);
+        let op = Operation {
+            module: "pm".into(),
+            id: "a".repeat(32),
+            action: "delete".into(),
+            intent: None,
+            revision: "a".repeat(64),
+            payload: json!({"port":12345}),
+        };
+        body(submit(Admin, f.state(), Path(f.node), Json(op)).await).await;
+        let task = body(send(report(150, 30), None).await).await;
+        assert_eq!(task["task"]["request"]["id"], "a".repeat(32));
+        let receipt = Receipt {
+            code: None,
+            id: "a".repeat(32),
+            status: "succeeded".into(),
+            message: String::new(),
+            revision: "c".repeat(64),
+        };
+        body(send(report(150, 30), Some(receipt)).await).await;
+        assert_eq!(read().await["hours"], json!([]));
     }
     #[tokio::test]
     async fn missing_encryption_key_never_regenerates_over_secrets() {

@@ -17,11 +17,12 @@
 | [management/mod.rs](management/mod.rs) | 管理开关、登记绑定、快照、普通任务、回执、配置展示和组件文件分发 |
 | [management/lifecycle.rs](management/lifecycle.rs) | 节点模块／全部卸载任务、进度、继续操作及最终确认 |
 | [management/models.rs](management/models.rs) | 模块字段、核心元数据、业务／原 PM 快照模型、SB 分享链接及 sing-box 客户端配置生成 |
+| [management/traffic.rs](management/traffic.rs) | 受管 PM 端口的小时流量：由相邻两次上报算出增量，保留 7 天，删除规则时清除 |
 | [notify.rs](notify.rs) | 通知模板、队列及 Telegram／Webhook 发送 |
 | [frontend.rs](frontend.rs) | 管理静态资源、公开主题、主题包与图标 |
 | [testdata/](testdata/) | 旧数据库 schema 和分时流量回归材料 |
 
-服务管理集中在 `management/`：`mod.rs` 提供接口与任务逻辑，`models.rs` 和 `lifecycle.rs` 为其内部子模块。顶层模块由 `main.rs` 组合，服务管理路由由 `main.rs` 与 `management/mod.rs` 共同挂载。
+服务管理集中在 `management/`：`mod.rs` 提供接口与任务逻辑，`models.rs`、`lifecycle.rs` 和 `traffic.rs` 为其内部子模块。顶层模块由 `main.rs` 组合，服务管理路由由 `main.rs` 与 `management/mod.rs` 共同挂载。
 
 ## 按功能定位
 

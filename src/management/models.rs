@@ -158,8 +158,9 @@ pub struct PmUsage {
     sampled_at: u64,
     period_start: String,
     alert: String,
-    /// The IP check, present while the rule has an IP limit. `ip_alert` counts
-    /// alerts raised; a change with `ip_level` above zero is a new one to send.
+    /// The IP check: `ip_count` and `ip_list` for every recent rule, `ip_level`
+    /// and `ip_alert` only for a rule with an IP limit. `ip_alert` counts alerts
+    /// raised; a change with `ip_level` above zero is a new one to send.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ip_count: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -467,7 +468,7 @@ mod tests {
         assert!(usage(json!(vec!["203.0.113.1"; 16])).is_err());
     }
     #[test]
-    fn ip_note_keeps_the_original_wording() {
+    fn ip_note_names_levels_by_count() {
         let alert = crate::notify::IpAlert {
             port: "12345".into(),
             name: "PM".into(),
@@ -478,8 +479,10 @@ mod tests {
         };
         let places = [("203.0.113.1".to_owned(), "中国, 上海, 某运营商".to_owned())].into();
         let note = crate::notify::ip_note("hk", &alert, &places);
-        assert_eq!(note.title, "🔴 异常接入升级 · hk");
-        assert!(note.message.contains("等级 高风险（超过 5 IP）"));
+        assert_eq!(note.title, "🔴 异常接入报警 · hk");
+        assert!(note.message.contains("在线 17 IP · 等级 报警（6 个及以上）"));
+        let warning = crate::notify::IpAlert { level: 1, ips: vec![], ..alert.clone() };
+        assert!(crate::notify::ip_note("hk", &warning, &places).message.contains("等级 警告（4 个及以上）"));
         assert!(note.message.contains("1. 203.0.113.1 - 中国, 上海, 某运营商"));
         assert!(note.message.contains("2. 203.0.113.2 - (查询失败)"));
         assert!(note.message.contains("... 仅显示前 15 条"));

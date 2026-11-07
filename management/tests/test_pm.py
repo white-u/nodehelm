@@ -68,26 +68,33 @@ class PmIpTests(unittest.TestCase):
         rise = watch(rules, many, primed, 1130)['23456']
         self.assertEqual((rise['count'], rise['level'], rise['seq']), (5, 2, 6))
         calm = watch(rules, '0 0 192.0.2.10:23456 203.0.113.1:1\n', {'23456': rise}, 1190)['23456']
-        self.assertEqual((calm['level'], calm['seq'], calm['last'], calm['ips']), (0, 6, 0, []))
+        self.assertEqual((calm['level'], calm['seq'], calm['last'], calm['ips']), (0, 6, 0, ['203.0.113.1']))
 
-    def test_maintenance_reads_connections_only_for_limited_rules(self):
+    def test_rules_without_a_limit_are_counted_but_never_alert(self):
+        many = ''.join(f'0 0 192.0.2.10:23456 203.0.113.{n}:1\n' for n in range(1, 21))
+        first = watch([policy()], many, {}, 1000)
+        second = watch([policy()], many, first, 1060)['23456']
+        self.assertEqual((second['count'], second['level'], second['seq']), (20, 0, 0))
+        self.assertEqual(len(second['ips']), 15)
+
+    def test_maintenance_reads_connections_only_while_rules_exist(self):
         with tempfile.TemporaryDirectory() as directory:
             driver = Driver(directory)
             with patch('pm.connections', return_value=SS) as connections:
-                driver.watch_ips({'installed': True, 'resources': [policy()]})
+                driver.watch_ips({'installed': True, 'resources': []})
                 connections.assert_not_called()
                 self.assertFalse(driver.ip_watch.exists())
-                driver.watch_ips({'installed': True, 'resources': [limited()]})
+                driver.watch_ips({'installed': True, 'resources': [policy()]})
                 self.assertEqual(read(driver.ip_watch)['ports']['23456']['count'], 0)
                 driver.ip_watch.write_text('{broken')
                 driver.watch_ips({'installed': True, 'resources': [limited()]})
-                driver.watch_ips({'installed': True, 'resources': [policy()]})
+                driver.watch_ips({'installed': True, 'resources': []})
                 self.assertFalse(driver.ip_watch.exists())
             with patch('pm.connections', return_value=None):
                 driver.watch_ips({'installed': True, 'resources': [limited()]})
             self.assertFalse(driver.ip_watch.exists())
 
-    def test_status_reports_a_recent_check_for_limited_rules_only(self):
+    def test_status_reports_a_recent_check_and_alert_state_for_limited_rules_only(self):
         with tempfile.TemporaryDirectory() as directory:
             driver = Driver(directory)
             now = int(time.time())
@@ -101,12 +108,13 @@ class PmIpTests(unittest.TestCase):
                     patch.object(driver, 'inspect'), patch.object(driver, 'sample', return_value=data), \
                     patch.object(driver, 'unit_states', return_value=states), \
                     patch.object(driver, 'expected_plan', return_value={'23456': rule}):
-                for sampled, rules, shown in ((now, [limited()], True), (now - 300, [limited()], False),
-                                              (now, [policy()], False)):
+                for sampled, rules, counted, alerting in ((now, [limited()], True, True),
+                                                          (now - 300, [limited()], False, False),
+                                                          (now, [policy()], True, False)):
                     write(driver.ip_watch, {'sampled_at': sampled, 'ports': {'23456': entry}})
                     usage = driver.status({'installed': True, 'resources': rules})[1]['23456']
-                    self.assertEqual('ip_alert' in usage, shown)
-                self.assertNotIn('ip_count', usage)
+                    self.assertEqual(('ip_count' in usage, 'ip_alert' in usage, 'ip_level' in usage),
+                                     (counted, alerting, alerting))
                 write(driver.ip_watch, {'sampled_at': now, 'ports': {'23456': entry}})
                 usage = driver.status({'installed': True, 'resources': [limited()]})[1]['23456']
                 self.assertEqual({key: usage[key] for key in ('ip_count', 'ip_level', 'ip_alert', 'ip_list')},
