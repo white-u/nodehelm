@@ -2,7 +2,7 @@
 
 基于 monitor 的独立新项目，保留监控与分时流量，新增可选节点服务管理。当前支持 Snell、SB（Reality / SS2022）和 FW（Realm TCP/UDP）实例管理、可信核心升级回退与卸载、Snell/SB 配置导出，以及受管业务端口的 PM 计量、配额、重置、到期策略、流量阈值、在线 IP 统计、告警与阻断，以及近 7 天的端口流量走势。
 
-文档：**[部署文档](DEPLOY.md)** · [完整索引](INDEX.md) · [开发与验证](DEVELOPMENT.md) · [部署与恢复说明](NODE_MANAGEMENT_DEPLOY.md)
+文档：**[快速开始](QUICK_START.md)** · [部署文档](DEPLOY.md) · [完整索引](INDEX.md) · [开发与验证](DEVELOPMENT.md) · [部署与恢复说明](NODE_MANAGEMENT_DEPLOY.md)
 
 本项目派生自 [monitor-probe/monitor](https://github.com/monitor-probe/monitor) 与 [monitor-probe/agent](https://github.com/monitor-probe/agent)（MIT），已独立发布，不要用上游安装器覆盖或升级本项目。公开页主题与上游兼容，主题站 [monitor-themes.pages.dev](https://monitor-themes.pages.dev) 收录的第三方主题可在面板安装。主题与后台同源运行，在已登录的浏览器中能以管理员身份操作，只安装可信来源。
 
