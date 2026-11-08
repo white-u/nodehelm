@@ -7,8 +7,9 @@ import sys
 import uuid
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from controller import Controller
-from model import Rejected
-from snell import Driver, command
+from protocol import Rejected
+from core_driver import command
+from snell import Driver
 
 
 def main():

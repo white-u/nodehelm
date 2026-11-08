@@ -16,7 +16,7 @@ import agent
 import install
 import lifecycle
 from controller import Controller
-from model import Rejected
+from protocol import Rejected
 from storage import read, write
 
 
@@ -152,7 +152,7 @@ class NodeLifecycleTests(unittest.TestCase):
         with self.assertRaises(KeyboardInterrupt):
             self.engine.advance(self.job)
         self.controllers['snell'].driver.crash = False
-        with patch.object(agent, 'ROOT', self.root), patch.object(agent, 'Controller', side_effect=lambda _root, _driver, module='snell': self.controllers[module]), patch.object(agent, 'PMController', return_value=self.controllers['pm']), patch.object(agent, 'ServiceDriver'), patch('snell.command'), patch('builtins.print'):
+        with patch.object(agent, 'ROOT', self.root), patch.object(agent.modules, 'controllers', return_value=self.controllers), patch('agent.command'), patch('builtins.print'):
             agent.run_action('recover')
         self.assertFalse((self.root / 'pending-result.json').exists())
         self.assertEqual(read(self.engine.path)['status'], 'paused')
@@ -161,7 +161,7 @@ class NodeLifecycleTests(unittest.TestCase):
 
     @contextlib.contextmanager
     def agent_runtime(self):
-        with patch.object(agent, 'ROOT', self.root), patch.object(agent, 'Controller', side_effect=lambda _root, _driver, module='snell': self.controllers[module]), patch.object(agent, 'PMController', return_value=self.controllers['pm']), patch.object(agent, 'ServiceDriver'), patch('builtins.print'):
+        with patch.object(agent, 'ROOT', self.root), patch.object(agent.modules, 'controllers', return_value=self.controllers), patch('builtins.print'):
             yield
 
     def test_unlink_completed_job_then_rebind_polls_without_old_receipt(self):

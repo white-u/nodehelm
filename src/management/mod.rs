@@ -34,7 +34,7 @@ mod traffic;
 /// What a component and this hub must agree on, as one number: bump it whenever a
 /// request or report changes shape. While they differ the node keeps running and
 /// reports presence, but exchanges no snapshots or work, so hub and components can
-/// be upgraded in either order. Same constant in `management/model.py`.
+/// be upgraded in either order. Same constant in `management/protocol.py`.
 const PROTOCOL: i64 = 1;
 
 use models::{core_version, CoreSnapshot};
@@ -1263,11 +1263,13 @@ const FILES: &[(&str, &str)] = &[
     ("agent.py", include_str!("../../management/agent.py")),
     ("lifecycle.py", include_str!("../../management/lifecycle.py")),
     ("controller.py", include_str!("../../management/controller.py")),
-    ("model.py", include_str!("../../management/model.py")),
+    ("protocol.py", include_str!("../../management/protocol.py")),
     ("storage.py", include_str!("../../management/storage.py")),
+    ("modules.py", include_str!("../../management/modules.py")),
+    ("core_driver.py", include_str!("../../management/core_driver.py")),
     ("snell.py", include_str!("../../management/snell.py")),
-    ("modules_model.py", include_str!("../../management/modules_model.py")),
-    ("services.py", include_str!("../../management/services.py")),
+    ("sb.py", include_str!("../../management/sb.py")),
+    ("fw.py", include_str!("../../management/fw.py")),
     ("pm.py", include_str!("../../management/pm.py")),
     ("menu.py", include_str!("../../management/menu.py")),
     ("core_assets.json", include_str!("../../management/core_assets.json")),

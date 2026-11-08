@@ -15,9 +15,11 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from agent import execute_module_task
 from controller import Controller
 import install
-from model import Rejected, request
-from snell import (Driver, SNAPSHOT_CACHE_MIN_CTIME_AGE_NS, SNAPSHOT_CACHE_TTL_SECONDS,
-                   atomic, binary_hash, binary_identity, stream)
+from modules import request
+from protocol import Rejected
+from core_driver import SNAPSHOT_CACHE_MIN_CTIME_AGE_NS, SNAPSHOT_CACHE_TTL_SECONDS, binary_hash, binary_identity, stream
+from snell import Driver
+from core_driver import atomic
 from storage import read, write
 from test_controller import Driver as FakeDriver
 
@@ -95,12 +97,12 @@ class CoreLifecycleTests(unittest.TestCase):
             }}
         contexts = ExitStack()
         self.addCleanup(contexts.close)
-        contexts.enter_context(patch('snell.ASSETS', {'snell': versions}))
-        contexts.enter_context(patch('snell.platform.machine', return_value='fixture-arch'))
-        contexts.enter_context(patch('snell.command', side_effect=self.systemd.command))
-        contexts.enter_context(patch('snell.time.sleep'))
-        contexts.enter_context(patch('snell.socket.create_connection'))
-        self.opener = contexts.enter_context(patch('snell.urllib.request.build_opener'))
+        contexts.enter_context(patch('core_driver.ASSETS', {'snell': versions}))
+        contexts.enter_context(patch('core_driver.platform.machine', return_value='fixture-arch'))
+        contexts.enter_context(patch('core_driver.command', side_effect=self.systemd.command))
+        contexts.enter_context(patch('core_driver.time.sleep'))
+        contexts.enter_context(patch('core_driver.socket.create_connection'))
+        self.opener = contexts.enter_context(patch('core_driver.urllib.request.build_opener'))
         self.opener.return_value.open.side_effect = self.response
 
     def response(self, req, timeout):
@@ -132,9 +134,9 @@ class CoreLifecycleTests(unittest.TestCase):
     def test_snapshot_reuses_verified_binary_but_still_checks_instance_config(self):
         self.legacy(with_instances=True)
         ctime = self.driver.binary.stat().st_ctime_ns
-        with patch('snell.time.time_ns', return_value=ctime) as wall_clock, \
-                patch('snell.time.monotonic', return_value=0) as clock, \
-                patch('snell.binary_hash', wraps=binary_hash) as digest:
+        with patch('core_driver.time.time_ns', return_value=ctime) as wall_clock, \
+                patch('core_driver.time.monotonic', return_value=0) as clock, \
+                patch('core_driver.binary_hash', wraps=binary_hash) as digest:
             self.assertFalse(self.c.snapshot()['blocked'])
             wall_clock.return_value = ctime + SNAPSHOT_CACHE_MIN_CTIME_AGE_NS
             self.assertFalse(self.c.snapshot()['blocked'])
@@ -152,20 +154,20 @@ class CoreLifecycleTests(unittest.TestCase):
         binary = self.driver.binary
         before = binary.stat()
         settled = before.st_ctime_ns + SNAPSHOT_CACHE_MIN_CTIME_AGE_NS
-        with patch('snell.time.time_ns', return_value=settled):
+        with patch('core_driver.time.time_ns', return_value=settled):
             req = self.req('core_uninstall')
-            with patch('snell.binary_hash', return_value='incorrect digest') as digest:
+            with patch('core_driver.binary_hash', return_value='incorrect digest') as digest:
                 with self.assertRaisesRegex(Rejected, '可信安装状态不一致'):
                     self.c.execute(req)
             digest.assert_called_once_with(binary)
 
-        with patch('snell.time.time_ns', return_value=before.st_ctime_ns) as clock:
+        with patch('core_driver.time.time_ns', return_value=before.st_ctime_ns) as clock:
             self.assertFalse(self.c.snapshot()['blocked'])
             binary.write_bytes(b'x' * before.st_size)
             os.utime(binary, ns=(before.st_atime_ns, before.st_mtime_ns))
             # ext4 can expose the very same attributes for both writes.
-            with patch('snell.binary_identity', return_value=binary_identity(before)), \
-                    patch('snell.binary_hash', wraps=binary_hash) as digest:
+            with patch('core_driver.binary_identity', return_value=binary_identity(before)), \
+                    patch('core_driver.binary_hash', wraps=binary_hash) as digest:
                 self.assertTrue(self.c.snapshot()['blocked'])
                 clock.return_value = binary.stat().st_ctime_ns + SNAPSHOT_CACHE_MIN_CTIME_AGE_NS
                 self.assertTrue(self.c.snapshot()['blocked'])
@@ -184,7 +186,7 @@ class CoreLifecycleTests(unittest.TestCase):
             binary.chmod(0o700)
             return result
 
-        with patch('snell.stream', side_effect=hash_with_mode_change):
+        with patch('core_driver.stream', side_effect=hash_with_mode_change):
             self.assertTrue(self.c.snapshot()['blocked'])
         self.assertFalse(self.c.snapshot()['blocked'])
         target = binary.with_suffix('.trusted')
@@ -317,7 +319,7 @@ class CoreLifecycleTests(unittest.TestCase):
                         raise Interrupted
                     return self.systemd.command(tool, action, *args, **kwargs)
 
-                with patch('snell.command', side_effect=interrupt_stop):
+                with patch('core_driver.command', side_effect=interrupt_stop):
                     with self.assertRaises(Interrupted):
                         self.c.execute(self.req('core_upgrade', version='6.1.0'))
                 if legacy:
@@ -440,7 +442,7 @@ class CoreLifecycleTests(unittest.TestCase):
                 return SimpleNamespace(returncode=0, stdout=b'start-limit-hit\n')
             return self.systemd.command(tool, action, *args, **kwargs)
 
-        with patch('snell.command', side_effect=systemd):
+        with patch('core_driver.command', side_effect=systemd):
             self.assertEqual(self.c.execute(self.req('core_upgrade', version='6.1.0'))['status'], 'succeeded')
         self.assertEqual(attempts, 2)
         self.assertEqual([call for call in self.systemd.calls if call[1] == 'reset-failed'],
@@ -455,7 +457,7 @@ class CoreLifecycleTests(unittest.TestCase):
                 return SimpleNamespace(returncode=1, stdout=b'', stderr=b'loader unavailable')
             return self.systemd.command(tool, action, *args, **kwargs)
 
-        with patch('snell.command', side_effect=fail_probe):
+        with patch('core_driver.command', side_effect=fail_probe):
             result = self.c.execute(self.req('core_upgrade', version='6.1.0'))
         self.assertEqual((result['status'], result['code']), ('rolled_back', 'core_runtime'))
         self.assertEqual(self.systemd.mutations(), [])

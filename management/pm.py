@@ -13,9 +13,13 @@ import subprocess
 import sys
 import time
 
-from model import Rejected, resource, revision
-from snell import atomic, command
+from controller import Controller
+from core_driver import atomic, command
+from protocol import Rejected, fields, name, port, revision
 from storage import private_directory, read, remove, write
+
+MODULE = 'pm'
+ACTIONS = frozenset({'install', 'apply', 'delete', 'reset', 'core_uninstall'})
 
 ROOT = pathlib.Path('/var/lib/node-manager/pm')
 SYSTEMD = pathlib.Path('/etc/systemd/system')
@@ -55,6 +59,61 @@ BYTES_PER_MEGABIT = 125000
 MAX_COUNTER = (1 << 63) - 1
 # Addresses kept per port for the next minute's comparison.
 IP_SEEN = 4096
+
+
+def ip_limit(value):
+    """Present only when on: rules without it keep their earlier revision, and
+    so does `block`, present only as true."""
+    if (not isinstance(value, dict) or set(value) - {'block'} != {'max_ips', 'cooldown_min', 'whitelist'}
+            or value.get('block', True) is not True):
+        raise Rejected('IP 告警设置格式错误')
+    limit, cooldown, allowed = value['max_ips'], value['cooldown_min'], value['whitelist']
+    if (type(limit) is not int or not 1 <= limit <= 65535 or type(cooldown) is not int
+            or not 1 <= cooldown <= 525600 or not isinstance(allowed, list) or len(allowed) > 32):
+        raise Rejected('IP 上限须为 1–65535，冷却 1–525600 分钟，白名单最多 32 个')
+    try:
+        if any(not isinstance(item, str) or '%' in item for item in allowed):
+            raise ValueError()
+        entries = set()
+        for item in allowed:
+            # Only a numeric prefix, as the Hub accepts; never a netmask.
+            if '/' in item and not re.fullmatch(r'[0-9]{1,3}', item.split('/', 1)[1]):
+                raise ValueError()
+            network = ipaddress.ip_network(item, strict=False)
+            mapped = getattr(network.network_address, 'ipv4_mapped', None)
+            if mapped and network.prefixlen >= 96:
+                network = ipaddress.ip_network((mapped, network.prefixlen - 96))
+            entries.add(network)
+    except ValueError:
+        raise Rejected('白名单只能填写 IP 地址或 CIDR 网段') from None
+    # A single address (or /32, /128) is written bare, keeping earlier revisions.
+    whitelist = [str(n.network_address) if n.prefixlen == n.max_prefixlen else str(n)
+                 for n in sorted(entries, key=lambda n: (n.version, n.network_address, n.prefixlen))]
+    return dict(max_ips=limit, cooldown_min=cooldown, whitelist=whitelist, **({'block': True} if 'block' in value else {}))
+
+
+def resource(value):
+    fields(value, {'port', 'name', 'quota_gb', 'quota_mode', 'reset_day', 'expiry_date', 'egress_mbps', 'ip_limit'})
+    listen = port(value.get('port'))
+    label = name(value.get('name', ''))
+    quota, reset_day, rate = (value.get(key) for key in ('quota_gb', 'reset_day', 'egress_mbps'))
+    mode, expiry = value.get('quota_mode'), value.get('expiry_date')
+    if (listen < 1024 or type(quota) is not int or not 0 <= quota <= 8589934591
+            or type(reset_day) is not int or not 0 <= reset_day <= 31
+            or type(rate) is not int or not 0 <= rate <= 10000
+            or mode not in ('in_out', 'out_only') or not isinstance(expiry, str)):
+        raise Rejected('PM 端口或策略值无效')
+    if expiry:
+        try:
+            if dt.date.fromisoformat(expiry).isoformat() != expiry:
+                raise ValueError()
+        except ValueError:
+            raise Rejected('PM 到期日期须为 YYYY-MM-DD') from None
+    rule = dict(port=listen, name=label, quota_gb=quota, quota_mode=mode, reset_day=reset_day,
+                expiry_date=expiry, egress_mbps=rate)
+    if 'ip_limit' in value:
+        rule['ip_limit'] = ip_limit(value['ip_limit'])
+    return rule
 
 
 def period_start(today, day):
@@ -676,7 +735,7 @@ class Driver:
     @staticmethod
     def check_saved_state(state, saved):
         try:
-            policies = plan({'resources': [resource(rule, 'pm') for rule in state['resources']]},
+            policies = plan({'resources': [resource(rule) for rule in state['resources']]},
                             dt.datetime.now(dt.timezone.utc).date())
             if set(policies) != set(saved['plan']) or set(policies) != set(saved['values']):
                 raise ValueError()
@@ -827,6 +886,22 @@ class Driver:
                 print(f'PM 阻断未生效：{error}', file=sys.stderr, flush=True)
 
 
+class PMController(Controller):
+    def snapshot(self):
+        with (self.root / 'write.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_SH)
+            state = read(self.state, {'installed': False, 'resources': []})
+            drift, usage = self.driver.status(state)
+            return {**state, 'revision': revision(state), 'blocked': self.journal.exists() or drift,
+                    'usage': usage,
+                    'core': {'version': None, 'sha256': None, 'previous_version': None, 'candidates': []}}
+
+
+def controller(root):
+    directory = root / MODULE
+    return PMController(directory, Driver(directory), MODULE)
+
+
 if __name__ == '__main__':
     try:
         if os.geteuid() != 0:
@@ -846,3 +921,4 @@ if __name__ == '__main__':
     except (Rejected, OSError, ValueError, subprocess.TimeoutExpired) as error:
         print(f'PM 维护失败：{error}', file=sys.stderr)
         sys.exit(1)
+

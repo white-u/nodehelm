@@ -296,8 +296,8 @@ def start_worker():
 
 
 def prepare_worker(job, token, binding, snapshot):
-    # Saved in the state because the helper outlives model.py.
-    from model import PROTOCOL
+    # Saved in the state because the helper outlives protocol.py.
+    from protocol import PROTOCOL
     current = install.installed_manifest()
     install.check_current(current)
     install.check_owned_unit(install.UNITS / UNIT, unit_content())

@@ -2,7 +2,6 @@
 """Optional outbound-only manager. Root authority is deliberately separate from monitor-agent."""
 import argparse
 from contextlib import ExitStack
-import fcntl
 import functools
 import hashlib
 import http.client
@@ -15,12 +14,11 @@ import sys
 import time
 import urllib.error
 import urllib.parse
-from controller import Controller
-from model import PROTOCOL, Rejected, request, revision
-from snell import Driver
+from core_driver import command
+import modules
+from modules import request
+from protocol import PROTOCOL, Rejected
 from storage import read, write, remove, private_directory
-from services import Driver as ServiceDriver
-from pm import Driver as PMDriver
 
 ROOT = pathlib.Path('/var/lib/node-manager')
 
@@ -171,17 +169,6 @@ def reject_module(controller, req, code, message):
     return {'id': req['id'], 'status': 'rejected', 'code': code, 'message': message}
 
 
-class PMController(Controller):
-    def snapshot(self):
-        with (self.root / 'write.lock').open('a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_SH)
-            state = read(self.state, {'installed': False, 'resources': []})
-            drift, usage = self.driver.status(state)
-            return {**state, 'revision': revision(state), 'blocked': self.journal.exists() or drift,
-                    'usage': usage,
-                    'core': {'version': None, 'sha256': None, 'previous_version': None, 'candidates': []}}
-
-
 def recover_idle(receipt_path):
     from install import SERVICE, check_agent_unit, ctl, lock
 
@@ -248,12 +235,7 @@ def main():
 def run_action(action):
     if action == 'run' and read(ROOT / 'component-recovery.json', {}).get('phase') == 'switching':
         raise Rejected('组件文件正在切换，暂停轮询直至升级恢复')
-    controllers = {'snell': Controller(ROOT, Driver())}
-    controllers['pm'] = PMController(ROOT / 'pm', PMDriver(ROOT / 'pm'), 'pm')
-    for module in ('sb', 'fw'):
-        directory = private_directory(ROOT / module)
-        private_directory(directory / 'configs')
-        controllers[module] = Controller(directory, ServiceDriver(module), module)
+    controllers = modules.controllers(ROOT)
     controller = controllers['snell']
     if action == 'refresh':
         for current in controllers.values():
@@ -288,7 +270,6 @@ def run_action(action):
         lifecycle_job = read(ROOT / 'lifecycle-job.json')
         current = lifecycle_job.get('current') if lifecycle_job else None
         if current and any(c.journal.exists() for c in controllers.values()):
-            from snell import command
             command('systemctl', 'stop', 'node-manager-agent.service')
             owner = controllers.get(current['module'])
             pending = [c for c in controllers.values() if c.journal.exists()]
@@ -307,7 +288,6 @@ def run_action(action):
             return
         # Stop the poller before selecting the module because its operation
         # can complete and a different task can arrive during this command.
-        from snell import command
         command('systemctl', 'stop', 'node-manager-agent.service')
         pending = [c for c in controllers.values() if c.journal.exists()]
         if len(pending) > 1: raise Rejected('多个模块有未恢复操作，请保留现场检查')

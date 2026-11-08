@@ -465,12 +465,8 @@ def refresh_instances():
 
 def managed_drivers():
     sys.path.insert(0, str(CODE))
-    from snell import Driver as Snell
-    from services import Driver as Service
-    snell = Snell()
-    snell.binary = CODE / 'snell-server'
-    snell.configs = ROOT / 'configs'
-    return {driver.binary.name: driver for driver in (snell, Service('sb', ROOT, CODE), Service('fw', ROOT, CODE))}
+    import modules
+    return modules.core_drivers(ROOT, CODE)
 
 
 def check_unmodified():
@@ -768,8 +764,9 @@ def purge_plan(*, lifecycle=False, preflight=False):
 
     for path in validate(CODE, lambda p: p.name in set(current) | set(drivers) | {'__pycache__'}, False):
         if path.name == '__pycache__':
-            known_pyc = re.compile(r'(?:' + '|'.join(re.escape(name[:-3]) for name in current if name.endswith('.py'))
-                                   + r')\.cpython-[0-9]+(?:\.opt-[12])?\.pyc')
+            # Any component name, not only the current set: a file a later release
+            # dropped or renamed leaves its bytecode behind when run without -B.
+            known_pyc = re.compile(r'[a-z][a-z0-9_]*\.cpython-[0-9]+(?:\.opt-[12])?\.pyc')
             for cached in validate(path, lambda p: known_pyc.fullmatch(p.name), False):
                 leaf(cached, False)
         else:

@@ -10,7 +10,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from agent import execute_module_task
 from controller import Controller
-from model import Rejected, revision
+from protocol import Rejected, revision
 import pm
 from pm import Driver, GIB, batch, block_script, peers, period_start, plan, reality_probes, watch
 from storage import read, write
@@ -139,17 +139,17 @@ class PmIpTests(unittest.TestCase):
                                  {'ip_count': 4, 'ip_level': 1, 'ip_alert': 2, 'ip_list': ['203.0.113.1']})
 
     def test_rule_format_without_ip_limit_is_unchanged(self):
-        from model import resource
-        self.assertNotIn('ip_limit', resource(policy(), 'pm'))
-        rule = resource(limited(whitelist=['::ffff:203.0.113.7', '2001:DB8::1', '203.0.113.7']), 'pm')
+        from pm import resource
+        self.assertNotIn('ip_limit', resource(policy()))
+        rule = resource(limited(whitelist=['::ffff:203.0.113.7', '2001:DB8::1', '203.0.113.7']))
         self.assertEqual(rule['ip_limit']['whitelist'], ['203.0.113.7', '2001:db8::1'])
-        networks = resource(limited(whitelist=['203.0.113.7/24', '2001:DB8::1/64', '::ffff:198.51.100.7/120']), 'pm')
+        networks = resource(limited(whitelist=['203.0.113.7/24', '2001:DB8::1/64', '::ffff:198.51.100.7/120']))
         self.assertEqual(networks['ip_limit']['whitelist'], ['198.51.100.0/24', '203.0.113.0/24', '2001:db8::/64'])
-        self.assertTrue(resource(limited() | {'ip_limit': limited()['ip_limit'] | {'block': True}}, 'pm')['ip_limit']['block'])
-        self.assertNotIn('block', resource(limited(), 'pm')['ip_limit'], 'off is left out, keeping old revisions')
+        self.assertTrue(resource(limited() | {'ip_limit': limited()['ip_limit'] | {'block': True}})['ip_limit']['block'])
+        self.assertNotIn('block', resource(limited())['ip_limit'], 'off is left out, keeping old revisions')
         for bad in ({'whitelist': ['203.0.113.0/33']}, {'whitelist': ['2001:db8::/129']}, {'max_ips': 0}, {'action': 'block'}, {'block': False}, {'whitelist': ['fe80::1%eth0']}):
             with self.assertRaises(Rejected):
-                resource(policy(ip_limit={'max_ips': 1, 'cooldown_min': 30, 'whitelist': []} | bad), 'pm')
+                resource(policy(ip_limit={'max_ips': 1, 'cooldown_min': 30, 'whitelist': []} | bad))
 
 
 def blocking(max_ips=2, whitelist=()):
@@ -435,7 +435,7 @@ class PmTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
             snell = Controller(root / 'snell', Probe())
-            pm = Controller(root / 'pm', FakeDriver(), 'pm')
+            pm = Controller(root / 'pm', FakeDriver())
             snell_state = {'installed': True, 'resources': []}
             pm_state = {'installed': True, 'resources': []}
             write(snell.state, snell_state)

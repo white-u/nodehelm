@@ -1,9 +1,11 @@
-"""Serialized state machine; backend restarts never imply replay of an operation."""
+"""Serialized state machine; backend restarts never imply replay of an operation.
+Module-agnostic: what differs between modules comes from the driver and from
+the module's declared ACTIONS, looked up in `modules.py`."""
 import fcntl
 import hashlib
 import hmac
 import secrets
-from model import CORE_ACTIONS, Rejected, canonical, request, revision
+from protocol import CORE_ACTIONS, Rejected, canonical, revision
 from storage import private_directory, read, write, remove
 
 
@@ -42,6 +44,8 @@ class Controller:
             self.driver.refresh(read(self.state, {'installed': False, 'resources': []}))
 
     def execute(self, raw, *, local=False):
+        # Imported here: the registry imports every module, and each module this file.
+        from modules import MODULES, request
         req = request(raw)
         if req.get('module', 'snell') != self.module:
             raise Rejected('模块与本地执行器不匹配')
@@ -83,7 +87,7 @@ class Controller:
                 if not before['installed']:
                     raise Rejected('请先安装所选模块核心')
                 if action == 'core_uninstall':
-                    if self.module != 'pm':
+                    if 'core_uninstall' not in MODULES[self.module].ACTIONS:
                         raise Rejected('此模块不支持核心卸载', 'core_version')
                     if before['resources']:
                         raise Rejected('请先删除所有受管 PM 规则', 'core_in_use')
@@ -100,11 +104,7 @@ class Controller:
                 if action in ('apply', 'delete'):
                     after['resources'] = [r for r in after['resources'] if r['port'] != payload['port']]
                 if action == 'apply':
-                    item = dict(payload)
-                    if self.module == 'snell':
-                        item['psk'] = item['psk'] or (existing['psk'] if existing else secrets.token_urlsafe(24))
-                    else:
-                        item = self.driver.complete(item, existing)
+                    item = self.driver.complete(dict(payload), existing)
                     if len(after['resources']) >= 64:
                         raise Rejected('每台 VPS 最多支持 64 个实例')
                     after['resources'].append(item)
@@ -195,7 +195,7 @@ class Controller:
                 try:
                     if journal.get('backup', {}).get('kind') == 'core':
                         self.driver.verify_core(journal['after'], journal['backup'])
-                    elif self.module == 'pm':
+                    elif hasattr(self.driver, 'recover_committed'):
                         self.driver.recover_committed(journal['after'])
                     else:
                         # Resource backups already record the affected port, including in older journals.

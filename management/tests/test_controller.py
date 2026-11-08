@@ -4,7 +4,8 @@ import tempfile
 import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from controller import Controller
-from model import Rejected, resource
+from protocol import Rejected
+from snell import Driver as SnellDriver, resource
 from storage import read, write
 
 class Driver:
@@ -12,6 +13,7 @@ class Driver:
         self.calls = 0
         self.fail = False
         self.restore_fail = False
+    complete = SnellDriver.complete
     def runtime(self, state): return {}
     def consistent(self, state): return True
     def prepare(self, *args): return {'original': True}

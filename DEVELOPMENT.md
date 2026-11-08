@@ -87,7 +87,7 @@ scripts/e2e.sh target/debug/monitor-hub agent/target/release/monitor-agent
 
 - **实例模板**：直接修改 `config()`／`service()`（PM 为 `unit_files()`）。组件升级时按已确认状态重写变化的文件，并只重启变化且运行中的实例，无需写迁移。新增字段用 `.get(键, 默认值)` 读取，已确认状态里不会有它。
 - **状态结构**：只有重命名、拆分字段这类 `.get` 解决不了的改动才需要迁移代码。
-- **协议**：请求或快照的形状变化时，同步增加 `src/management/mod.rs` 与 `management/model.py` 的 `PROTOCOL`。不增加就要保证新旧两侧都能读懂对方。
+- **协议**：请求或快照的形状变化时，同步增加 `src/management/mod.rs` 与 `management/protocol.py` 的 `PROTOCOL`。不增加就要保证新旧两侧都能读懂对方。
 - **组件文件**：新增文件时加入 Hub 的 `include_str!` 清单，安装器按后台发布的清单工作，无需改动；`test_transport.py` 校验清单与 `management/` 一致。
 - **操作校验**：Hub 与组件分别校验操作内容，修改校验时在 `management/tests/operations.json` 补样例，两侧测试都会读取。
 

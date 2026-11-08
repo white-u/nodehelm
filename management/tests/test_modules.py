@@ -7,10 +7,14 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-from model import Rejected, request
+from modules import request
+from protocol import Rejected
 from controller import Controller
-from services import Driver
-from snell import Driver as SnellDriver, atomic
+import fw
+import sb
+from core_driver import CoreDriver
+from snell import Driver as SnellDriver
+from core_driver import atomic
 from test_controller import Driver as FakeDriver
 
 class TemplateRefreshTests(unittest.TestCase):
@@ -32,7 +36,7 @@ class TemplateRefreshTests(unittest.TestCase):
             driver.running = lambda port: port == 1
             driver.verify = Mock()
             state = {'installed': True, 'resources': [{'port': 1}, {'port': 2}, {'port': 3}]}
-            with patch('snell.command') as command:
+            with patch('core_driver.command') as command:
                 driver.refresh(state)
                 self.assertEqual((driver.configs / '3.conf').read_text(), 'new 3\n')
                 self.assertEqual([call.args for call in command.call_args_list],
@@ -47,7 +51,7 @@ class TemplateRefreshTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             driver = self.driver(pathlib.Path(directory), {1: 'new 1\n'})
             driver.check_config = Mock(side_effect=Rejected('invalid'))
-            with patch('snell.command') as command, self.assertRaises(Rejected):
+            with patch('core_driver.command') as command, self.assertRaises(Rejected):
                 driver.refresh({'installed': True, 'resources': [{'port': 1}]})
             command.assert_not_called()
             self.assertEqual((driver.configs / '1.conf').read_text(), 'old 1\n')
@@ -87,21 +91,21 @@ class ModuleTests(unittest.TestCase):
             with self.assertRaises(Rejected):request({**base,'payload':{**base['payload'],**change}})
         with self.assertRaises(Rejected):request({**base,'module':'pm'})
     def test_ss2022_generates_and_preserves_keys(self):
-        d=Driver('sb'); item={'protocol':'ss2022','psk':'','port':12345}
+        d=sb.Driver(); item={'protocol':'ss2022','psk':'','port':12345}
         first=d.complete(dict(item),None)
         self.assertEqual(len(base64.b64decode(first['psk'])),16)
         self.assertEqual(d.complete(dict(item),first)['psk'],first['psk'])
         with self.assertRaises(Rejected):d.complete({'protocol':'reality'},first)
     def test_configs_do_not_enable_remote_management_or_change_system_routing(self):
-        d=Driver('sb')
+        d=sb.Driver()
         text=d.config({'protocol':'ss2022','port':12345,'psk':base64.b64encode(b'a'*16).decode()})
         cfg=json.loads(text)
         self.assertEqual(cfg['inbounds'][0]['listen_port'],12345)
         self.assertEqual(cfg['route']['rules'],[{'ip_is_private':True,'action':'reject'}])
         self.assertNotIn('experimental',cfg)
-        fw=Driver('fw').config({'port':12345,'target_host':'192.0.2.1','target_port':23456})
-        self.assertIn('use_udp = true',fw)
-        self.assertIn('remote = "192.0.2.1:23456"',fw)
+        fw_config=fw.Driver().config({'port':12345,'target_host':'192.0.2.1','target_port':23456})
+        self.assertIn('use_udp = true',fw_config)
+        self.assertIn('remote = "192.0.2.1:23456"',fw_config)
     def test_module_identity_cannot_reuse_another_controllers_journal(self):
         with tempfile.TemporaryDirectory() as root:
             c=Controller(root,FakeDriver(),'fw')
@@ -109,10 +113,10 @@ class ModuleTests(unittest.TestCase):
             with self.assertRaises(Rejected):c.execute(req)
             self.assertEqual(c.execute({**req,'module':'fw'})['status'],'succeeded')
     def test_fw_rejects_all_same_port_loopback_targets(self):
-        d = Driver('fw')
+        d = fw.Driver()
         item = {'port': 12345, 'target_port': 12345, 'target_host': '127.0.0.2'}
         before, after = {'resources': []}, {'resources': [item]}
-        with patch.object(SnellDriver, 'prepare', return_value={}), patch('services.command') as command:
+        with patch.object(CoreDriver, 'prepare', return_value={}), patch('fw.command') as command:
             with self.assertRaises(Rejected) as failure:
                 d.prepare('apply', before, after, item)
             self.assertEqual(failure.exception.code, 'target_loop')
@@ -122,9 +126,9 @@ class ModuleTests(unittest.TestCase):
 
     def test_reality_dns_failure_is_actionable(self):
         import socket
-        with patch('services.socket.getaddrinfo', side_effect=socket.gaierror('sensitive text')):
+        with patch('sb.socket.getaddrinfo', side_effect=socket.gaierror('sensitive text')):
             with self.assertRaises(Rejected) as failure:
-                Driver.check_reality('bad.example')
+                sb.Driver.check_reality('bad.example')
             self.assertEqual(failure.exception.code, 'target_dns')
             self.assertNotIn('sensitive text', str(failure.exception))
 
@@ -149,7 +153,7 @@ class ModuleTests(unittest.TestCase):
                 atomic(unit, d.service(item['port']).encode())
             d.unit_metadata = Mock(side_effect=metadata)
             d.running = Mock(side_effect=lambda port: port == active)
-            with patch('snell.socket.create_connection') as connect, patch('snell.time.sleep'):
+            with patch('core_driver.socket.create_connection') as connect, patch('core_driver.time.sleep'):
                 d.verify(state, {'port': active})
                 d.running.assert_called_once_with(active)
                 connect.assert_called_once_with(('127.0.0.1', active), timeout=2)
@@ -171,7 +175,7 @@ class ModuleTests(unittest.TestCase):
                     d.verify(state, {'port': active})
 
     def test_reality_does_not_probe_private_targets(self):
-        with patch('services.socket.getaddrinfo',return_value=[(2,1,6,'',('127.0.0.1',443))]):
-            with self.assertRaises(Rejected):Driver.check_reality('target.example')
+        with patch('sb.socket.getaddrinfo',return_value=[(2,1,6,'',('127.0.0.1',443))]):
+            with self.assertRaises(Rejected):sb.Driver.check_reality('target.example')
 
 if __name__=='__main__':unittest.main()

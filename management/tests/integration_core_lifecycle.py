@@ -19,11 +19,14 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import pm
-from agent import PMController, execute_module_task
+from agent import execute_module_task
+from pm import PMController
 from controller import Controller
-from model import Rejected
-from services import Driver
-from snell import Driver as SnellDriver, atomic, command
+from protocol import Rejected
+import fw
+import sb
+from core_driver import atomic, command
+from snell import Driver as SnellDriver
 from storage import private_directory, read, write
 
 
@@ -63,7 +66,7 @@ def maintain_pm(root, pid, netns):
 def build(root, module):
     state = private_directory(root / 'state' / module)
     configs = private_directory(state / 'configs')
-    driver = SnellDriver() if module == 'snell' else Driver(module, state.parent, root)
+    driver = SnellDriver() if module == 'snell' else {'sb': sb, 'fw': fw}[module].Driver(state.parent, root)
     if module == 'snell':
         driver.binary = root / 'snell-server'
         driver.configs = configs

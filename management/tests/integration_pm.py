@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from controller import Controller
-from model import Rejected, revision
+from protocol import Rejected, revision
 import pm
 from pm import Driver, TABLE, entries, nft, plan
 from storage import read, write

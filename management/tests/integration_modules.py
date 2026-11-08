@@ -15,9 +15,11 @@ import time
 import uuid
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]))
 from controller import Controller
-from model import Rejected
-from services import Driver
-from snell import Driver as SnellDriver, command
+from protocol import Rejected
+import fw
+import sb
+from core_driver import command
+from snell import Driver as SnellDriver
 from storage import private_directory
 
 
@@ -62,7 +64,7 @@ def main():
     drivers=[]; resources=[]; processes=[]; sockets=[]; failures=[]
     def build(module):
         directory=private_directory(state/module);private_directory(directory/'configs')
-        driver=SnellDriver() if module=='snell' else Driver(module,state,root)
+        driver=SnellDriver() if module=='snell' else {'sb': sb, 'fw': fw}[module].Driver(state,root)
         if module=='snell':driver.binary=root/'snell-server';driver.configs=directory/'configs'
         driver.unit=lambda port,m=module:f'node-manager-acceptance-{tag}-{m}-{port}.service'
         drivers.append(driver)

@@ -3,7 +3,7 @@ import json
 import os
 import pathlib
 import tempfile
-from model import canonical
+from protocol import canonical
 
 
 def private_directory(path):
