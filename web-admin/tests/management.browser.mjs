@@ -52,7 +52,7 @@ try {
   assert(!await page.getByTestId('node-detail').isVisible(),'closing enrollment must not reveal Snell for an unbound node')
   const enrollment=await api(`/api/management/${id}/enrollment`,{})
   const credential='c'.repeat(64)
-  await api('/api/management-agent/v1/enroll',{node:id,enrollment:enrollment.enrollment,credential})
+  await api('/api/management-agent/v1/enroll',{node:id,enrollment:enrollment.enrollment,credential,boot_id:''})
   const empty={installed:true,resources:[],revision:'a'.repeat(64),blocked:false,runtime:{},core:{version:'6.0.0',sha256:'a'.repeat(64),previous_version:'5.0.0',candidates:['6.1.0']}}
   const snapshot={...empty,modules:{sb:{...empty},fw:{...empty},pm:{...empty,core:{candidates:[]}}}}
   async function poll(result=null) {
@@ -262,7 +262,7 @@ try {
   await poll({id:task.request.id,status:'rolled_back',message:'private binary path',code:'core_runtime'});await refresh()
   await instances.getByRole('alert').filter({hasText:/核心或业务实例健康检查失败/}).waitFor();assert.equal(await page.getByText(/private binary path/).count(),0)
   const second=await api('/api/nodes',{name:'东京服务节点',public:false}),enrollment2=await api(`/api/management/${second.id}/enrollment`,{}),credential2='d'.repeat(64)
-  await api('/api/management-agent/v1/enroll',{node:second.id,enrollment:enrollment2.enrollment,credential:credential2})
+  await api('/api/management-agent/v1/enroll',{node:second.id,enrollment:enrollment2.enrollment,credential:credential2,boot_id:''})
   const secondPoll=await context.request.post(base+'/api/management-agent/v1/poll',{data:{snapshot,result:null},headers:{Authorization:'Bearer '+credential2,'X-Node-Manager-Protocol':'1'}});assert(secondPoll.ok())
   await page.reload();await instances.getByTestId('instance-12345').waitFor();await page.getByTestId(`node-manage-${second.id}`).click()
   assert.equal(await detail.getAttribute('data-node-id'),String(id));assert.equal(await nodePanel.getByTestId('node-maintenance').getAttribute('data-node-id'),String(second.id))

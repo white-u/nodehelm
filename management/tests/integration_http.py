@@ -88,7 +88,7 @@ def main():
                 call('/api/management',{'enabled':True})
                 _,enrollment=call(f'/api/management/{node}/enrollment',{},'POST')
                 credential='c'*64
-                registration={'node':node,'enrollment':enrollment['enrollment'],'credential':credential}
+                registration={'node':node,'enrollment':enrollment['enrollment'],'credential':credential,'boot_id':''}
                 call('/api/management-agent/v1/enroll',registration,credential=credential,anonymous=True)
                 snapshot={'installed':False,'resources':[],'revision':'b'*64,'blocked':False}
                 call('/api/management-agent/v1/poll',{'snapshot':snapshot,'result':None},credential=credential,anonymous=True)

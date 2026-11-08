@@ -603,6 +603,35 @@ def change(binding, before, after, incoming):
     print(f'管理组件已完成切换并在后台轮询成功，回退备份编号 {record["id"]}')
 
 
+def boot_id():
+    """This machine's kernel boot id, which the hub compares with the one its
+    monitor agent reports, so a command run on the wrong machine binds nothing."""
+    try:
+        return pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    except OSError:
+        return ''
+
+
+def printable(text, limit=300):
+    return ''.join(c for c in text if c.isprintable())[:limit]
+
+
+def enrollment_refused(error, fresh):
+    """The hub's own refusal (400) is shown as it wrote it. The pending identity
+    goes only if this run created it: an earlier one may already be accepted,
+    its reply lost, and only it can still finish that registration."""
+    with error:
+        if error.code != 400:
+            return ValueError(f'登记请求失败（HTTP {error.code}）；请检查后台地址、反向代理或 CDN 设置后用原命令重试')
+        try:
+            text = printable(error.read(4096).decode('utf-8', 'replace'))
+        except OSError:
+            text = ''
+    if fresh:
+        remove(ROOT / 'enrollment.json')
+    return ValueError(f'后台拒绝登记：{text or "原因未知"}')
+
+
 def install(args):
     ensure_no_journal()
     server = base_url(args.server)
@@ -637,9 +666,15 @@ def install(args):
         binding = ({**pending, 'enrollment': enrollment} if pending else
                    {'server': server, 'node': args.node, 'credential': secrets.token_hex(32), 'enrollment': enrollment})
         write_json(ROOT / 'enrollment.json', binding)
-        request(server, '/api/management-agent/v1/enroll',
-                {key: binding[key] for key in ('node', 'enrollment', 'credential')}, binding['credential'])
+        try:
+            reply = json.loads(request(server, '/api/management-agent/v1/enroll',
+                                       {**{key: binding[key] for key in ('node', 'enrollment', 'credential')},
+                                        'boot_id': boot_id()}, binding['credential']))
+        except urllib.error.HTTPError as error:
+            raise enrollment_refused(error, fresh=pending is None) from None
         write_json(ROOT / 'binding.json', {key: binding[key] for key in ('server', 'node', 'credential')})
+        if isinstance(reply.get('name'), str) and reply['name']:
+            print(f'已接入为节点「{printable(reply["name"])}」（编号 {binding["node"]}）')
     remove(ROOT / 'enrollment.json')
     write_file(UNITS / SERVICE, SERVICE_UNIT.encode(), 0o644)
     ctl('daemon-reload')

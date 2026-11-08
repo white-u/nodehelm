@@ -317,22 +317,42 @@ pub struct Enrollment {
     node: i64,
     enrollment: String,
     credential: String,
+    /// The kernel boot id of the machine running the command.
+    boot_id: String,
+}
+/// The kernel boot id the node's monitor agent reports now, if it is connected.
+/// The agent sends it as `<boot id>/<interface digest>`. A disconnected agent's
+/// last report is not used: the machine may since have been reinstalled.
+fn live_boot_id(app: &crate::App, node: i64) -> Option<String> {
+    let agents = app.agents.read().unwrap_or_else(|e| e.into_inner());
+    let reported = agents.get(&node)?.metrics["boot_id"].as_str()?;
+    Some(reported.split('/').next()?.to_owned()).filter(|id| !id.is_empty())
 }
 pub async fn enroll(State(app): State<Shared>, Json(input): Json<Enrollment>) -> Response {
     response((|| {
         enabled(&app.db)?;
-        if !valid_hex(&input.credential, 64) || input.enrollment.len() > 128 {
+        if !valid_hex(&input.credential, 64) || input.enrollment.len() > 128 || input.boot_id.len() > 64 {
             refuse!("登记凭据格式错误");
         }
         let c = app.db.conn();
         lifecycle::guard(&c, input.node)?;
+        let name: String = c
+            .query_row("SELECT name FROM node WHERE id=?1", [input.node], |r| r.get(0))
+            .optional()?
+            .unwrap_or_default();
+        // A command copied to the wrong machine: refused before anything binds.
+        // An anti-mistake check, not a security control; skipped while the node's
+        // monitor agent is not connected.
+        if live_boot_id(&app, input.node).is_some_and(|id| id != input.boot_id.trim()) {
+            refuse!("此命令属于节点「{name}」，但本机不是该节点监控 Agent 所在的机器。请到本机对应的节点复制命令，或在「{name}」上执行");
+        }
         let code = sha256(&input.enrollment);
         let cred = sha256(&input.credential);
         let changed=c.execute("UPDATE managed_node SET credential=?1 WHERE node=?2 AND enrollment=?3 AND ((credential='' AND expires>?4) OR credential=?1)",params![cred,input.node,code,now()])?;
         if changed != 1 {
             refuse!("登记已过期、已使用或节点不存在，请重新生成安装命令");
         }
-        Ok(json!({"bound":true,"node":input.node}))
+        Ok(json!({"bound":true,"node":input.node,"name":name}))
     })())
 }
 pub async fn unbind(_: Admin, State(app): State<Shared>, Path(node): Path<i64>) -> Response {
@@ -1495,6 +1515,7 @@ mod lifecycle_tests {
                     node: self.node,
                     enrollment: v["enrollment"].as_str().unwrap().into(),
                     credential: credential.clone(),
+                    boot_id: String::new(),
                 })
             };
             assert_eq!(enroll(self.state(), input()).await.status(), StatusCode::OK);
@@ -1507,10 +1528,50 @@ mod lifecycle_tests {
                 node: self.node,
                 enrollment: v["enrollment"].as_str().unwrap().into(),
                 credential: "e".repeat(64),
+                boot_id: String::new(),
             });
             assert_eq!(enroll(self.state(), stolen).await.status(), StatusCode::BAD_REQUEST);
             credential
         }
+    }
+    #[tokio::test]
+    async fn enrollment_is_refused_on_a_machine_other_than_the_monitored_one() {
+        let f = Fixture::new();
+        body(configure(Admin, f.state(), Json(Setting { enabled: true })).await).await;
+        let code = body(enrollment(Admin, f.state(), Path(f.node)).await).await["enrollment"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let here = "11111111-2222-3333-4444-555555555555";
+        let input = |boot: &str| {
+            Json(Enrollment {
+                node: f.node,
+                enrollment: code.clone(),
+                credential: "c".repeat(64),
+                boot_id: boot.into(),
+            })
+        };
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let mut agent = crate::agent_ws::Agent::new(1, tx);
+        agent.metrics = json!({"boot_id": format!("{here}/00000000000000ff")});
+        f.app.agents.write().unwrap().insert(f.node, agent);
+        // Same hostname or not, another machine has another boot id.
+        let refused = enroll(f.state(), input("99999999-2222-3333-4444-555555555555")).await;
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+        let text = String::from_utf8(to_bytes(refused.into_body(), 4096).await.unwrap().to_vec()).unwrap();
+        assert!(text.contains("此命令属于节点「test」"), "{text}");
+        let bound: String = f
+            .app
+            .db
+            .conn()
+            .query_row("SELECT credential FROM managed_node WHERE node=?1", [f.node], |r| r.get(0))
+            .unwrap();
+        assert!(bound.is_empty(), "nothing binds on a refusal");
+        let accepted = body(enroll(f.state(), input(&format!("{here}\n"))).await).await;
+        assert_eq!(accepted["name"], "test");
+        // A disconnected agent's last report is not evidence: the check is skipped.
+        f.app.agents.write().unwrap().remove(&f.node);
+        assert_eq!(enroll(f.state(), input("another-machine")).await.status(), StatusCode::OK);
     }
     #[tokio::test]
     async fn enrollment_retries_after_expiry_only_for_the_accepted_identity() {
@@ -1520,7 +1581,12 @@ mod lifecycle_tests {
         let code = registration["enrollment"].as_str().unwrap();
         let credential = "c".repeat(64);
         let input = |code: &str, credential: &str| {
-            Json(Enrollment { node: f.node, enrollment: code.into(), credential: credential.into() })
+            Json(Enrollment {
+                node: f.node,
+                enrollment: code.into(),
+                credential: credential.into(),
+                boot_id: String::new(),
+            })
         };
         // A never-accepted registration still expires normally.
         f.app.db.conn().execute("UPDATE managed_node SET expires=0 WHERE node=?1", [f.node]).unwrap();
