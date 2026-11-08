@@ -9,7 +9,7 @@
 | 文件 | 职责 |
 | --- | --- |
 | [agent.py](agent.py) | 轮询、快照组合、模块任务分派、回执确认、本地状态／恢复／解绑入口 |
-| [install.py](install.py) | 安装登记、首次上报确认、组件升级回退、恢复和组件移除 |
+| [install.py](install.py) | 安装登记（上报本机 boot ID 供后台核对机器）、首次上报确认、组件升级回退、恢复和组件移除 |
 | [controller.py](controller.py) | 模块事务、版本比对、去重回执、提交和失败恢复 |
 | [lifecycle.py](lifecycle.py) | 持久卸载计划、步骤推进、模块回执确认和独立清理执行器 |
 | [model.py](model.py) | 普通请求、Snell 字段、配置版本摘要和错误模型 |
@@ -38,7 +38,7 @@
 - 普通操作：`agent.py` → `Controller.execute` → 业务驱动；恢复通过 `Controller.recover`。
 - 模块卸载：`Lifecycle` 生成关联 PM 规则、实例、核心的顺序计划，每步复用 Controller。
 - 全部卸载：模块清理后，`node-manager-cleanup.service` 使用独立材料完成组件清理与收尾确认。
-- 安装登记：`install.py` 持久待登记身份，完成绑定后，由 Agent 的本次首次上报确认安装结果。
+- 安装登记：后台的 `enroll.sh` 校验并运行 `install.py`；`install.py` 持久待登记身份，完成绑定后，由 Agent 的本次首次上报确认安装结果。后台明确拒绝时显示其原因，并清除本次新建的待登记身份。
 
 默认程序目录为 `/opt/node-manager`，状态目录为 `/var/lib/node-manager`；SB／FW／PM 的状态在各自子目录，Snell 位于状态根目录。`management/install.py` 的 `FILES` 定义组件文件集；后台 [management/mod.rs](../src/management/mod.rs) 的 `files` 处理分发。
 

@@ -14,7 +14,7 @@
 | [agent_ws.rs](agent_ws.rs) | 外部监控 Agent 的 WebSocket／JSON-RPC、连接和读数处理 |
 | [db.rs](db.rs) | SQLite 初始化、迁移、节点与历史数据、流量累计及备份恢复 |
 | [traffic_period.rs](traffic_period.rs) | 四时段归类、扩展表、历史读取与裁剪 |
-| [management/mod.rs](management/mod.rs) | 管理开关、登记绑定、快照、普通任务、回执、配置展示和组件文件分发 |
+| [management/mod.rs](management/mod.rs) | 管理开关、登记绑定（核对执行机器与监控 Agent 的 boot ID）、快照、普通任务、回执、配置展示、组件文件分发及生成的一行接入脚本 `enroll.sh` |
 | [management/lifecycle.rs](management/lifecycle.rs) | 节点模块／全部卸载任务、进度、继续操作及最终确认 |
 | [management/models.rs](management/models.rs) | 模块字段、核心元数据、业务快照模型、SB 分享链接及 sing-box 客户端配置生成 |
 | [management/traffic.rs](management/traffic.rs) | 受管 PM 端口的小时流量：由相邻两次上报算出增量，保留 7 天，删除规则时清除 |

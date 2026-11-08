@@ -13,9 +13,9 @@
 | 节点控件与安装 | [nodes/NodeControls.tsx](src/features/nodes/NodeControls.tsx)：地址、筛选与节点选择；[AgentInstall.tsx](src/features/nodes/AgentInstall.tsx)：监控 Agent 安装、注册及命令辅助 |
 | 延迟探测 | [monitoring/Ping.tsx](src/features/monitoring/Ping.tsx)：探测列表、表单、节点关联与视图切换 |
 | 服务总览 | [services/Management.tsx](src/features/services/Management.tsx)：节点卡片、状态读取、选择和结果确认调度 |
-| 服务配置与维护 | [services/ServiceDetail.tsx](src/features/services/ServiceDetail.tsx)：模块配置、Snell／SB／FW 页内表单、配置文本、独立节点管理及顶部核心维护和操作记录 |
+| 服务配置与维护 | [services/ServiceDetail.tsx](src/features/services/ServiceDetail.tsx)：模块配置、Snell／SB／FW 页内表单、配置文本、独立节点管理（生成一行接入命令）及顶部核心维护和操作记录 |
 | 服务页交互 | [services/ServiceInteractions.tsx](src/features/services/ServiceInteractions.tsx)：页内展开区、异步操作确认、放弃草稿和节点名称确认 |
-| PM 与管理模型 | [services/PortPolicies.tsx](src/features/services/PortPolicies.tsx)：端口策略；[model.ts](src/features/services/model.ts)：类型、固定文案和数据辅助 |
+| PM 与管理模型 | [services/PortPolicies.tsx](src/features/services/PortPolicies.tsx)：端口策略、配额进度与近 7 天用量图，新增在按钮下方、编辑在规则卡片内展开（与其他模块一致）；[model.ts](src/features/services/model.ts)：类型、固定文案和数据辅助 |
 | 常规设置 | [settings/GeneralSettings.tsx](src/features/settings/GeneralSettings.tsx)：站点设置、图标及共享设置状态逻辑 |
 | 通知与主题 | [settings/Notifications.tsx](src/features/settings/Notifications.tsx)：通知配置与离线策略；[Themes.tsx](src/features/settings/Themes.tsx)：主题安装、选择和配置 |
 | 系统维护 | [settings/Maintenance.tsx](src/features/settings/Maintenance.tsx)：会话、安全、数据库及版本更新页面 |
