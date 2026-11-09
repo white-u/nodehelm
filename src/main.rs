@@ -29,6 +29,7 @@ mod api;
 mod auth;
 mod db;
 mod frontend;
+mod latency;
 mod management;
 mod notify;
 mod traffic_period;

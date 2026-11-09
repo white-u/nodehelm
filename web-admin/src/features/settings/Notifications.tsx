@@ -68,20 +68,26 @@ function ChannelCard({ title, configured, children }: { title: string; configure
   )
 }
 
-// Offline alerts are opt-in per node, so turning them on for a fleet needs one
-// place rather than one dialog per node. Ticks are a draft until 保存, like every
-// other form in the panel: a request per click would make each tick wait on a
-// round trip and a refresh before showing.
-function OfflineNodes({ nodes, refresh }: { nodes: Node[]; refresh: () => void }) {
+// Offline and latency alerts are opt-in per node, so turning them on for a fleet
+// needs one place rather than one dialog per node. Ticks are a draft until 保存,
+// like every other form in the panel: a request per click would make each tick
+// wait on a round trip and a refresh before showing.
+function NodeAlerts({ title, hint, nodes, saved, onSave }: {
+  title: string
+  hint?: string
+  nodes: Node[]
+  saved: Set<number>
+  onSave: (chosen: Node[], turnOn: number[], turnOff: number[]) => Promise<void>
+}) {
   // Only the ticks changed here, by node id. A snapshot of every node's state
   // would send back a node another session switched meanwhile.
   const [draft, setDraft] = useState<Map<number, boolean>>(new Map())
   const [saving, setSaving] = useState(false)
-  const on = (n: Node) => draft.get(n.id) ?? !!n.notify
+  const on = (n: Node) => draft.get(n.id) ?? saved.has(n.id)
   const chosen = new Set(nodes.filter(on).map((n) => n.id))
   // Against the live list, so a node deleted meanwhile is neither counted nor sent.
-  const turnOn = nodes.filter((n) => on(n) && !n.notify).map((n) => n.id)
-  const turnOff = nodes.filter((n) => !on(n) && n.notify).map((n) => n.id)
+  const turnOn = nodes.filter((n) => on(n) && !saved.has(n.id)).map((n) => n.id)
+  const turnOff = nodes.filter((n) => !on(n) && saved.has(n.id)).map((n) => n.id)
   const dirty = turnOn.length + turnOff.length > 0
 
   // Kept after a save until the list reports it, so the ticks do not flash back
@@ -99,14 +105,8 @@ function OfflineNodes({ nodes, refresh }: { nodes: Node[]; refresh: () => void }
   async function save() {
     setSaving(true)
     try {
-      for (const [ids, on] of [[turnOn, true], [turnOff, false]] as const) {
-        if (ids.length) await api("/nodes/batch", { method: "PUT", body: JSON.stringify({ ids, patch: { notify: on } }) })
-      }
-      toast.success("离线通知已保存")
-    } catch (e) {
-      toast.error((e as Error).message)
+      await onSave(nodes.filter(on), turnOn, turnOff)
     } finally {
-      refresh()
       setSaving(false)
     }
   }
@@ -115,11 +115,12 @@ function OfflineNodes({ nodes, refresh }: { nodes: Node[]; refresh: () => void }
   return (
     <Card className="gap-4 p-5">
       <div>
-        <h3 className="text-sm font-medium">离线通知</h3>
+        <h3 className="text-sm font-medium">{title}</h3>
         <p className="mt-1 text-xs text-muted-foreground">
-          按节点打开，默认关。已打开 {nodes.filter((n) => n.notify).length} / {nodes.length} 台
+          按节点打开，默认关。已打开 {nodes.filter((n) => saved.has(n.id)).length} / {nodes.length} 台
           {pending.length > 0 && <span className="text-foreground">，待保存：{pending.join("、")}</span>}
         </p>
+        {hint && <p className="mt-1 text-xs text-muted-foreground">{hint}</p>}
       </div>
       <NodePicker nodes={nodes} chosen={chosen} onPick={pick} disabled={saving} />
       <div className="flex justify-end gap-2">
@@ -160,7 +161,7 @@ export function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void 
           <div className="min-w-0 flex-1">
             <h3 className="text-sm font-medium">通知渠道</h3>
             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-              Telegram 和 Webhook 配了哪个就发哪个，也可以同时用。离线通知在下方按节点打开；流量和到期提醒对填了额度、到期日的节点生效。
+              Telegram 和 Webhook 配了哪个就发哪个，也可以同时用。离线和延迟通知在下方按节点打开；流量和到期提醒对填了额度、到期日的节点生效。
             </p>
           </div>
           <Button size="sm" variant="secondary" disabled={testing} onClick={test}>
@@ -252,7 +253,30 @@ export function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void 
         </div>
       </ChannelCard>
 
-      <OfflineNodes nodes={nodes} refresh={refresh} />
+      <NodeAlerts
+        title="离线通知"
+        nodes={nodes}
+        saved={new Set(nodes.filter((n) => n.notify).map((n) => n.id))}
+        onSave={async (_, turnOn, turnOff) => {
+          try {
+            for (const [ids, on] of [[turnOn, true], [turnOff, false]] as const) {
+              if (ids.length) await api("/nodes/batch", { method: "PUT", body: JSON.stringify({ ids, patch: { notify: on } }) })
+            }
+            toast.success("离线通知已保存")
+          } catch (e) {
+            toast.error((e as Error).message)
+          } finally {
+            refresh()
+          }
+        }}
+      />
+      <NodeAlerts
+        title="延迟通知"
+        hint="延迟探测连续 5 分钟明显高于平时，或丢包过半时提醒；只看间隔不超过 5 分钟的探测"
+        nodes={nodes}
+        saved={new Set(text("notify_latency_nodes").split(",").filter(Boolean).map(Number))}
+        onSave={async (chosen) => { await save({ notify_latency_nodes: chosen.map((n) => n.id).join(",") }, "延迟通知已保存") }}
+      />
 
       <Card className="gap-4 p-5">
         <h3 className="text-sm font-medium">事件</h3>

@@ -21,6 +21,7 @@
 | [management/models.rs](management/models.rs) | SB／FW／PM 字段校验（每个模块一个函数）、核心元数据、业务快照模型、SB 分享链接及 sing-box 客户端配置生成 |
 | [management/pm.rs](management/pm.rs) | 后台的 PM 逻辑：受管端口小时流量（由相邻两次上报算出增量，保留 7 天，删除规则时清除），以及上报引起的到期、配额阈值和 IP 告警事件 |
 | [notify.rs](notify.rs) | 通知模板、队列及 Telegram／Webhook 发送 |
+| [latency.rs](latency.rs) | 延迟通知：按所选节点的探测对比自身基线（近 7 天中位数与同时段取高），持续高延迟或丢包过半时提醒并配对恢复 |
 | [frontend.rs](frontend.rs) | 管理静态资源、公开主题、主题包与图标 |
 | [testdata/](testdata/) | 旧数据库 schema 和分时流量回归材料 |
 

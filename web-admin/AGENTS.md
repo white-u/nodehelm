@@ -17,7 +17,7 @@
 | 服务页交互 | [services/ServiceInteractions.tsx](src/features/services/ServiceInteractions.tsx)：页内展开区、异步操作确认、放弃草稿和节点名称确认 |
 | PM 与管理模型 | [services/PortPolicies.tsx](src/features/services/PortPolicies.tsx)：端口策略、配额进度与近 7 天用量图，新增在按钮下方、编辑在规则卡片内展开（与其他模块一致）；[model.ts](src/features/services/model.ts)：类型、固定文案和数据辅助 |
 | 常规设置 | [settings/GeneralSettings.tsx](src/features/settings/GeneralSettings.tsx)：站点设置、图标及共享设置状态逻辑 |
-| 通知与主题 | [settings/Notifications.tsx](src/features/settings/Notifications.tsx)：通知配置与离线策略；[Themes.tsx](src/features/settings/Themes.tsx)：主题安装、选择和配置 |
+| 通知与主题 | [settings/Notifications.tsx](src/features/settings/Notifications.tsx)：通知配置、离线与延迟通知的节点选择；[Themes.tsx](src/features/settings/Themes.tsx)：主题安装、选择和配置 |
 | 系统维护 | [settings/Maintenance.tsx](src/features/settings/Maintenance.tsx)：会话、安全、数据库及版本更新页面 |
 | 共享控件 | [shared/controls.tsx](src/features/shared/controls.tsx)：现有多页面共用的表单、选择器、确认弹窗、复制和拖拽控件 |
 

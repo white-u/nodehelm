@@ -114,6 +114,7 @@ pub fn settings(app: &App, out: &mut serde_json::Map<String, Value>) {
     out.insert("notify_login".into(), json!(login));
     let management = if app.db.get("notify_management").as_deref() == Some("off") { "off" } else { "on" };
     out.insert("notify_management".into(), json!(management));
+    out.insert(crate::latency::NODES.into(), json!(app.db.get(crate::latency::NODES).unwrap_or_default()));
     let steps = pm_thresholds(app).iter().map(u64::to_string).collect::<Vec<_>>().join(",");
     out.insert("notify_pm_thresholds".into(), json!(steps));
     out.insert("notify_telegram_chat".into(), json!(app.db.get("notify_telegram_chat").unwrap_or_default()));
@@ -137,6 +138,7 @@ pub fn setting_error(key: &str, value: &str) -> Option<String> {
     let problem = match key {
         "notify_login" => (!matches!(value, "on" | "off")).then_some("登录提醒只能是 on 或 off"),
         "notify_management" => (!matches!(value, "on" | "off")).then_some("服务管理提醒只能是 on 或 off"),
+        crate::latency::NODES => crate::latency::nodes_error(value),
         "notify_pm_thresholds" => {
             thresholds(value).is_none().then_some("PM 流量阈值要填 1 到 100 的整数，逗号分隔，最多 5 个")
         }
@@ -674,6 +676,7 @@ pub struct Watch {
     /// found that and whether it was announced. As with `absent`, this is measured
     /// from the sweep, so a hub restart gives every component the grace period.
     silent: HashMap<i64, (i64, bool)>,
+    latency: crate::latency::Watch,
 }
 
 pub async fn watch(app: Shared) {
@@ -761,6 +764,12 @@ fn sweep(app: &App, watch: &mut Watch, now: i64) -> Result<Vec<Note>> {
         }
         notes.extend(batch("management", "🟠", "管理组件离线", lost));
         notes.extend(batch("management", "🟢", "管理组件恢复", back));
+    }
+
+    // Before traffic, whose failed read returns early.
+    match crate::latency::check(app, &mut watch.latency, &online, armed, now) {
+        Ok(found) => notes.extend(found),
+        Err(e) => warn!("latency check failed: {e:#}"),
     }
 
     let percent = number(app, "notify_traffic");
@@ -940,6 +949,71 @@ mod tests {
         assert_eq!(note.message.lines().count(), LISTED + 1);
         assert!(note.message.ends_with("……另外 40 台"));
         assert_eq!(note.node.split(", ").count(), 60);
+    }
+
+    #[test]
+    fn latency_is_announced_for_chosen_nodes_once_sustained_and_paired_with_recovery() {
+        let app = app();
+        let now = 100 * 86_400 + 10 * 3_600;
+        let a = node(&app, "a", false, now);
+        let b = node(&app, "b", false, now);
+        connect(&app, a);
+        connect(&app, b);
+        let probe = |target: &str, id| crate::db::PingTask {
+            id,
+            name: "上海".into(),
+            target: target.into(),
+            interval: 60,
+            nodes: vec![a, b],
+            ..Default::default()
+        };
+        let task = app.db.save_ping_task(&probe("sh.example:80", 0)).unwrap();
+        for n in [a, b] {
+            for h in 3..27 {
+                app.db
+                    .conn()
+                    .execute(
+                        "INSERT INTO ping_hour VALUES (?1, ?2, ?3, 60, 0, 40, 38, 45)",
+                        rusqlite::params![n, task, (now / 3_600 - h) * 3_600],
+                    )
+                    .unwrap();
+            }
+        }
+        let minutes = |from: i64, latencies: &[i64]| {
+            let rows: Vec<_> =
+                latencies.iter().enumerate().map(|(i, &l)| (task, from + i as i64 * 60, l)).collect();
+            app.db.insert_pings(a, &rows).unwrap();
+            app.db.insert_pings(b, &rows.iter().map(|&(t, ts, _)| (t, ts, 41)).collect::<Vec<_>>()).unwrap();
+        };
+        let latency = |notes: Vec<Note>| {
+            notes.into_iter().filter(|n| n.event.starts_with("latency")).collect::<Vec<_>>()
+        };
+        let mut watch = Watch::default();
+        with_channel(&app);
+
+        // A burst is not news, and nothing is said for nodes not chosen.
+        minutes(now - 300, &[40, 300, 300, 41, 40]);
+        app.db.set(crate::latency::NODES, &a.to_string()).unwrap();
+        assert!(latency(sweep(&app, &mut watch, now).unwrap()).is_empty(), "two of five high");
+
+        minutes(now - 240, &[300, 300, 300, 300, 310]);
+        assert!(latency(sweep(&app, &mut watch, now + 30).unwrap()).is_empty(), "once a minute");
+        let notes = latency(sweep(&app, &mut watch, now + 60).unwrap());
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].title, "🟠 a 延迟异常");
+        assert_eq!(notes[0].message, "上海：300 ms（平时 40 ms），丢包 0%");
+        // Restarted: the announcement was stored, so it is not repeated.
+        let mut restarted = Watch::default();
+        assert!(latency(sweep(&app, &mut restarted, now + 120).unwrap()).is_empty(), "announced once");
+
+        minutes(now - 60, &[42, 41, 43, 40, 42]);
+        let notes = latency(sweep(&app, &mut restarted, now + 240).unwrap());
+        assert_eq!(notes[0].title, "🟢 a 延迟恢复");
+
+        // A new target starts its history over: the old baseline judges nothing.
+        app.db.save_ping_task(&probe("gz.example:80", task)).unwrap();
+        minutes(now + 240, &[300; 5]);
+        assert!(latency(sweep(&app, &mut restarted, now + 600).unwrap()).is_empty(), "no history yet");
     }
 
     #[test]
