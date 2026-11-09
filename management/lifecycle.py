@@ -478,7 +478,8 @@ def local_uninstall(controllers, execute, snapshot, binding, revocation, stop):
             raise ValueError('后台发起的卸载尚未完成，请在后台继续')
         record = None
     if record and record.get('local') and record['status'] in ACTIVE:
-        job = {'id': record['id'], 'scope': 'all', 'attempt': record['attempt'] + (record['status'] == 'paused')}
+        # Each run is a new attempt: one cut short is recovered, then its step runs anew.
+        job = {'id': record['id'], 'scope': 'all', 'attempt': record['attempt'] + 1}
     else:
         job = {'id': secrets.token_hex(16), 'scope': 'all', 'attempt': 1}
     job['cleanup_token'] = secrets.token_hex(32)

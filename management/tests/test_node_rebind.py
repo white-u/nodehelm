@@ -200,6 +200,18 @@ class LocalUninstallTests(Fixture):
         self.assertEqual(read(self.root / lifecycle.JOB)['status'], 'cleaning')
         self.assertIn(('snell', 'delete', 10086), self.calls)
 
+    def test_a_run_cut_short_mid_step_is_finished_by_one_rerun(self):
+        self.state('snell', [10086])
+        self.state('sb', [20086])
+        self.controllers['sb'].driver.crash = True
+        with self.assertRaises(KeyboardInterrupt):
+            self.uninstall()
+        self.assertTrue(self.controllers['sb'].journal.exists())
+        self.controllers['sb'].driver.crash = False
+        self.uninstall()
+        self.assertEqual(read(self.root / lifecycle.JOB)['status'], 'cleaning')
+        self.assertEqual(self.controllers['sb'].snapshot()['resources'], [])
+
     def test_panel_uninstall_is_finished_in_the_panel_unless_it_was_given_up(self):
         panel = {'id': 'b' * 32, 'scope': 'all', 'attempt': 1, 'status': 'paused', 'stage': 'instances',
                  'index': 0, 'steps': [], 'current': None}

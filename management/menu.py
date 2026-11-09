@@ -84,7 +84,11 @@ def status():
         print(f'监控 Agent: {active("monitor-agent.service")}')
     for journal in ('component-recovery.json', 'lifecycle-job.json'):
         if (ROOT / journal).exists():
-            print(f'待处理记录: {journal}，运行 sudo nodehelm recover 或回到后台继续')
+            try:
+                local = json.loads((ROOT / journal).read_text()).get('local')
+            except (OSError, ValueError, AttributeError):
+                local = False
+            print(f'待处理记录: {journal}，' + ('运行 sudo nodehelm uninstall 继续卸载' if local else '运行 sudo nodehelm recover 或回到后台继续'))
     result = subprocess.run((sys.executable, '-B', str(CODE / 'agent.py'), 'status'),
                             capture_output=True, text=True, env=ENV, check=False)
     try:
