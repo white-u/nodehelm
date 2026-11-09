@@ -9,6 +9,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+import unittest.mock
 import uuid
 import sys
 
@@ -88,8 +89,17 @@ def main():
                 call('/api/management',{'enabled':True})
                 _,enrollment=call(f'/api/management/{node}/enrollment',{},'POST')
                 credential='c'*64
-                registration={'node':node,'enrollment':enrollment['enrollment'],'credential':credential,'boot_id':''}
-                call('/api/management-agent/v1/enroll',registration,credential=credential,anonymous=True)
+                registration={'enrollment':enrollment['enrollment'],'credential':credential,'boot_id':''}
+                _,bound=call('/api/management-agent/v1/enroll',registration,credential=credential,anonymous=True)
+                assert bound['node']==node
+                # The proof a node checks before moving to an address, verified as the node does.
+                sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]))
+                import agent
+                identify=lambda _server,path,payload:json.dumps(call(path,payload,anonymous=True)[1]).encode()
+                with unittest.mock.patch('install.request',identify):
+                    binding={'server':'https://panel.example.com','node':node,'credential':credential}
+                    assert agent.same_hub(binding,'https://panel.example.com')
+                    assert not agent.same_hub(binding,'https://relay.example.com')
                 snapshot={'installed':False,'resources':[],'revision':'b'*64,'blocked':False}
                 call('/api/management-agent/v1/poll',{'snapshot':snapshot,'result':None},credential=credential,anonymous=True)
                 operation={'id':uuid.uuid4().hex,'action':'install','revision':'b'*64,'payload':{}}

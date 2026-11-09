@@ -38,7 +38,6 @@ impl Fixture {
         let credential = "d".repeat(64);
         let input = || {
             Json(Enrollment {
-                node: self.node,
                 enrollment: v["enrollment"].as_str().unwrap().into(),
                 credential: credential.clone(),
                 boot_id: String::new(),
@@ -51,7 +50,6 @@ impl Fixture {
             "registration retries must preserve identity"
         );
         let stolen = Json(Enrollment {
-            node: self.node,
             enrollment: v["enrollment"].as_str().unwrap().into(),
             credential: "e".repeat(64),
             boot_id: String::new(),
@@ -70,12 +68,7 @@ async fn enrollment_is_refused_on_a_machine_other_than_the_monitored_one() {
         .to_owned();
     let here = "11111111-2222-3333-4444-555555555555";
     let input = |boot: &str| {
-        Json(Enrollment {
-            node: f.node,
-            enrollment: code.clone(),
-            credential: "c".repeat(64),
-            boot_id: boot.into(),
-        })
+        Json(Enrollment { enrollment: code.clone(), credential: "c".repeat(64), boot_id: boot.into() })
     };
     let (tx, _rx) = tokio::sync::mpsc::channel(1);
     let mut agent = crate::agent_ws::Agent::new(1, tx);
@@ -100,6 +93,41 @@ async fn enrollment_is_refused_on_a_machine_other_than_the_monitored_one() {
     assert_eq!(enroll(f.state(), input("another-machine")).await.status(), StatusCode::OK);
 }
 #[tokio::test]
+async fn identity_proof_covers_this_hub_and_only_a_bound_node() {
+    let f = Fixture::new();
+    let nonce = "a".repeat(64);
+    let ask = |node: i64, nonce: &str| identify(f.state(), Json(Identify { node, nonce: nonce.into() }));
+    body(configure(Admin, f.state(), Json(Setting { enabled: true })).await).await;
+    let unbound = ask(f.node, &nonce).await;
+    assert_eq!(unbound.headers()["x-node-manager-binding"], "revoked");
+    let credential = f.bind().await;
+    let proof = body(ask(f.node, &nonce).await).await["proof"].as_str().unwrap().to_owned();
+    assert_eq!(proof, identity_proof(&sha256(&credential), f.node, &nonce, "https://PANEL.example.com/"));
+    assert_ne!(proof, identity_proof(&sha256(&credential), f.node, &nonce, "https://relay.example.com"));
+    assert_ne!(proof, identity_proof(&sha256(&"e".repeat(64)), f.node, &nonce, "https://panel.example.com"));
+    assert_eq!(ask(f.node, "short").await.status(), StatusCode::BAD_REQUEST);
+}
+#[tokio::test]
+async fn a_credential_bound_to_one_node_never_binds_another() {
+    let f = Fixture::new();
+    let credential = f.bind().await;
+    let other = f
+        .app
+        .db
+        .create_node(&crate::db::Node { name: "other".into(), ..Default::default() }, "other-token")
+        .unwrap();
+    let code = body(enrollment(Admin, f.state(), Path(other)).await).await["enrollment"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let input = |credential: &str| {
+        Json(Enrollment { enrollment: code.clone(), credential: credential.into(), boot_id: String::new() })
+    };
+    assert_eq!(enroll(f.state(), input(&credential)).await.status(), StatusCode::BAD_REQUEST);
+    let accepted = body(enroll(f.state(), input(&"f".repeat(64))).await).await;
+    assert_eq!(accepted["node"], other, "the code alone names the node");
+}
+#[tokio::test]
 async fn enrollment_retries_after_expiry_only_for_the_accepted_identity() {
     let f = Fixture::new();
     body(configure(Admin, f.state(), Json(Setting { enabled: true })).await).await;
@@ -107,12 +135,7 @@ async fn enrollment_retries_after_expiry_only_for_the_accepted_identity() {
     let code = registration["enrollment"].as_str().unwrap();
     let credential = "c".repeat(64);
     let input = |code: &str, credential: &str| {
-        Json(Enrollment {
-            node: f.node,
-            enrollment: code.into(),
-            credential: credential.into(),
-            boot_id: String::new(),
-        })
+        Json(Enrollment { enrollment: code.into(), credential: credential.into(), boot_id: String::new() })
     };
     // A never-accepted registration still expires normally.
     f.app.db.conn().execute("UPDATE managed_node SET expires=0 WHERE node=?1", [f.node]).unwrap();

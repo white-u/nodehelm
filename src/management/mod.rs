@@ -15,7 +15,7 @@ use axum::{
 };
 use chrono::Utc;
 use ring::{
-    aead,
+    aead, hmac,
     rand::{SecureRandom, SystemRandom},
 };
 use rusqlite::{params, Connection, OptionalExtension};
@@ -437,6 +437,7 @@ pub fn admin_routes() -> Router<Shared> {
 pub fn agent_routes() -> Router<Shared> {
     Router::new()
         .route("/api/management-agent/v1/enroll", post(enroll))
+        .route("/api/management-agent/v1/identify", post(identify))
         .route("/api/management-agent/v1/lifecycle/finish", post(lifecycle::finish))
         .route("/api/management-agent/v1/maintenance", post(maintenance))
 }

@@ -10,10 +10,10 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| [agent.py](agent.py) | 轮询、快照组合、模块任务分派及跨模块端口规则（PM 跟随业务端口）、回执确认、本地状态／恢复／解绑入口 |
+| [agent.py](agent.py) | 轮询、快照组合、模块任务分派及跨模块端口规则（PM 跟随业务端口）、回执确认、本地状态／恢复／解绑／换绑／本机卸载入口 |
 | [install.py](install.py) | 安装登记（上报本机 boot ID 供后台核对机器）、首次上报确认、组件升级回退、恢复和组件移除 |
-| [lifecycle.py](lifecycle.py) | 持久卸载计划、步骤推进、模块回执确认和独立清理执行器 |
-| [menu.py](menu.py) | 节点本机菜单 `sudo nodehelm`：升级、状态、日志与恢复，命令随组件安装和清理 |
+| [lifecycle.py](lifecycle.py) | 持久卸载计划、步骤推进、模块回执确认和独立清理执行器；本机卸载复用同一计划，不向后台上报 |
+| [menu.py](menu.py) | 节点本机菜单 `sudo nodehelm`：升级、状态、日志、换绑、卸载，`recover` 子命令；命令随组件安装和清理 |
 | [modules.py](modules.py) | 模块注册表：模块清单与各模块 `Spec`、请求校验入口、各模块 Controller 与核心驱动；只由入口 `agent.py`、`install.py` 导入 |
 | [controller.py](controller.py) | 与模块无关的事务：版本比对、去重回执、提交和失败恢复；模块差异来自构造时传入的驱动和 `Spec` |
 | [protocol.py](protocol.py) | 协议版本、模块声明 `Spec`、请求外层校验、配置版本摘要、错误模型及多模块共用的字段检查 |
@@ -45,7 +45,7 @@
 - 普通操作：`agent.py` → `Controller.execute` → 业务驱动；恢复通过 `Controller.recover`。
 - 模块卸载：`Lifecycle` 生成关联 PM 规则、实例、核心的顺序计划，每步复用 Controller。
 - 全部卸载：模块清理后，`node-manager-cleanup.service` 使用独立材料完成组件清理与收尾确认。
-- 安装登记：后台的 `enroll.sh` 校验并运行 `install.py`；`install.py` 持久待登记身份，完成绑定后，由 Agent 的本次首次上报确认安装结果。后台明确拒绝时显示其原因，并清除本次新建的待登记身份。
+- 安装登记：后台的 `enroll.sh` 校验并运行 `install.py`，后台凭登记码确定节点；`install.py` 持久待登记身份，完成绑定后，由 Agent 的本次首次上报确认安装结果。后台明确拒绝时显示其原因，并清除本次新建的待登记身份。
 
 默认程序目录为 `/opt/node-manager`，状态目录为 `/var/lib/node-manager`；SB／FW／PM 的状态在各自子目录，Snell 位于状态根目录。组件文件集由后台 [management/enroll.rs](../src/management/enroll.rs) 的 `FILES` 定义并分发，`install.py` 按清单安装、替换和移除。
 

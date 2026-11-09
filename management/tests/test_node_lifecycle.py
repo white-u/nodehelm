@@ -561,7 +561,7 @@ class CleanupWorkerTests(unittest.TestCase):
                 agent.confirm_connection(install.read_json(self.root / 'binding.json'))
             self.assertTrue(predicate())
         with patch.object(install, 'download', return_value=(manifest, self.contents)), patch.object(install, 'wait_for', side_effect=confirm), patch.object(install.sys, 'stdin', io.StringIO(json.dumps({'enrollment': enrollment}))), patch.object(install, 'boot_id', return_value='boot-here'), patch('builtins.print'):
-            yield types.SimpleNamespace(server=self.binding['server'], node=self.binding['node'])
+            yield types.SimpleNamespace(server=self.binding['server'])
 
     def test_install_retries_accepted_enrollment_after_response_or_binding_write_interruption(self):
         install.remove(self.root / lifecycle.JOB)
@@ -579,7 +579,7 @@ class CleanupWorkerTests(unittest.TestCase):
                     accepted.append(payload.copy())
                     if boundary == 'response' and len(accepted) == 1:
                         raise URLError('accepted but response lost')
-                    return b'{"bound":true}'
+                    return b'{"bound":true,"node":1}'
                 write_json = install.write_json
                 def persist(path, value):
                     if boundary == 'binding' and path == self.root / 'binding.json':
@@ -595,25 +595,25 @@ class CleanupWorkerTests(unittest.TestCase):
                     install.install(args)
                 self.assertEqual(accepted, [accepted[0], accepted[0]])
                 token.assert_called_once_with(16)  # New readiness nonce, no new identity.
-                self.assertEqual(install.read_json(self.root / 'binding.json'), {key: pending[key] for key in ('server', 'node', 'credential')})
+                self.assertEqual(install.read_json(self.root / 'binding.json'), {'server': pending['server'], 'node': 1, 'credential': pending['credential']})
                 for name in ('enrollment.json', 'connection-request.json', 'connection-confirmed.json'):
                     self.assertFalse((self.root / name).exists())
 
     def test_install_replaces_unaccepted_expired_code_without_replacing_identity(self):
         install.remove(self.root / lifecycle.JOB)
         install.remove(self.root / 'binding.json')
-        def expired(_server, _path, _payload, _credential):
-            raise HTTPError(self.binding['server'], 409, 'expired code', {}, io.BytesIO())
-        with self.installation_attempt('expired') as args, patch.object(install, 'request', side_effect=expired):
-            with self.assertRaisesRegex(ValueError, 'HTTP 409'):
+        def lost(_server, _path, _payload, _credential):
+            raise HTTPError(self.binding['server'], 502, 'reply lost at the proxy', {}, io.BytesIO())
+        with self.installation_attempt('expired') as args, patch.object(install, 'request', side_effect=lost):
+            with self.assertRaisesRegex(ValueError, 'HTTP 502'):
                 install.install(args)
         pending = install.read_json(self.root / 'enrollment.json')
         def enroll(server, path, payload, credential):
             self.assertEqual(path, '/api/management-agent/v1/enroll')
-            self.assertEqual(payload, {'node': pending['node'], 'credential': pending['credential'], 'enrollment': 'replacement', 'boot_id': 'boot-here'})
+            self.assertEqual(payload, {'credential': pending['credential'], 'enrollment': 'replacement', 'boot_id': 'boot-here'})
             self.assertEqual(credential, pending['credential'])
             self.assertEqual(install.read_json(self.root / 'enrollment.json'), {**pending, 'enrollment': 'replacement'})
-            return b'{"bound":true}'
+            return b'{"bound":true,"node":1}'
         with self.installation_attempt('replacement') as args, patch.object(install, 'request', side_effect=enroll) as request:
             install.install(args)
         request.assert_called_once()
@@ -635,9 +635,9 @@ class CleanupWorkerTests(unittest.TestCase):
         self.assertEqual(install.read_json(self.root / 'enrollment.json'), {**pending, 'enrollment': 'incorrect'})
         self.assertFalse((self.root / 'binding.json').exists())
         self.assertFalse((self.root / 'connection-confirmed.json').exists())
-        with self.installation_attempt('correct') as args, patch.object(install, 'request', return_value=b'{"bound":true}') as request:
+        with self.installation_attempt('correct') as args, patch.object(install, 'request', return_value=b'{"bound":true,"node":1}') as request:
             install.install(args)
-        self.assertEqual(request.call_args.args[2], {'node': pending['node'], 'credential': pending['credential'], 'enrollment': 'correct', 'boot_id': 'boot-here'})
+        self.assertEqual(request.call_args.args[2], {'credential': pending['credential'], 'enrollment': 'correct', 'boot_id': 'boot-here'})
         self.assertEqual(install.read_json(self.root / 'binding.json'), self.binding)
 
     def test_install_shows_the_hubs_refusal_and_a_fresh_attempt_leaves_no_pending_identity(self):
@@ -655,10 +655,22 @@ class CleanupWorkerTests(unittest.TestCase):
         self.assertFalse((self.root / 'enrollment.json').exists(), 'a refused new identity is not kept')
         self.assertFalse((self.root / 'binding.json').exists())
         # The right command then simply runs, and names the node it bound.
-        with self.installation_attempt('right') as args, patch.object(install, 'request', return_value=b'{"bound":true,"name":"\u9999\u6e2f"}'), patch('builtins.print') as shown:
+        with self.installation_attempt('right') as args, patch.object(install, 'request', return_value=b'{"bound":true,"node":1,"name":"\u9999\u6e2f"}'), patch('builtins.print') as shown:
             install.install(args)
-        self.assertIn(f'已接入为节点「香港」（编号 {self.binding["node"]}）', [c.args[0] for c in shown.call_args_list if c.args])
+        self.assertIn('已接入为节点「香港」', [c.args[0] for c in shown.call_args_list if c.args])
         self.assertEqual(install.read_json(self.root / 'binding.json')['node'], self.binding['node'])
+
+    def test_install_answered_by_something_other_than_the_hub_keeps_no_new_identity(self):
+        install.remove(self.root / lifecycle.JOB)
+        install.remove(self.root / 'binding.json')
+        install.remove(self.root / 'enrollment.json')
+        for code in (404, 405, 403):
+            def refuse(server, _path, _payload, _credential):
+                raise HTTPError(server, code, 'not a hub', {}, io.BytesIO())
+            with self.subTest(code=code), self.installation_attempt('code') as args, patch.object(install, 'request', side_effect=refuse):
+                with self.assertRaisesRegex(ValueError, f'HTTP {code}'):
+                    install.install(args)
+                self.assertFalse((self.root / 'enrollment.json').exists())
 
     def test_install_keeps_an_earlier_pending_identity_after_a_refusal(self):
         install.remove(self.root / lifecycle.JOB)
@@ -673,20 +685,44 @@ class CleanupWorkerTests(unittest.TestCase):
         # Its reply may have been lost after the hub accepted it; only it can finish.
         self.assertEqual(install.read_json(self.root / 'enrollment.json')['credential'], pending['credential'])
 
-    def test_install_pending_enrollment_rejects_different_server_or_node(self):
+    def test_install_pending_enrollment_rejects_different_server(self):
         install.remove(self.root / lifecycle.JOB)
         install.remove(self.root / 'binding.json')
         pending = {**self.binding, 'enrollment': 'original'}
         install.write_json(self.root / 'enrollment.json', pending)
         before = (self.root / 'enrollment.json').read_bytes()
-        for target in ({'server': 'https://other.example.com', 'node': self.binding['node']},
-                       {'server': self.binding['server'], 'node': 2}):
-            with self.subTest(target=target), self.installation_attempt('replacement'), patch.object(install, 'request') as request:
-                with self.assertRaisesRegex(ValueError, '其他后台或节点'):
-                    install.install(types.SimpleNamespace(**target))
-                request.assert_not_called()
-                self.assertEqual((self.root / 'enrollment.json').read_bytes(), before)
-                self.assertFalse((self.root / 'binding.json').exists())
+        with self.installation_attempt('replacement'), patch.object(install, 'request') as request:
+            with self.assertRaisesRegex(ValueError, '其他后台的待核实登记'):
+                install.install(types.SimpleNamespace(server='https://other.example.com'))
+            request.assert_not_called()
+        self.assertEqual((self.root / 'enrollment.json').read_bytes(), before)
+        self.assertFalse((self.root / 'binding.json').exists())
+
+    def test_install_refuses_a_different_hub_while_bound(self):
+        install.remove(self.root / lifecycle.JOB)
+        with self.installation_attempt('code'), patch.object(install, 'request') as request:
+            with self.assertRaisesRegex(ValueError, 'nodehelm rebind'):
+                install.install(types.SimpleNamespace(server='https://other.example.com'))
+            request.assert_not_called()
+        self.assertEqual(install.read_json(self.root / 'binding.json'), self.binding)
+
+    def test_install_on_a_revoked_binding_points_to_rebind(self):
+        install.remove(self.root / lifecycle.JOB)
+        revoked = HTTPError(self.binding['server'], 401, 'revoked', {'X-Node-Manager-Binding': 'revoked'}, io.BytesIO())
+        with self.installation_attempt('code') as args, patch.object(install, 'request', side_effect=revoked) as request:
+            with self.assertRaisesRegex(ValueError, 'nodehelm rebind'):
+                install.install(args)
+        self.assertEqual(request.call_args.args[1], '/api/management-agent/v1/maintenance')
+        self.assertEqual(install.read_json(self.root / 'binding.json'), self.binding)
+
+    def test_install_refuses_a_reply_that_names_no_node(self):
+        install.remove(self.root / lifecycle.JOB)
+        install.remove(self.root / 'binding.json')
+        for reply in (b'{"bound":true}', b'{"bound":true,"node":0}', b'{"bound":true,"node":true}'):
+            with self.subTest(reply=reply), self.installation_attempt('code') as args, patch.object(install, 'request', return_value=reply):
+                with self.assertRaisesRegex(ValueError, '登记响应无效'):
+                    install.install(args)
+            self.assertFalse((self.root / 'binding.json').exists())
 
     def test_install_fresh_nonce_requires_current_confirmation_with_existing_identity(self):
         install.remove(self.root / lifecycle.JOB)
@@ -697,9 +733,9 @@ class CleanupWorkerTests(unittest.TestCase):
             with patch.object(agent, 'ROOT', self.root):
                 agent.confirm_connection(self.binding)
             self.assertTrue(predicate())
-        args = types.SimpleNamespace(server=self.binding['server'], node=1)
+        args = types.SimpleNamespace(server=self.binding['server'])
         manifest = {name: install.digest(data) for name, data in self.contents.items()}
-        with patch.object(install, 'download', return_value=(manifest, self.contents)), patch.object(install, 'wait_for', side_effect=wait), patch.object(install.sys, 'stdin', io.StringIO('{"enrollment":"original"}')), patch('builtins.print'):
+        with patch.object(install, 'download', return_value=(manifest, self.contents)), patch.object(install, 'wait_for', side_effect=wait), patch.object(install.sys, 'stdin', io.StringIO('{"enrollment":"original"}')), patch.object(install, 'revoked', return_value=False), patch('builtins.print'):
             install.install(args)
         self.assertEqual(install.read_json(self.root / 'binding.json'), self.binding)
         self.assertFalse((self.root / 'connection-request.json').exists())
@@ -707,9 +743,9 @@ class CleanupWorkerTests(unittest.TestCase):
 
     def test_install_confirmation_timeout_retains_same_identity_and_recovery_request(self):
         install.remove(self.root / lifecycle.JOB)
-        args = types.SimpleNamespace(server=self.binding['server'], node=1)
+        args = types.SimpleNamespace(server=self.binding['server'])
         manifest = {name: install.digest(data) for name, data in self.contents.items()}
-        with patch.object(install, 'download', return_value=(manifest, self.contents)), patch.object(install, 'wait_for', side_effect=ValueError('未确认')), patch.object(install.sys, 'stdin', io.StringIO('{"enrollment":"original"}')):
+        with patch.object(install, 'download', return_value=(manifest, self.contents)), patch.object(install, 'wait_for', side_effect=ValueError('未确认')), patch.object(install.sys, 'stdin', io.StringIO('{"enrollment":"original"}')), patch.object(install, 'revoked', return_value=False):
             with self.assertRaisesRegex(ValueError, '未确认'):
                 install.install(args)
         self.assertEqual(install.read_json(self.root / 'binding.json'), self.binding)

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """NodeHelm node menu: only what has to happen on the node itself.
 
-Onboarding, configuration and removal stay in the panel, which confirms and
-tracks them. Every action here calls the component's own tools.
+Onboarding and configuration stay in the panel. Every action here calls the
+component's own tools.
 """
 import json
 import pathlib
@@ -84,7 +84,7 @@ def status():
         print(f'监控 Agent: {active("monitor-agent.service")}')
     for journal in ('component-recovery.json', 'lifecycle-job.json'):
         if (ROOT / journal).exists():
-            print(f'待处理记录: {journal}，可选择「恢复中断的操作」或回到后台继续')
+            print(f'待处理记录: {journal}，运行 sudo nodehelm recover 或回到后台继续')
     result = subprocess.run((sys.executable, '-B', str(CODE / 'agent.py'), 'status'),
                             capture_output=True, text=True, env=ENV, check=False)
     try:
@@ -114,15 +114,35 @@ def recover():
     tool('agent.py', 'recover')
 
 
-def removal():
-    print('''卸载请在后台操作：服务管理 → 本节点 →「管理」页 →「全部卸载此节点」。
-它清理全部受管实例、核心、PM 规则和管理组件（包括本命令），进度可在后台查看和继续。
-后台已无法使用时的本机兜底流程，见部署文档「节点卸载」一节。''')
+def rebind():
+    server = ask('后台地址: ')
+    agent = (sys.executable, '-B', str(CODE / 'agent.py'), 'rebind', '--server', server)
+    first = subprocess.run(agent, input='', text=True, capture_output=True, env=ENV, check=False)
+    if first.returncode == 3:
+        code = ask('接入码: ')
+        answer = subprocess.run(agent, input=json.dumps({'enrollment': code}), text=True, env=ENV, check=False)
+        raise SystemExit(answer.returncode)
+    print(first.stdout, end='')
+    print(first.stderr, end='', file=sys.stderr)
+    raise SystemExit(first.returncode)
 
 
-ACTIONS = {'upgrade': upgrade, 'status': status, 'logs': logs, 'recover': recover, 'uninstall': removal}
-MENU = [('升级管理组件和监控 Agent', 'upgrade'), ('运行状态', 'status'), ('最近日志', 'logs'),
-        ('恢复中断的操作', 'recover'), ('卸载说明', 'uninstall')]
+def uninstall():
+    if ask('全部卸载，输入 yes 确认: ') != 'yes':
+        raise SystemExit('已取消')
+    tool('agent.py', 'uninstall')
+
+
+def ask(prompt):
+    try:
+        return input(prompt).strip()
+    except EOFError:
+        raise SystemExit('已取消') from None
+
+
+ACTIONS = {'upgrade': upgrade, 'status': status, 'logs': logs, 'rebind': rebind, 'uninstall': uninstall,
+           'recover': recover}
+MENU = [('升级', 'upgrade'), ('运行状态', 'status'), ('最近日志', 'logs'), ('换绑', 'rebind'), ('卸载', 'uninstall')]
 
 
 def menu():

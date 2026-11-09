@@ -17,10 +17,16 @@ fn enroll_script_carries_the_site_and_digest_and_checks_its_arguments() {
     };
     assert!(std::process::Command::new("sh").args(["-n", "-c", &script]).status().unwrap().success());
     let code = "a".repeat(64);
-    for args in [&[][..], &["x", &code], &["2", "ABC"], &["2", &"a".repeat(63)], &["2", &code, "extra"]] {
+    for args in [&[][..], &["2", &code], &["ABC"], &[&"a".repeat(63)], &[&code, "extra"]] {
         let out = run(args);
         assert_eq!(out.status.code(), Some(2), "{args:?}");
     }
+}
+#[test]
+fn identity_proof_matches_the_node_component() {
+    // The same vector is checked in management/tests/test_node_rebind.py.
+    let proof = identity_proof(&sha256(&"c".repeat(64)), 7, &"a".repeat(64), "https://Panel.example.com/");
+    assert_eq!(proof, "eb298f2f63e81ebabb8c44b7578eb15d887078101cf615dac538a30b71fda61c");
 }
 #[test]
 fn old_operation_schema_migrates_without_inventing_history() {

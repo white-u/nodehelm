@@ -117,9 +117,11 @@ sudo nodehelm-hub reset-password
 
 多台机器可用节点页的「批量添加」：同一条命令在窗口期内发给所有机器执行（例如 `for h in node1 node2; do ssh root@$h '命令'; done`），每台自动换取自己的令牌。
 
-接入命令形如 `curl -fsS https://你的域名/management-files/enroll.sh | sh -s -- <节点编号> <登记码>`：后台生成的脚本写入本后台地址和 `install.py` 的校验值，下载后先校验再执行，校验不符即停止；登记码作为参数传入，不出现在网址和代理日志中。登记码一次性使用，10 分钟内有效，过期后在同一节点重新生成即可。节点编号和登记码由页面自动填入；后台核对执行命令的机器与该节点监控 Agent 所在机器的开机标识（boot ID）是否一致，不一致即拒绝并说明命令所属节点，防止把 A 节点的命令误装到 B 机器；该节点监控 Agent 不在线时跳过这项核对。被拒绝后改用正确的命令直接重试即可。在终端执行时，后台更新包、监控 Agent 和组件文件的下载会显示进度。组件安装在 `/opt/node-manager`，服务名 `node-manager-agent`；节点主动通过 HTTPS 轮询后台，不开放入站端口。
+接入命令形如 `curl -fsS https://你的域名/management-files/enroll.sh | sh -s -- <登记码>`：后台生成的脚本写入本后台地址和 `install.py` 的校验值，下载后先校验再执行，校验不符即停止；登记码作为参数传入，不出现在网址和代理日志中。登记码一次性使用，10 分钟内有效，过期后在同一节点重新生成即可。登记码由页面自动填入，后台凭它确定节点；后台核对执行命令的机器与该节点监控 Agent 所在机器的开机标识（boot ID）是否一致，不一致即拒绝并说明命令所属节点，防止把 A 节点的命令误装到 B 机器；该节点监控 Agent 不在线时跳过这项核对。被拒绝后改用正确的命令直接重试即可。在终端执行时，后台更新包、监控 Agent 和组件文件的下载会显示进度。组件安装在 `/opt/node-manager`，服务名 `node-manager-agent`；节点主动通过 HTTPS 轮询后台，不开放入站端口。
 
-接入后节点上多出 `nodehelm` 命令。`sudo nodehelm` 打开节点菜单：升级管理组件和监控 Agent、运行状态、最近日志、恢复中断的操作。接入、配置和卸载仍在后台网页完成。
+接入后节点上多出 `nodehelm` 命令。`sudo nodehelm` 打开节点菜单：升级、运行状态、最近日志、换绑、卸载；操作中断时运行 `sudo nodehelm recover`。
+
+换绑（`sudo nodehelm rebind`）先输入后台地址。地址属于本节点当前的后台时（后台换了域名），只改地址，监控 Agent 一并改到新地址；否则再输入后台为该节点生成的接入码，接入成功后才替换原绑定。实例和配置都保留。
 
 ## 6. 更新与回退
 
@@ -174,7 +176,7 @@ sudo python3 -B /opt/node-manager-hub/tools/hub-lifecycle.py restore --backup /v
 
 恢复会替换当前数据，先做一次现状备份。恢复后需要重新登录；服务管理的操作记录、PM 每小时流量历史和未使用的接入码被清除。以下节点仍需重新接入：备份之后重新接入过的节点（凭据已更换），以及备份时正处于卸载中的节点。
 
-迁移到新服务器：在旧服务器备份，新服务器用同一域名安装后台并恢复，再把域名的反向代理指向新服务器，节点会自动连上新后台。更换域名时节点仍指向旧地址，需在每台节点执行 `python3 /opt/node-manager/agent.py unlink` 后重新接入。中断的更新或卸载只用 `recover` 处理，不要手工删除恢复记录。维护工具随本机安装的版本保存在 `/opt/node-manager-hub/tools`，备份、恢复和卸载都不需要访问 GitHub。
+迁移到新服务器：在旧服务器备份，新服务器用同一域名安装后台并恢复，再把域名的反向代理指向新服务器，节点会自动连上新后台。更换域名时，先在后台设置里改为新地址，再在每台节点运行 `sudo nodehelm rebind` 输入新地址。中断的更新或卸载只用 `recover` 处理，不要手工删除恢复记录。维护工具随本机安装的版本保存在 `/opt/node-manager-hub/tools`，备份、恢复和卸载都不需要访问 GitHub。
 
 卸载顺序：先卸载全部节点（见下一节），再卸载后台。仍有节点接入时，`uninstall` 会提示数量，并拒绝无人值守的 `--yes`。以下内容不在卸载范围内，需要时自行处理：反向代理配置与证书、你下载到本地的网页备份、同机的原 monitor 服务。
 
@@ -184,6 +186,7 @@ sudo python3 -B /opt/node-manager-hub/tools/hub-lifecycle.py restore --backup /v
 | --- | --- | --- |
 | 模块卸载 | 服务管理 → 选择节点模块 → 模块维护 | 该模块全部实例、核心和关联 PM 规则 |
 | 全部卸载此节点 | 服务管理 → 节点 →「管理」页 | 全部受管实例、核心、PM 规则与运行时、管理组件和 `nodehelm` 命令；进度保存在后台，中断可继续 |
+| 节点上卸载 | 节点上 `sudo nodehelm uninstall` | 同上，不经过后台；中断后重新运行即继续。之后在后台撤销管理绑定并删除节点 |
 | 紧急撤销授权 | 服务管理 → 节点 | 只撤管理凭据，业务服务继续运行 |
 | 卸载监控 Agent | 节点上执行后台删除节点对话框给出的命令 | 只删监控 Agent |
 
@@ -196,7 +199,7 @@ sudo systemctl status node-manager-cleanup.service
 sudo journalctl -u node-manager-cleanup.service -n 50 --no-pager
 ```
 
-后台已经无法使用时，节点上只能停止受管理，不能清理业务实例：先运行 `sudo python3 /opt/node-manager/agent.py unlink` 解绑，再运行 `sudo python3 /opt/node-manager/install.py uninstall` 移除轮询服务，业务实例继续运行。要彻底清理，需先恢复后台（用 `--reuse-data` 重装或从备份恢复），再在网页里「全部卸载此节点」。
+后台无法使用时用节点上卸载。只想停止受管理、保留业务实例时，运行 `sudo python3 /opt/node-manager/agent.py unlink` 解绑，再运行 `sudo python3 /opt/node-manager/install.py uninstall` 移除轮询服务。
 
 ## 9. 后台机器同时作为节点
 

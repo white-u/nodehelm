@@ -58,13 +58,15 @@ def step_id(job, index):
 
 
 class Lifecycle:
-    def __init__(self, controllers, execute, snapshot, binding, root=None):
+    def __init__(self, controllers, execute, snapshot, binding, root=None, local=False):
         self.controllers = controllers
         self.execute = execute
         self.snapshot = snapshot
         self.binding = binding
         self.root = pathlib.Path(root) if root is not None else install.ROOT
         self.path = self.root / JOB
+        # Started on the node itself: no Hub hears of it or waits on it.
+        self.local = local
 
     def saved(self):
         return install.read_json(self.path)
@@ -75,7 +77,7 @@ class Lifecycle:
 
     def receipt(self):
         saved = self.saved()
-        return result(saved) if saved else None
+        return result(saved) if saved and not saved.get('local') else None
 
     def acknowledge(self, ack):
         record = self.saved()
@@ -144,7 +146,11 @@ class Lifecycle:
             if not record or record['id'] != incoming['id']:
                 record = {**incoming, 'status': 'running', 'stage': 'preflight', 'index': 0, 'steps': None, 'current': None}
                 record.pop('cleanup_token', None)
+                if self.local:
+                    record['local'] = True
                 self.save(record)
+            if bool(record.get('local')) != self.local:
+                raise ValueError('本机卸载与后台卸载不能互相接续')
             if record['scope'] != incoming['scope'] or incoming['attempt'] < record['attempt']:
                 raise ValueError('生命周期请求与本机持久记录不一致')
             if incoming['attempt'] > record['attempt']:
@@ -205,7 +211,7 @@ class Lifecycle:
                               stage='cleanup' if record['scope'] == 'all' else 'finished')
                 self.save(record)
                 if record['scope'] == 'all' and incoming.get('cleanup_token'):
-                    prepare_worker(record, incoming['cleanup_token'], self.binding, self.snapshot())
+                    prepare_worker(record, incoming['cleanup_token'], self.binding, self.snapshot(), self.local)
                 return result(record)
             except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
                 return self.pause(record, error, 'lifecycle_step' if record.get('current') else 'lifecycle_preflight')
@@ -295,7 +301,7 @@ def start_worker():
     install.ctl('start', '--no-block', UNIT)
 
 
-def prepare_worker(job, token, binding, snapshot):
+def prepare_worker(job, token, binding, snapshot, local=False):
     # Saved in the state because the helper outlives protocol.py.
     from protocol import PROTOCOL
     current = install.installed_manifest()
@@ -313,7 +319,7 @@ def prepare_worker(job, token, binding, snapshot):
         raise ValueError('清理执行器来源未通过组件清单校验')
     state = {'id': job['id'], 'attempt': job['attempt'], 'scope': 'all', 'binding': binding,
              'snapshot': snapshot, 'cleanup_token': token, 'phase': 'preparing', 'hashes': hashes,
-             'cleaning_attempt': job['attempt'], 'protocol': PROTOCOL}
+             'cleaning_attempt': job['attempt'], 'protocol': PROTOCOL, 'local': local}
     staged = RECOVERY.with_name('.' + RECOVERY.name + '-' + job['id'] + '.preparing')
     if install.present(staged):
         install.owned_directory(staged, True)
@@ -349,6 +355,8 @@ def revoked(error):
 
 
 def finish_request(state, phase):
+    if state.get('local'):
+        return
     try:
         response = json.loads(install.request(state['binding']['server'], '/api/management-agent/v1/lifecycle/finish',
                                              {'id': state['id'], 'phase': phase}, state['cleanup_token']))
@@ -363,7 +371,17 @@ def finish_request(state, phase):
         raise ValueError('后台尚未持久确认卸载完成')
 
 
+def resume(state):
+    state.update(phase=state.get('resume_phase') if state['phase'] == 'paused' else state['phase'],
+                 cleaning_attempt=state['attempt'])
+    install.write_json(RECOVERY / 'state.json', state)
+    return True
+
+
 def report_state(state, status):
+    if state.get('local'):
+        # Nobody else decides when a local removal continues: every run retries it.
+        return resume(state)
     # The normal credential is kept only until substantive cleanup is acknowledged.
     from urllib.request import Request, ProxyHandler, build_opener
     payload = {'snapshot': state['snapshot'], 'result': None, 'lifecycle_result': {
@@ -379,10 +397,7 @@ def report_state(state, status):
         if not revoked(error):
             raise
         # The node was removed from the Hub; nobody can resume this, so complete what was asked.
-        state.update(phase=state.get('resume_phase') if state['phase'] == 'paused' else state['phase'],
-                     cleaning_attempt=state['attempt'])
-        install.write_json(RECOVERY / 'state.json', state)
-        return True
+        return resume(state)
     following = reply.get('lifecycle')
     if following:
         descriptor(following)
@@ -447,6 +462,53 @@ def worker_step(state):
         cleanup_helper(state)
 
 
+def local_uninstall(controllers, execute, snapshot, binding, revocation, stop):
+    """Removes everything the component manages, as the panel's uninstall-all does,
+    for a node whose Hub is gone or not wanted. Rerunning continues it."""
+    import secrets
+
+    if install.present(RECOVERY):
+        if not install.read_json(RECOVERY / 'state.json', {}).get('local'):
+            raise ValueError('后台发起的卸载尚未完成，请在后台继续')
+        return  # The cleanup executor finishes it.
+    record = install.read_json(install.ROOT / JOB)
+    if record and record['status'] in ACTIVE and not record.get('local'):
+        # Only a Hub that gave up on its uninstall lets the node finish alone.
+        if revocation() is not None:
+            raise ValueError('后台发起的卸载尚未完成，请在后台继续')
+        record = None
+    if record and record.get('local') and record['status'] in ACTIVE:
+        job = {'id': record['id'], 'scope': 'all', 'attempt': record['attempt'] + (record['status'] == 'paused')}
+    else:
+        job = {'id': secrets.token_hex(16), 'scope': 'all', 'attempt': 1}
+    job['cleanup_token'] = secrets.token_hex(32)
+    lifecycle = Lifecycle(controllers, execute, snapshot, binding, local=True)
+    stop()
+    with install.lock(install.ROOT / 'agent.lock'):
+        if record is None:
+            install.remove(install.ROOT / JOB)
+        # Receipts and registrations owed to a Hub mean nothing once everything goes.
+        install.remove(install.ROOT / 'pending-result.json')
+        install.remove(install.ROOT / 'enrollment.json')
+        while (outcome := lifecycle.advance(job))['status'] == 'running':
+            pass
+    if outcome['status'] == 'paused':
+        saved = install.read_json(install.ROOT / JOB) or {}
+        raise ValueError(f"卸载暂停：{saved.get('diagnostic') or outcome.get('message')}；处理后重新运行 nodehelm uninstall")
+
+
+def await_local_cleanup(timeout=120):
+    """Starts the cleanup executor and waits for it to remove the component."""
+    if install.present(RECOVERY):
+        install.ctl('start', '--no-block', UNIT)
+    deadline = time.monotonic() + timeout
+    while install.present(RECOVERY) or install.present(install.CODE):
+        if time.monotonic() >= deadline:
+            raise ValueError(f'清理仍在进行，可查看 journalctl -u {UNIT}')
+        time.sleep(1)
+    print('已全部卸载')
+
+
 def main():
     if sys.argv[1:] != ['finish'] or os.geteuid() != 0:
         raise ValueError('仅支持 root 清理执行器')
@@ -463,8 +525,9 @@ def main():
             if state['phase'] in ('preparing', 'purging'):
                 state.update(resume_phase=state['phase'], phase='paused', diagnostic=str(error))
                 install.write_json(RECOVERY / 'state.json', state)
-                with contextlib.suppress(urllib.error.URLError, OSError, ValueError):
-                    report_state(state, 'paused')
+                if not state.get('local'):
+                    with contextlib.suppress(urllib.error.URLError, OSError, ValueError):
+                        report_state(state, 'paused')
             raise
 
 

@@ -25,7 +25,6 @@ pub async fn enrollment(_: Admin, State(app): State<Shared>, Path(node): Path<i6
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Enrollment {
-    pub(super) node: i64,
     pub(super) enrollment: String,
     pub(super) credential: String,
     /// The kernel boot id of the machine running the command.
@@ -46,25 +45,70 @@ pub async fn enroll(State(app): State<Shared>, Json(input): Json<Enrollment>) ->
             refuse!("登记凭据格式错误");
         }
         let c = app.db.conn();
-        lifecycle::guard(&c, input.node)?;
+        let code = sha256(&input.enrollment);
+        let cred = sha256(&input.credential);
+        // The code names the node: a node number typed alongside it could only be wrong.
+        let node: i64 = c
+            .query_row("SELECT node FROM managed_node WHERE enrollment=?1", [&code], |r| r.get(0))
+            .optional()?
+            .context(crate::Shown("登记已过期、已使用或节点不存在，请重新生成安装命令".into()))?;
+        lifecycle::guard(&c, node)?;
         let name: String = c
-            .query_row("SELECT name FROM node WHERE id=?1", [input.node], |r| r.get(0))
+            .query_row("SELECT name FROM node WHERE id=?1", [node], |r| r.get(0))
             .optional()?
             .unwrap_or_default();
         // A command copied to the wrong machine: refused before anything binds.
         // An anti-mistake check, not a security control; skipped while the node's
         // monitor agent is not connected.
-        if live_boot_id(&app, input.node).is_some_and(|id| id != input.boot_id.trim()) {
+        if live_boot_id(&app, node).is_some_and(|id| id != input.boot_id.trim()) {
             refuse!("此命令属于节点「{name}」，但本机不是该节点监控 Agent 所在的机器。请到本机对应的节点复制命令，或在「{name}」上执行");
         }
-        let code = sha256(&input.enrollment);
-        let cred = sha256(&input.credential);
-        let changed=c.execute("UPDATE managed_node SET credential=?1 WHERE node=?2 AND enrollment=?3 AND ((credential='' AND expires>?4) OR credential=?1)",params![cred,input.node,code,now()])?;
+        // Credentials alone identify a node, so one already held elsewhere never binds a second.
+        let changed = c.execute(
+            "UPDATE managed_node SET credential=?1 WHERE node=?2 AND enrollment=?3
+             AND ((credential='' AND expires>?4) OR credential=?1)
+             AND NOT EXISTS(SELECT 1 FROM managed_node WHERE credential=?1 AND node!=?2)",
+            params![cred, node, code, now()],
+        )?;
         if changed != 1 {
             refuse!("登记已过期、已使用或节点不存在，请重新生成安装命令");
         }
-        Ok(json!({"bound":true,"node":input.node,"name":name}))
+        Ok(json!({"bound":true,"node":node,"name":name}))
     })())
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Identify {
+    pub(super) node: i64,
+    pub(super) nonce: String,
+}
+/// Lets a bound node check that an address it is moving to reaches this hub before
+/// it sends its credential there. The proof is keyed by the credential's digest,
+/// which only this hub and the node hold, and covers this hub's own address, so an
+/// address that relays the question here is told apart from the hub itself.
+pub async fn identify(State(app): State<Shared>, Json(input): Json<Identify>) -> Response {
+    response((|| {
+        enabled(&app.db)?;
+        if !valid_hex(&input.nonce, 64) {
+            refuse!("请求格式错误");
+        }
+        let digest: String = app
+            .db
+            .conn()
+            .query_row(
+                "SELECT credential FROM managed_node WHERE node=?1 AND credential!=''",
+                [input.node],
+                |r| r.get(0),
+            )
+            .optional()?
+            .context(BindingRevoked)?;
+        Ok(json!({"proof": identity_proof(&digest, input.node, &input.nonce, &app.site)}))
+    })())
+}
+pub(super) fn identity_proof(digest: &str, node: i64, nonce: &str, site: &str) -> String {
+    let site = site.trim_end_matches('/').to_ascii_lowercase();
+    let key = hmac::Key::new(hmac::HMAC_SHA256, digest.as_bytes());
+    hex::encode(hmac::sign(&key, format!("nodehelm-identify\n{node}\n{nonce}\n{site}").as_bytes()))
 }
 pub async fn unbind(_: Admin, State(app): State<Shared>, Path(node): Path<i64>) -> Response {
     response((|| {
@@ -169,7 +213,7 @@ pub(super) fn component_digest(files: &[(&str, &str)]) -> String {
     let lines: String = files.iter().map(|(name, body)| format!("{name} {}\n", sha256(body))).collect();
     sha256(&lines)
 }
-/// The one-line enrollment, `curl -fsS <site>/management-files/enroll.sh | sh -s -- <node> <code>`.
+/// The one-line enrollment, `curl -fsS <site>/management-files/enroll.sh | sh -s -- <code>`.
 /// It does what the earlier long command did, with this hub's address and the
 /// current `install.py` digest written in. All of it sits in `main`, called on the
 /// last line, so a download cut short runs nothing. The code goes in as an argument,
@@ -178,16 +222,15 @@ const ENROLL: &str = r#"#!/bin/sh
 # NodeHelm management enrollment, generated by the hub.
 main() {
 	set -eu
-	if [ "$#" -ne 2 ]; then echo "用法：curl -fsS SITE/management-files/enroll.sh | sh -s -- <节点编号> <登记码>" >&2; exit 2; fi
-	case "$1" in '' | *[!0-9]*) echo "节点编号无效" >&2; exit 2 ;; esac
-	case "$2" in *[!0-9a-f]*) echo "登记码无效" >&2; exit 2 ;; esac
-	[ "${#2}" -eq 64 ] || { echo "登记码无效" >&2; exit 2; }
+	if [ "$#" -ne 1 ]; then echo "用法：curl -fsS SITE/management-files/enroll.sh | sh -s -- <登记码>" >&2; exit 2; fi
+	case "$1" in *[!0-9a-f]*) echo "登记码无效" >&2; exit 2 ;; esac
+	[ "${#1}" -eq 64 ] || { echo "登记码无效" >&2; exit 2; }
 	umask 077
 	d=$(mktemp -d)
 	trap 'rm -rf "$d"' EXIT
 	curl --proto '=https' --tlsv1.2 -fsS 'SITE/management-files/install.py' -o "$d/install.py"
 	printf '%s  %s\n' 'DIGEST' "$d/install.py" | sha256sum -c --quiet - || { echo "install.py 校验失败，已停止" >&2; exit 1; }
-	printf '{"enrollment":"%s"}\n' "$2" | python3 "$d/install.py" --server 'SITE' --node "$1"
+	printf '{"enrollment":"%s"}\n' "$1" | python3 "$d/install.py" --server 'SITE'
 }
 main "$@"
 "#;

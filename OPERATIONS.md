@@ -78,7 +78,7 @@ sudo /opt/node-manager-hub/monitor-hub --db /var/lib/node-manager-hub/hub.db --r
 
 新密码只在当前终端显示；所有旧登录会话失效。不要将终端输出分享给他人。自定义部署须使用对应程序和数据库路径。
 
-后台主机上 `sudo nodehelm-hub`（安装前为 `nodehelm.sh`）的 `update`、`status`、`logs`、`reset-password`、`backup`、`uninstall` 覆盖日常维护，无参数在终端运行时显示菜单，无终端时显示状态（加 `--yes` 则更新）；节点上 `sudo nodehelm` 负责升级、状态、日志与恢复；`logs` 隐藏应急密码。卸载默认删除全部数据（数据库、密钥、主题、维护记录和服务器上的备份），加 `--keep-data` 保留数据；底层入口 `hub-lifecycle.py uninstall` 必须写明 `--purge` 或 `--keep-data`。维护工具保存在 `/opt/node-manager-hub/tools`，备份、恢复与卸载不需要联网。管理组件、原监控 Agent、受管业务实例各有独立生命周期，不能通过删除整个 `/opt` 目录处理。`install-hub.sh` 不支持原安装器的 `--reset-password` 或 `--uninstall` 参数。
+后台主机上 `sudo nodehelm-hub`（安装前为 `nodehelm.sh`）的 `update`、`status`、`logs`、`reset-password`、`backup`、`uninstall` 覆盖日常维护，无参数在终端运行时显示菜单，无终端时显示状态（加 `--yes` 则更新）；节点上 `sudo nodehelm` 负责升级、状态、日志、换绑与卸载，`recover` 处理中断；`logs` 隐藏应急密码。卸载默认删除全部数据（数据库、密钥、主题、维护记录和服务器上的备份），加 `--keep-data` 保留数据；底层入口 `hub-lifecycle.py uninstall` 必须写明 `--purge` 或 `--keep-data`。维护工具保存在 `/opt/node-manager-hub/tools`，备份、恢复与卸载不需要联网。管理组件、原监控 Agent、受管业务实例各有独立生命周期，不能通过删除整个 `/opt` 目录处理。`install-hub.sh` 不支持原安装器的 `--reset-password` 或 `--uninstall` 参数。
 
 ## 故障定位
 

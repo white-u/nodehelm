@@ -189,6 +189,7 @@ def request(server, path, payload=None, credential=None):
     headers = {'User-Agent': 'NodeManager/1'}
     if payload is not None:
         headers['Content-Type'] = 'application/json'
+    if credential is not None:
         headers['Authorization'] = 'Bearer ' + credential
     req = urllib.request.Request(base_url(server) + path, headers=headers,
                                  data=json.dumps(payload).encode() if payload is not None else None)
@@ -615,9 +616,12 @@ def printable(text, limit=300):
 
 
 def enrollment_refused(error, fresh):
-    """The hub's own refusal (400) is shown as it wrote it. The pending identity
-    goes only if this run created it: an earlier one may already be accepted,
-    its reply lost, and only it can still finish that registration."""
+    """The hub's own refusal (400) is shown as it wrote it. A 4xx answer accepted
+    nothing, so the pending identity goes if this run created it; an earlier one
+    may already be accepted, its reply lost, and only it can still finish that
+    registration. A 5xx may come from a proxy after the hub accepted."""
+    if fresh and 400 <= error.code < 500:
+        remove(ROOT / 'enrollment.json')
     with error:
         if error.code != 400:
             return ValueError(f'登记请求失败（HTTP {error.code}）；请检查后台地址、反向代理或 CDN 设置后用原命令重试')
@@ -625,17 +629,67 @@ def enrollment_refused(error, fresh):
             text = printable(error.read(4096).decode('utf-8', 'replace'))
         except OSError:
             text = ''
-    if fresh:
-        remove(ROOT / 'enrollment.json')
     return ValueError(f'后台拒绝登记：{text or "原因未知"}')
+
+
+def register(server, enrollment):
+    """Binds this machine at `server` with a one-time code and returns the binding.
+    The pending identity outlives a lost reply, so a retry or a replacement code
+    keeps the credential the Hub may already hold."""
+    pending = read_json(ROOT / 'enrollment.json')
+    if pending and pending['server'] != server:
+        raise ValueError('存在其他后台的待核实登记，请先核实原登记')
+    binding = ({**pending, 'enrollment': enrollment} if pending else
+               {'server': server, 'credential': secrets.token_hex(32), 'enrollment': enrollment})
+    write_json(ROOT / 'enrollment.json', binding)
+    try:
+        reply = json.loads(request(server, '/api/management-agent/v1/enroll',
+                                   {'enrollment': enrollment, 'credential': binding['credential'], 'boot_id': boot_id()},
+                                   binding['credential']))
+    except urllib.error.HTTPError as error:
+        raise enrollment_refused(error, fresh=pending is None) from None
+    if type(reply.get('node')) is not int or reply['node'] < 1:
+        raise ValueError('后台登记响应无效')
+    if isinstance(reply.get('name'), str) and reply['name']:
+        print(f'已接入为节点「{printable(reply["name"])}」')
+    return {'server': server, 'node': reply['node'], 'credential': binding['credential']}
+
+
+def start_confirmed(failure):
+    """Starts the poller and waits for its first report under the binding on disk."""
+    write_file(UNITS / SERVICE, SERVICE_UNIT.encode(), 0o644)
+    ctl('daemon-reload')
+    binding = read_json(ROOT / 'binding.json')
+    expected_confirmation = {'server': binding['server'], 'node': binding['node'],
+                             'credential_sha256': digest(binding['credential'].encode()), 'nonce': secrets.token_hex(16)}
+    # A new nonce proves a successful Hub poll after this attempt.
+    write_json(ROOT / 'connection-request.json', expected_confirmation)
+    ctl('enable', '--now', SERVICE)
+    ctl('is-active', '--quiet', SERVICE)
+    wait_for(lambda: read_json(ROOT / 'connection-confirmed.json') == expected_confirmation, failure, timeout=35)
+    remove(ROOT / 'connection-request.json')
+    remove(ROOT / 'connection-confirmed.json')
+
+
+def revoked(binding):
+    """Whether the Hub explicitly revoked this binding; a read-only probe of its own address."""
+    try:
+        request(binding['server'], '/api/management-agent/v1/maintenance',
+                {'action': 'status', 'token': '0' * 64}, binding['credential'])
+    except urllib.error.HTTPError as error:
+        with error:
+            return error.code == 401 and (error.headers or {}).get('X-Node-Manager-Binding') == 'revoked'
+    except (urllib.error.URLError, OSError):
+        pass
+    return False
 
 
 def install(args):
     ensure_no_journal()
     server = base_url(args.server)
     existing = read_json(ROOT / 'binding.json')
-    if existing and (existing['server'] != server or existing['node'] != args.node):
-        raise ValueError('已绑定其他后台或节点，请先 unlink')
+    if existing and (existing['server'] != server or revoked(existing)):
+        raise ValueError('本机已接入过，请运行 sudo nodehelm rebind')
     check_owned_unit(UNITS / SERVICE)
     ctl('daemon-reload')
     unit_info(SERVICE)
@@ -646,8 +700,8 @@ def install(args):
                 raise ValueError('有未恢复操作，请先 recover')
     enrollment = json.loads(sys.stdin.read(4096))['enrollment']
     pending = read_json(ROOT / 'enrollment.json')
-    if pending and (pending['server'] != server or pending['node'] != args.node):
-        raise ValueError('存在其他后台或节点的待核实登记，请先核实原登记')
+    if pending and pending['server'] != server:
+        raise ValueError('存在其他后台的待核实登记，请先核实原登记')
     expected, data = download(server)
     previous = read_json(ROOT / MANIFEST)
     if previous is not None and previous != expected:
@@ -659,34 +713,9 @@ def install(args):
             write_file(CODE / name, data[name], 0o644)
     write_json(ROOT / MANIFEST, expected)
     if existing is None:
-        # A replacement authorization code must keep the identity already sent
-        # to this node's Hub, including after a lost response or local write.
-        binding = ({**pending, 'enrollment': enrollment} if pending else
-                   {'server': server, 'node': args.node, 'credential': secrets.token_hex(32), 'enrollment': enrollment})
-        write_json(ROOT / 'enrollment.json', binding)
-        try:
-            reply = json.loads(request(server, '/api/management-agent/v1/enroll',
-                                       {**{key: binding[key] for key in ('node', 'enrollment', 'credential')},
-                                        'boot_id': boot_id()}, binding['credential']))
-        except urllib.error.HTTPError as error:
-            raise enrollment_refused(error, fresh=pending is None) from None
-        write_json(ROOT / 'binding.json', {key: binding[key] for key in ('server', 'node', 'credential')})
-        if isinstance(reply.get('name'), str) and reply['name']:
-            print(f'已接入为节点「{printable(reply["name"])}」（编号 {binding["node"]}）')
+        write_json(ROOT / 'binding.json', register(server, enrollment))
     remove(ROOT / 'enrollment.json')
-    write_file(UNITS / SERVICE, SERVICE_UNIT.encode(), 0o644)
-    ctl('daemon-reload')
-    binding = read_json(ROOT / 'binding.json')
-    expected_confirmation = {'server': binding['server'], 'node': binding['node'],
-                             'credential_sha256': digest(binding['credential'].encode()), 'nonce': secrets.token_hex(16)}
-    # A new nonce proves a successful Hub poll after this installation attempt.
-    write_json(ROOT / 'connection-request.json', expected_confirmation)
-    ctl('enable', '--now', SERVICE)
-    ctl('is-active', '--quiet', SERVICE)
-    wait_for(lambda: read_json(ROOT / 'connection-confirmed.json') == expected_confirmation,
-             '管理组件已安装并保留原身份，但首次上报结果未确认；请检查后台与日志，使用原安装命令重试', timeout=35)
-    remove(ROOT / 'connection-request.json')
-    remove(ROOT / 'connection-confirmed.json')
+    start_confirmed('管理组件已安装并保留原身份，但首次上报结果未确认；请检查后台与日志，使用原安装命令重试')
     place_command()
     print('管理组件已安装，节点授权及后台首次上报已确认。以后在本机运行 sudo nodehelm 可升级和查看状态。')
 
@@ -924,7 +953,6 @@ def main(argv=None):
     commands = parser.add_subparsers(dest='action', required=True)
     fresh = commands.add_parser('install')
     fresh.add_argument('--server', required=True)
-    fresh.add_argument('--node', type=int, required=True)
     commands.add_parser('upgrade')
     rollback = commands.add_parser('rollback')
     rollback.add_argument('--backup', required=True)
@@ -932,7 +960,7 @@ def main(argv=None):
     recover.add_argument('--offline', action='store_true')
     uninstall_command = commands.add_parser('uninstall')
     uninstall_command.add_argument('--purge', action='store_true')
-    if argv and argv[0] in ('--server', '--node'):
+    if argv and argv[0] == '--server':
         argv.insert(0, 'install')  # Existing panel-generated command.
     args = parser.parse_args(argv)
     if os.geteuid() != 0 or not pathlib.Path('/run/systemd/system').is_dir():

@@ -200,10 +200,153 @@ def stop_owned_agent():
         raise Rejected(str(error)) from None
 
 
+def revocation():
+    """None once the Hub explicitly revoked this binding, else why that is unknown."""
+    binding = read(ROOT / 'binding.json')
+    if not binding:
+        return '缺少可核实的原绑定或不支持此卸载范围'
+    try:
+        # Read-only: never poll here, since polling can claim work.
+        exchange(binding, 'maintenance', {'action': 'status', 'token': '0' * 64})
+        return '后台仍接受原绑定'
+    except urllib.error.HTTPError as error:
+        with error:
+            if error.code == 401 and (error.headers or {}).get('X-Node-Manager-Binding') == 'revoked':
+                return None
+            return f'后台未明确确认撤权（HTTP {error.code}）'
+    except (urllib.error.URLError, OSError, ValueError) as error:
+        return f'绑定状态探测失败（{type(error).__name__}）'
+
+
+def unlink_check():
+    """The local uninstall record, once nothing in it still needs the current binding."""
+    from install import present
+    from lifecycle import ACTIVE, JOB, RECOVERY
+
+    job = read(ROOT / JOB)
+    if present(RECOVERY):
+        raise Rejected('节点卸载尚未完成，禁止清除身份；请从后台继续生命周期操作')
+    if job and job.get('status') in ACTIVE:
+        # A Hub that gave up on this node can never continue the job.
+        if job.get('local') or revocation() is not None:
+            raise Rejected('节点卸载尚未完成，禁止清除身份；请从后台继续生命周期操作')
+    elif job and job.get('status') == 'succeeded' and job.get('confirmed') is not True:
+        reason = '缺少可核实的原绑定或不支持此卸载范围' if job.get('scope') == 'all' else revocation()
+        if reason is not None:
+            raise Rejected(f'卸载回执尚未得到后台确认，请恢复连接后重试；{reason}')
+    return job
+
+
+def release(snapshot, replacement=None):
+    """Drops the current binding, or swaps in `replacement`, with the poller stopped."""
+    from install import lock, write_json
+    from lifecycle import ACTIVE, JOB
+
+    unlink_check()
+    stop_owned_agent()
+    with lock(ROOT / 'agent.lock'):
+        # The poller may have advanced after the first check, before it stopped.
+        job = unlink_check()
+        if snapshot()['blocked']:
+            raise Rejected('仍有未恢复操作，禁止重新绑定；请先 recover')
+        # Terminal transport state belongs to the old binding. Preserve module
+        # receipts and audit history, but never send this job to a new identity.
+        if job and (job.get('status') == 'succeeded' or job.get('status') in ACTIVE):
+            remove(ROOT / JOB)
+        remove(ROOT / 'pending-result.json')
+        if replacement:
+            write_json(ROOT / 'binding.json', replacement)
+        else:
+            remove(ROOT / 'binding.json')
+        remove(ROOT / 'enrollment.json')
+
+
+class NeedsCode(Rejected):
+    pass
+
+
+def same_hub(binding, server):
+    """Whether `server` is the Hub holding this binding, proven before the credential goes there."""
+    import hmac
+    import secrets
+    from install import request
+
+    nonce = secrets.token_hex(32)
+    try:
+        reply = json.loads(request(server, '/api/management-agent/v1/identify', {'node': binding['node'], 'nonce': nonce}))
+    except urllib.error.HTTPError as error:
+        with error:
+            return False
+    except (urllib.error.URLError, OSError) as error:
+        raise Rejected(f'无法连接 {server}（{type(error).__name__}）') from None
+    key = hashlib.sha256(binding['credential'].encode()).hexdigest().encode()
+    expected = hmac.new(key, f"nodehelm-identify\n{binding['node']}\n{nonce}\n{server.lower()}".encode(),
+                        hashlib.sha256).hexdigest()
+    return isinstance(reply, dict) and isinstance(reply.get('proof'), str) and hmac.compare_digest(reply['proof'], expected)
+
+
+MONITOR_ENV = pathlib.Path('/opt/monitor/agent.env')
+
+
+def move_monitor(old, new):
+    """Points the monitor agent that reported to the old address at the new one."""
+    from install import owned_file, write_file
+
+    if not MONITOR_ENV.exists():
+        return
+    lines = owned_file(MONITOR_ENV, private=True).read_text().splitlines()
+    moved = [f'MONITOR_SERVER={new}' if line.startswith('MONITOR_SERVER=')
+             and line.removeprefix('MONITOR_SERVER=').rstrip('/').lower() == old.lower() else line for line in lines]
+    if moved != lines:
+        write_file(MONITOR_ENV, ('\n'.join(moved) + '\n').encode())
+        command('systemctl', 'try-restart', 'monitor-agent.service')
+
+
+def rebind(snapshot, server):
+    import re
+    import install
+    from lifecycle import ACTIVE, JOB, RECOVERY
+
+    server = base_url(server).lower()
+    binding = read(ROOT / 'binding.json')
+    if not binding:
+        raise Rejected('尚未绑定，请使用后台生成的接入命令')
+    failure = '已换绑，但首次上报未确认；请检查后台与日志后重试'
+    if same_hub(binding, server):
+        job = read(ROOT / JOB)
+        if install.present(RECOVERY) or (job and job.get('status') in ACTIVE):
+            raise Rejected('节点卸载尚未完成，请先完成卸载')
+        if server != binding['server']:
+            stop_owned_agent()
+            with install.lock(ROOT / 'agent.lock'):
+                install.write_json(ROOT / 'binding.json', {**binding, 'server': server})
+        install.start_confirmed(failure)
+        print(f'已换绑到 {server}')
+        try:
+            move_monitor(binding['server'], server)
+        except (OSError, ValueError, Rejected) as error:
+            print(f'监控 Agent 地址未更新：{error}', file=sys.stderr)
+        return
+    text = '' if sys.stdin.isatty() else sys.stdin.read(4096).strip()
+    enrollment = json.loads(text).get('enrollment') if text else None
+    if not enrollment:
+        raise NeedsCode('需要接入码')
+    if not isinstance(enrollment, str) or not re.fullmatch('[0-9a-f]{64}', enrollment):
+        raise Rejected('接入码无效')
+    # Checked before the code is spent, and again once the poller has stopped.
+    unlink_check()
+    release(snapshot, install.register(server, enrollment))
+    install.start_confirmed(failure)
+    print(f'已换绑到 {server}')
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('action', choices=['run', 'recover', 'status', 'unlink', 'refresh'])
+    parser.add_argument('action', choices=['run', 'recover', 'status', 'unlink', 'rebind', 'uninstall', 'refresh'])
+    parser.add_argument('--server')
     args = parser.parse_args()
+    if (args.action == 'rebind') != (args.server is not None):
+        parser.error('--server 只用于 rebind，且 rebind 必须提供')
     if os.geteuid() != 0:
         raise Rejected('管理组件需要 root 权限')
     # The unit's UMask=0077, also from a shell: files created here are checked as private later.
@@ -211,28 +354,37 @@ def main():
     from install import LIFECYCLE_LOCK, PURGE_JOURNAL, lock, present
 
     try:
+        if args.action == 'uninstall':
+            from lifecycle import RECOVERY, await_local_cleanup
+            if present(RECOVERY) and read(RECOVERY / 'state.json', {}).get('local'):
+                return await_local_cleanup()
         with ExitStack() as locks:
             # refresh runs on behalf of install.py, which already holds this lock.
             if args.action not in ('run', 'refresh'):
                 locks.enter_context(lock(LIFECYCLE_LOCK))
             if present(PURGE_JOURNAL):
                 raise Rejected('组件清理尚未完成，请使用相同安装器重试 uninstall --purge')
-            if args.action in ('recover', 'unlink'):
-                locks.enter_context(lock(private_directory(ROOT) / 'lifecycle.lock'))
+            if args.action in ('recover', 'unlink', 'rebind', 'uninstall'):
+                # A local uninstall takes this one step by step, as a Hub-driven one does.
+                if args.action != 'uninstall':
+                    locks.enter_context(lock(private_directory(ROOT) / 'lifecycle.lock'))
                 if (ROOT / 'component-recovery.json').exists():
                     raise Rejected('组件升级或卸载尚未恢复，请先执行 install.py recover')
             if args.action == 'run':
                 locks.enter_context(lock(ROOT / 'agent.lock'))
                 if present(PURGE_JOURNAL):
                     raise Rejected('组件清理尚未完成，请使用相同安装器重试 uninstall --purge')
-            run_action(args.action)
+            run_action(args.action, args)
+        if args.action == 'uninstall':
+            # The cleanup executor waits on the lifecycle lock released just above.
+            await_local_cleanup()
     except Rejected:
         raise
     except ValueError as error:
         raise Rejected(str(error)) from None
 
 
-def run_action(action):
+def run_action(action, args=None):
     if action == 'run' and read(ROOT / 'component-recovery.json', {}).get('phase') == 'switching':
         raise Rejected('组件文件正在切换，暂停轮询直至升级恢复')
     controllers = modules.controllers(ROOT)
@@ -298,56 +450,15 @@ def run_action(action):
         if result['status'] != 'recovery_failed': command('systemctl', 'start', 'node-manager-agent.service')
         return
     if action == 'unlink':
-        from install import lock, present
-        from lifecycle import ACTIVE, JOB, RECOVERY
-
-        def revocation():
-            """None once the Hub explicitly revoked this binding, else why that is unknown."""
-            binding = read(ROOT / 'binding.json')
-            if not binding:
-                return '缺少可核实的原绑定或不支持此卸载范围'
-            try:
-                # Read-only: never poll here, since polling can claim work.
-                exchange(binding, 'maintenance', {'action': 'status', 'token': '0' * 64})
-                return '后台仍接受原绑定'
-            except urllib.error.HTTPError as error:
-                with error:
-                    if error.code == 401 and (error.headers or {}).get('X-Node-Manager-Binding') == 'revoked':
-                        return None
-                    return f'后台未明确确认撤权（HTTP {error.code}）'
-            except (urllib.error.URLError, OSError, ValueError) as error:
-                return f'绑定状态探测失败（{type(error).__name__}）'
-
-        def checked_job():
-            job = read(ROOT / JOB)
-            if present(RECOVERY):
-                raise Rejected('节点卸载尚未完成，禁止清除身份；请从后台继续生命周期操作')
-            if job and job.get('status') in ACTIVE:
-                # A Hub that gave up on this node can never continue the job.
-                if revocation() is not None:
-                    raise Rejected('节点卸载尚未完成，禁止清除身份；请从后台继续生命周期操作')
-            elif job and job.get('status') == 'succeeded' and job.get('confirmed') is not True:
-                reason = '缺少可核实的原绑定或不支持此卸载范围' if job.get('scope') == 'all' else revocation()
-                if reason is not None:
-                    raise Rejected(f'卸载回执尚未得到后台确认，请恢复连接后重试；{reason}')
-            return job
-
-        checked_job()
-        stop_owned_agent()
-        with lock(ROOT / 'agent.lock'):
-            # The poller may have advanced after the first check, before it stopped.
-            job = checked_job()
-            if snapshot()['blocked']:
-                raise Rejected('仍有未恢复操作，禁止重新绑定；请先 recover')
-            # Terminal transport state belongs to the old binding. Preserve module
-            # receipts and audit history, but never send this job to a new identity.
-            if job and (job.get('status') == 'succeeded' or job.get('status') in ACTIVE):
-                remove(ROOT / JOB)
-            remove(ROOT / 'binding.json')
-            remove(ROOT / 'enrollment.json')
-            remove(ROOT / 'pending-result.json')
+        release(snapshot)
         print('本机已解绑；业务服务和监控保留。旧后台若离线，请恢复后撤销原绑定。')
         return
+    if action == 'rebind':
+        return rebind(snapshot, args.server)
+    if action == 'uninstall':
+        from lifecycle import local_uninstall
+        return local_uninstall(controllers, execute_module_task, snapshot, read(ROOT / 'binding.json'),
+                               revocation, stop_owned_agent)
     binding = read(ROOT / 'binding.json')
     if not binding: raise Rejected('尚未绑定，请运行安装命令')
     from lifecycle import Lifecycle
@@ -396,4 +507,4 @@ if __name__ == '__main__':
     try: main()
     except (Rejected, OSError) as error:
         print(str(error), file=sys.stderr)
-        sys.exit(1)
+        sys.exit(3 if isinstance(error, NeedsCode) else 1)
