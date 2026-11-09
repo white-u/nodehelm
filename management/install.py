@@ -785,7 +785,7 @@ def purge_plan(*, lifecycle=False, preflight=False):
             raise ValueError('请先在后台删除所有受管实例和 PM 规则，再执行 pm.py disable-empty')
         extra = ({MANIFEST, 'agent.lock', 'lifecycle.lock', 'connection-confirmed.json', 'connection-request.json', 'lifecycle-job.json', 'component-backups', *MODULES}
                  | ({'binding.json', 'lifecycle-job.json'} if lifecycle else set()) if module is None
-                 else {'owner.json', 'checkpoint.json'} if module == 'pm' else set())
+                 else {'owner.json', 'checkpoint.json', 'ip-watch.json'} if module == 'pm' else set())
         for path in validate(directory, lambda p: p.name in module_files | extra | {'configs', 'receipts'}):
             if path.name == 'configs':
                 names = {str(item['port']) + '.conf' for item in state['resources']} if preflight else set()

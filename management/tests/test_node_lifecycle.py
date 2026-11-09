@@ -735,6 +735,16 @@ class CleanupWorkerTests(unittest.TestCase):
             install.purge_plan(lifecycle=True, preflight=True)
         self.assertTrue((self.root / 'foreign').exists())
         self.assertTrue((self.code / 'agent.py').exists())
+    def test_pm_ip_watch_is_purged_with_pm_rather_than_blocking_preflight(self):
+        # Written by the IP limit's minute sampling; PM's own teardown removes it
+        # only after the preflight has looked.
+        pm = self.root / 'pm'
+        pm.mkdir(mode=0o700)
+        install.write_json(pm / 'owner.json', 'pm owner')
+        install.write_json(pm / 'ip-watch.json', {'sampled_at': 1, 'ports': {}})
+        install.purge_plan(lifecycle=True, preflight=True)
+        plan = install.purge_plan(lifecycle=True)
+        self.assertIn(str(pm / 'ip-watch.json'), [entry[0] for entry in plan['files']])
     def test_completed_module_job_allows_ordinary_purge_but_active_job_does_not(self):
         install.remove(self.root / 'binding.json')
         install.write_json(self.root / lifecycle.JOB, {**self.job, 'scope': 'snell', 'status': 'succeeded', 'stage': 'finished'})
