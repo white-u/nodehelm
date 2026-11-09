@@ -101,9 +101,29 @@ pub fn ensure(c: &Connection) -> Result<()> {
     Ok(())
 }
 
-// Restore candidates lose authority before replacing the live DB. Never resurrect bindings.
+/// Prepares a restore candidate before it replaces the live DB. Bindings survive,
+/// so nodes reconnect on their next poll without enrolling again: a backup is
+/// taken from a hub in use, and a node re-enrolled since then no longer holds the
+/// credential kept here. What the backup knew of work in progress does not
+/// survive: operations, leases, unused enrollment codes and the last snapshot,
+/// which the next poll reports again under whatever key this hub holds. A node
+/// with an unfinished uninstall loses its binding as well, since the uninstall
+/// itself is revoked below and only a revoked binding lets the VPS unlink.
 pub fn reset_after_restore(c: &Connection) -> Result<()> {
-    c.execute_batch("DROP TABLE IF EXISTS managed_port_traffic; DROP TABLE IF EXISTS managed_maintenance; DROP TABLE IF EXISTS managed_operation; DROP TABLE IF EXISTS managed_node;")?;
+    ensure(c)?;
+    c.execute_batch(
+        "DROP TABLE managed_port_traffic; DROP TABLE managed_maintenance; DROP TABLE managed_operation;",
+    )?;
+    c.execute(
+        &format!(
+            "DELETE FROM managed_node WHERE credential='' OR node IN (SELECT node FROM managed_lifecycle WHERE {})",
+            lifecycle::ACTIVE
+        ),
+        [],
+    )?;
+    // Offline from the moment of restore: abandoning and offline alerts then
+    // count from here, not from a contact the backup recorded.
+    c.execute("UPDATE managed_node SET enrollment='',expires=0,snapshot='',last_seen=?1", [now() - 30])?;
     ensure(c)?;
     lifecycle::reset_after_restore(c)?;
     Ok(())

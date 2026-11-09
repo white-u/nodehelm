@@ -99,9 +99,10 @@ fn hub_agrees_with_the_agent_on_every_operation() {
 }
 
 #[test]
-fn restore_revokes_bindings_and_operations() {
+fn restore_keeps_bindings_but_not_work_in_progress() {
     let c = Connection::open_in_memory().unwrap();
-    c.execute_batch("CREATE TABLE node(id INTEGER PRIMARY KEY); INSERT INTO node VALUES(1);").unwrap();
+    c.execute_batch("CREATE TABLE node(id INTEGER PRIMARY KEY); INSERT INTO node VALUES(1),(2),(3);")
+        .unwrap();
     ensure(&c).unwrap();
     c.execute_batch(
         "ALTER TABLE managed_node ADD COLUMN subscription TEXT NOT NULL DEFAULT '';
@@ -119,6 +120,33 @@ fn restore_revokes_bindings_and_operations() {
         c.query_row("SELECT credential FROM managed_node", [], |r| r.get::<_, String>(0)).unwrap(),
         "secret"
     );
+    // Node 1 is bound and was last seen with a snapshot; node 2 has only an unused
+    // enrollment code; node 3 was mid-uninstall when the backup was taken.
+    c.execute_batch(
+        "UPDATE managed_node SET snapshot='sealed',last_seen=1,enrollment='code',expires=9999999999,protocol=1,component='c' WHERE node=1;
+         INSERT INTO managed_node(node,enrollment,expires) VALUES(2,'unused',9999999999);
+         INSERT INTO managed_node(node,credential) VALUES(3,'uninstalling');
+         INSERT INTO managed_operation(id,node,request_hash,payload,status,created,expires) VALUES('a',1,'h','{}','delivered',1,9999999999);
+         INSERT INTO managed_lifecycle(id,node,scope,revisions,request_hash,status,stage,message,attempt,created,updated)
+           VALUES('b',3,'all','{}','h','cleaning','cleanup','',1,1,1);",
+    )
+    .unwrap();
     reset_after_restore(&c).unwrap();
-    assert_eq!(c.query_row("SELECT count(*) FROM managed_node", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    let kept: Vec<(i64, String, String, String, i64, i64, String)> = c
+        .prepare("SELECT node,credential,snapshot,enrollment,last_seen,protocol,component FROM managed_node")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(kept.len(), 1, "only the settled binding survives");
+    let (node, credential, snapshot, enrollment, seen, protocol, component) = &kept[0];
+    assert_eq!((*node, credential.as_str(), snapshot.as_str(), enrollment.as_str()), (1, "secret", "", ""));
+    // Offline from the restore on, while what the component last reported stays.
+    assert!(*seen > now() - 60 && *seen <= now() - 30);
+    assert_eq!((*protocol, component.as_str()), (1, "c"));
+    assert_eq!(c.query_row("SELECT count(*) FROM managed_operation", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    let status: String =
+        c.query_row("SELECT status FROM managed_lifecycle WHERE id='b'", [], |r| r.get(0)).unwrap();
+    assert_eq!(status, "revoked");
 }

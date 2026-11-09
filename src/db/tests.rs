@@ -188,7 +188,7 @@ fn a_closed_database_leaves_no_wal_behind() {
 }
 
 #[test]
-fn offline_restore_revokes_previous_authority_without_changing_live_db() {
+fn offline_restore_keeps_bindings_and_drops_sessions_without_changing_live_db() {
     let live = Scratch::new();
     let staging = Scratch::new();
     let db = Db::open(&live.0).unwrap();
@@ -211,11 +211,15 @@ fn offline_restore_revokes_previous_authority_without_changing_live_db() {
     let candidate = Db::open(&staging.0).unwrap();
     assert_eq!(candidate.get("origin_cdn_only").as_deref(), Some("off"));
     assert_eq!(db.get("origin_cdn_only").as_deref(), Some("on"));
-    for table in ["session", "managed_node", "managed_operation"] {
+    for table in ["session", "managed_operation"] {
         let sql = format!("SELECT count(*) FROM {table}");
         assert_eq!(candidate.conn().query_row(&sql, [], |row| row.get::<_, i64>(0)).unwrap(), 0);
         assert_eq!(db.conn().query_row(&sql, [], |row| row.get::<_, i64>(0)).unwrap(), 1);
     }
+    // The binding survives, so the node reconnects without enrolling again.
+    let binding: String =
+        candidate.conn().query_row("SELECT credential FROM managed_node", [], |row| row.get(0)).unwrap();
+    assert_eq!(binding, "old-binding");
     assert!(candidate.node(id).unwrap().is_some());
 }
 

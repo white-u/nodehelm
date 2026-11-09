@@ -164,7 +164,7 @@ sudo python3 /opt/node-manager/install.py rollback --backup <备份编号>
 | `uninstall` | 卸载并删除全部数据：数据库、密钥、主题、维护记录、服务器上的备份和本命令；需输入 `uninstall` 确认 |
 | `uninstall --keep-data` | 卸载但保留数据，之后可用 `--reuse-data` 重装 |
 
-日常备份建议用后台「数据」页下载，文件离开服务器才算灾备。网页备份不含服务管理密钥，恢复后节点需要重新接入。
+日常备份建议用后台「数据」页下载，文件离开服务器才算灾备。两种备份都保留节点的服务管理绑定：恢复后节点在下一次轮询（约 5 秒）自动重连并重新上报配置，不需要重新接入；节点上的实例和 PM 规则不受后台恢复影响。网页备份不含服务管理密钥，这不影响重连。
 
 从服务器上的备份恢复：
 
@@ -172,7 +172,9 @@ sudo python3 /opt/node-manager/install.py rollback --backup <备份编号>
 sudo python3 -B /opt/node-manager-hub/tools/hub-lifecycle.py restore --backup /var/backups/node-manager-hub/<备份目录>
 ```
 
-恢复会替换当前数据，先做一次现状备份。中断的更新或卸载只用 `recover` 处理，不要手工删除恢复记录。维护工具随本机安装的版本保存在 `/opt/node-manager-hub/tools`，备份、恢复和卸载都不需要访问 GitHub。
+恢复会替换当前数据，先做一次现状备份。恢复后需要重新登录；服务管理的操作记录、PM 每小时流量历史和未使用的接入码被清除。以下节点仍需重新接入：备份之后重新接入过的节点（凭据已更换），以及备份时正处于卸载中的节点。
+
+迁移到新服务器：在旧服务器备份，新服务器用同一域名安装后台并恢复，再把域名的反向代理指向新服务器，节点会自动连上新后台。更换域名时节点仍指向旧地址，需在每台节点执行 `python3 /opt/node-manager/agent.py unlink` 后重新接入。中断的更新或卸载只用 `recover` 处理，不要手工删除恢复记录。维护工具随本机安装的版本保存在 `/opt/node-manager-hub/tools`，备份、恢复和卸载都不需要访问 GitHub。
 
 卸载顺序：先卸载全部节点（见下一节），再卸载后台。仍有节点接入时，`uninstall` 会提示数量，并拒绝无人值守的 `--yes`。以下内容不在卸载范围内，需要时自行处理：反向代理配置与证书、你下载到本地的网页备份、同机的原 monitor 服务。
 
