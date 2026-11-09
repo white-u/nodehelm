@@ -35,7 +35,7 @@ curl -fsSL https://github.com/white-u/nodehelm/releases/latest/download/nodehelm
 | `src/`、`web-admin/` | hub：后台、API、公开页宿主 |
 | `agent/` | Linux 监控 agent，随后台发布并嵌入后台，节点从后台下载 |
 | `management/` | 节点服务管理组件（Snell／SB／FW／PM） |
-| [monitor-theme-default](https://github.com/monitor-probe/monitor-theme-default) | 内置默认主题，构建时按 `web-theme.pin` 的版本与校验和取用 |
+| `web-theme/` | 内置默认主题，派生自 [monitor-theme-default](https://github.com/monitor-probe/monitor-theme-default) v1.4.2，随后台发布并嵌入后台 |
 
 ```
 agent (Linux)  ──WebSocket / JSON-RPC 2.0──▶  hub (axum + SQLite)  ──▶  后台 + 状态页

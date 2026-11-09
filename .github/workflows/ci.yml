@@ -25,21 +25,28 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # The default theme arrives as a published archive, verified against the
-      # hash in web-theme.pin. Run here rather than left to build.rs so the
-      # download happens on the runner: release builds go through cross, whose
-      # container does not necessarily carry curl.
-      - run: ./scripts/theme.sh
-
       - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: web-admin/package-lock.json
+          cache-dependency-path: |
+            web-admin/package-lock.json
+            web-theme/package-lock.json
 
-      # rust-embed requires the panel's dist/ to exist before cargo runs.
+      # rust-embed requires the panel's and the default theme's dist/ to exist
+      # before cargo runs.
       - run: npm ci && npm run lint && npm test && npm run build
         working-directory: web-admin
+
+      # The panel shows the theme's version as installed, so the three files
+      # carrying it must agree.
+      - run: |
+          V=$(node -p 'require("./theme.json").version')
+          for f in package.json package-lock.json; do
+            [ "$(node -p "require('./$f').version")" = "$V" ] || { echo "::error file=web-theme/$f::version differs from theme.json $V"; exit 1; }
+          done
+          npm ci && npm run lint && npm test && npm run build
+        working-directory: web-theme
 
       - uses: dtolnay/rust-toolchain@stable
         with:

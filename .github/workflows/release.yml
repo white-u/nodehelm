@@ -52,21 +52,20 @@ jobs:
           V=v$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml)
           [ "$GITHUB_REF_NAME" = "$V" ] || { echo "::error::tag $GITHUB_REF_NAME, Cargo.toml $V"; exit 1; }
 
-      # The default theme arrives as a published archive, verified against the
-      # hash in web-theme.pin. Run on the runner rather than left to build.rs,
-      # because the cross container below does not necessarily carry curl; it
-      # finds the theme already unpacked.
-      - run: ./scripts/theme.sh
-
       - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: web-admin/package-lock.json
+          cache-dependency-path: |
+            web-admin/package-lock.json
+            web-theme/package-lock.json
 
-      # The hub embeds the panel, so its dist/ must exist before cargo runs.
+      # The hub embeds the panel and the default theme, so their dist/ must
+      # exist before cargo runs.
       - run: npm ci && npm run build
         working-directory: web-admin
+      - run: npm ci && npm run build
+        working-directory: web-theme
 
       - uses: dtolnay/rust-toolchain@stable
         with:

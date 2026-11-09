@@ -10,7 +10,8 @@
 | Rust 后端 | [src/AGENTS.md](src/AGENTS.md) | 监控、登录、数据库、分时流量与服务管理 API |
 | VPS 管理执行器 | [management/AGENTS.md](management/AGENTS.md) | Agent、事务、节点生命周期与四个业务模块 |
 | 管理界面 | [web-admin/AGENTS.md](web-admin/AGENTS.md) | 登录、节点、探测、服务、设置及共享组件 |
-| 部署工具 | [scripts/AGENTS.md](scripts/AGENTS.md) | 安装维护、主题、离线打包与工作流 |
+| 默认主题 | [web-theme/README.md](web-theme/README.md) | 公开状态页、主题包格式与主题契约 |
+| 部署工具 | [scripts/AGENTS.md](scripts/AGENTS.md) | 安装维护、离线打包与工作流 |
 | 监控 Agent | [agent/README.md](agent/README.md) | 指标采集、上报参数与构建 |
 
 主要源码和配置的逐文件职责统一列在各模块文档中。
@@ -39,6 +40,6 @@
 
 ## 相关项目
 
-监控 Agent 源码在 [agent/](agent/)，派生自 `monitor-probe/agent` v1.2.3（MIT），随后台发布并嵌入后台。默认主题取自 `monitor-probe/monitor-theme-default`，构建时按 `web-theme.pin` 校验。
+监控 Agent 源码在 [agent/](agent/)，派生自 `monitor-probe/agent` v1.2.3（MIT），随后台发布并嵌入后台。默认主题源码在 [web-theme/](web-theme/README.md)，派生自 `monitor-probe/monitor-theme-default` v1.4.2（MIT），随后台发布并嵌入后台；它只调用 README 中列出的主题契约接口。
 
 新增或移动文件时维护对应模块索引；本页维护导航，使用说明放在上表对应文档中。

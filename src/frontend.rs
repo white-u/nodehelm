@@ -21,18 +21,14 @@ use crate::{App, Shared};
 #[folder = "web-admin/dist"]
 struct AdminAssets;
 
+/// The built-in theme, built from `web-theme/` like the panel from `web-admin/`.
 #[derive(RustEmbed)]
-#[folder = "target/theme/dist"]
+#[folder = "web-theme/dist"]
 struct DefaultThemeAssets;
 
 /// The built-in theme's thumbnail, which sits beside `theme.json` rather than
-/// inside `dist/` and so is not among the assets above. The file is optional in
-/// a theme package: a package without one embeds nothing here and the panel
-/// shows the card without an image.
-#[derive(RustEmbed)]
-#[folder = "target/theme"]
-#[include = "preview.png"]
-struct DefaultPreview;
+/// inside `dist/` and so is not among the assets above.
+const DEFAULT_PREVIEW: &[u8] = include_bytes!("../web-theme/preview.png");
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct Theme {
@@ -107,7 +103,7 @@ fn respond(app: &App, path: &str, query: Option<&str>, known: Option<&str>, shel
             return response;
         }
     }
-    embedded::<DefaultThemeAssets>(path, "默认主题缺失，运行 scripts/theme.sh", known, shell)
+    embedded::<DefaultThemeAssets>(path, "默认主题没有构建，在 web-theme/ 下运行 npm run build", known, shell)
 }
 
 /// Names each icon in an HTML shell after the bytes served for it -- the ETag,
@@ -334,7 +330,7 @@ fn manifest(root: &Path, short: &str) -> Option<Theme> {
 pub fn themes(app: &App) -> std::io::Result<Vec<Theme>> {
     let built_in = Theme {
         builtin: true,
-        ..serde_json::from_str(include_str!("../target/theme/theme.json"))
+        ..serde_json::from_str(include_str!("../web-theme/theme.json"))
             .expect("the built-in theme manifest must be valid")
     };
     let mut list = vec![built_in];
@@ -615,7 +611,7 @@ pub fn preview(themes: &Path, short: &str) -> Option<Vec<u8>> {
     }
     // No directory, or one carrying no thumbnail of its own: the built-in theme
     // has its own embedded beside the assets it serves.
-    (short == "default").then(|| DefaultPreview::get(PREVIEW).map(|file| file.data.into_owned())).flatten()
+    (short == "default").then(|| DEFAULT_PREVIEW.to_vec())
 }
 
 const PREVIEW: &str = "preview.png";

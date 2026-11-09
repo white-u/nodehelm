@@ -4,11 +4,15 @@
 
 ## 构建和迁移
 
-依照 [开发文档](DEVELOPMENT.md) 安装工具链、校验主题、构建前端，然后构建 hub：
+依照 [开发文档](DEVELOPMENT.md) 安装工具链、构建前端与默认主题，然后构建 hub：
 
 ```sh
-./scripts/theme.sh
 cd web-admin
+npm ci
+npm run lint
+npm test
+npm run build
+cd ../web-theme
 npm ci
 npm run lint
 npm test

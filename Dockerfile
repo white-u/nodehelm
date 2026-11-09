@@ -1,6 +1,6 @@
 # Carries the musl binary release.yml already built, rather than building one of
-# its own: a from-source stage would have to repeat the panel build,
-# scripts/theme.sh and cross, and would then drift from the binary CI actually
+# its own: a from-source stage would have to repeat the panel and theme builds
+# and cross, and would then drift from the binary CI actually
 # ships. Put monitor-hub-amd64 / monitor-hub-arm64 beside this file to build it
 # by hand.
 

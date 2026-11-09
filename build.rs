@@ -1,30 +1,14 @@
-//! Puts the pinned default theme where `rust-embed` will find it, and the agent
-//! binaries where `main.rs` embeds them.
-//!
-//! The hub embeds a built theme, which `scripts/theme.sh` fetches. Running it
-//! here lets a plain `cargo build` proceed without a setup step, taking its
-//! input from `web-theme.pin` rather than a hand-maintained directory.
+//! Puts the agent binaries where `main.rs` embeds them. The panel and the
+//! default theme are built by npm in `web-admin/` and `web-theme/`, and embedded
+//! from their `dist/` by `frontend.rs`.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Where the release job puts the agents it built from `agent/`. Inside the
 /// project, because `cross` mounts the project and nothing else.
 const AGENTS: &str = "target/agents";
 
 fn main() {
-    // Cargo reruns this only when one of these changes. The stamp is listed as
-    // well, so deleting `target/theme` triggers a refetch rather than a later
-    // failure inside rust-embed.
-    println!("cargo:rerun-if-changed=web-theme.pin");
-    println!("cargo:rerun-if-changed=target/theme/.pin");
-    println!("cargo:rerun-if-changed=scripts/theme.sh");
-
-    match Command::new("sh").arg("scripts/theme.sh").status() {
-        Ok(status) if status.success() => {}
-        Ok(status) => panic!("scripts/theme.sh failed ({status}); see the message above"),
-        Err(e) => panic!("could not run scripts/theme.sh: {e}"),
-    }
     agents();
 }
 

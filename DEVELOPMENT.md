@@ -4,22 +4,17 @@
 
 ## 构建顺序
 
-在仓库根目录操作。需要 Rust stable / Cargo、Node.js 24（与 CI 一致，最低 22.18）、npm，以及 `sh`、curl、tar、sha256sum。SQLite 以 bundled 方式构建，需要可用的本地编译工具链。
+在仓库根目录操作。需要 Rust stable / Cargo、Node.js 24（与 CI 一致，最低 22.18）、npm，以及 `sh`、curl、tar。SQLite 以 bundled 方式构建，需要可用的本地编译工具链。
 
 ```sh
-./scripts/theme.sh
-cd web-admin
-npm ci
-npm run build
-cd ..
+(cd web-admin && npm ci && npm run build)
+(cd web-theme && npm ci && npm run build)
 cargo build --locked
 ```
 
-`theme.sh` 读取 `web-theme.pin` 中的版本和 SHA256，将发行包下载到 `target/theme/`，检查布局并写入 `.pin`。`build.rs` 也会调用此脚本；显式提前运行便于尽早发现网络或校验问题。macOS 若没有 `sha256sum`，需先提供该命令，例如安装 GNU coreutils 后将其加入 PATH。
+默认主题源码在 [web-theme/](web-theme/README.md)，与后台同仓库维护、随后台发布。Rust 的 `rust-embed` 读取 `web-admin/dist/` 和 `web-theme/dist/`，`theme.json` 与 `preview.png` 直接从 `web-theme/` 嵌入。只运行 `cargo build` 不会构建这两个前端，缺少 dist 时构建不完整；不要通过空目录绕过错误。
 
-Rust 的 `rust-embed` 读取 `web-admin/dist/` 和 `target/theme/dist/`。只运行 `cargo build` 不会构建 React 后台，缺少前端 dist 时构建不完整；不要通过空目录或伪造 `.pin` 绕过错误。
-
-构建会访问依赖仓库与默认主题发行地址。网络或包下载失败时先保留失败证据，不能把缺少资源造成的失败当成功。以上命令描述构建流程，不代表当前环境已经通过构建验证。
+构建会访问依赖仓库。网络或包下载失败时先保留失败证据，不能把缺少资源造成的失败当成功。以上命令描述构建流程，不代表当前环境已经通过构建验证。
 
 ## 本地运行与前端联调
 
@@ -113,4 +108,4 @@ CI 在 Linux 上将当前 hub 与同一提交的 agent 配对；macOS 不能直�
 
 [release.yml](.github/workflows/release.yml) 先构建两个架构的 agent，再构建嵌入它们的 x86_64 / aarch64 musl 后台二进制，`v*` 标签必须匹配 Cargo 版本；发布二进制、hub 安装器与 `sha256sums.txt`，再将同一批二进制打入容器镜像。在普通分支上手动触发只构建；发布步骤以标签 ref 为条件，手动选择标签运行也可能进入发布流程。
 
-[audit.yml](.github/workflows/audit.yml) 检查依赖漏洞，并在定时/手动运行时核对最新发行版。修改默认主题固定版本时同时核对 `web-theme.pin` 的版本与哈希；不要只改下载 URL。文档修改只需回读、检查本地链接与差异，无需为此下载所有依赖或发布版本。
+[audit.yml](.github/workflows/audit.yml) 检查依赖漏洞，并在定时/手动运行时核对最新发行版。修改默认主题时升高 `web-theme/theme.json` 的版本，CI 核对它与 `package.json`、`package-lock.json` 一致；默认主题只调用其 README 列出的主题契约接口。文档修改只需回读、检查本地链接与差异，无需为此下载所有依赖或发布版本。
