@@ -454,11 +454,11 @@ mod tests {
         let places = [("203.0.113.1".to_owned(), "中国, 上海, 某运营商".to_owned())].into();
         let note = crate::notify::ip_note("hk", &alert, &places);
         assert_eq!(note.title, "🔴 异常接入报警 · hk");
-        assert!(note.message.contains("在线 17 IP · 等级 报警（6 个及以上）"));
-        assert!(note.message.contains("已开启阻断：第 7 个起的新地址自动阻断 30 分钟"));
+        assert!(note.message.contains("在线 17 IP · 等级 报警（>5）"));
+        assert!(note.message.contains("已开启阻断：>6 的后续连接阻断 30 分钟"));
         let warning = crate::notify::IpAlert { level: 1, ips: vec![], block: false, ..alert.clone() };
         let message = crate::notify::ip_note("hk", &warning, &places).message;
-        assert!(message.contains("等级 警告（4 个及以上）") && message.contains("未开启阻断，只提醒"));
+        assert!(message.contains("等级 告警（>3）") && message.contains("未开启阻断，只提醒"));
         assert!(note.message.contains("1. 203.0.113.1 - 中国, 上海, 某运营商"));
         assert!(note.message.contains("2. 203.0.113.2 - (查询失败)"));
         assert!(note.message.contains("... 仅显示前 15 条"));

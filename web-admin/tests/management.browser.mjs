@@ -44,7 +44,7 @@ try {
   await enrollmentPanel.getByRole('button',{name:'安装并接入此节点',exact:true}).waitFor()
   await enrollmentPanel.getByRole('button',{name:'安装并接入此节点',exact:true}).click()
   const enrollCommand=await enrollmentPanel.locator('pre').textContent()
-  assert.match(enrollCommand,new RegExp(`^curl -fsS 'https://panel\\.example\\.com/management-files/enroll\\.sh' \\| sh -s -- ${id} [0-9a-f]{64}$`),enrollCommand)
+  assert.match(enrollCommand,new RegExp(`^curl -fsS 'https://panel\\.example\\.com/management-files/enroll\\.sh' \\| sh -s -- [0-9a-f]{64}$`),enrollCommand)
   await unboundCard.getByRole('button',{name:'接入管理',exact:true}).click()
   assert(await enrollmentPanel.isVisible(),'repeated enrollment clicks must keep node management open')
   await enrollmentPanel.getByRole('button',{name:'收起',exact:true}).click()
@@ -52,7 +52,7 @@ try {
   assert(!await page.getByTestId('node-detail').isVisible(),'closing enrollment must not reveal Snell for an unbound node')
   const enrollment=await api(`/api/management/${id}/enrollment`,{})
   const credential='c'.repeat(64)
-  await api('/api/management-agent/v1/enroll',{node:id,enrollment:enrollment.enrollment,credential,boot_id:''})
+  await api('/api/management-agent/v1/enroll',{enrollment:enrollment.enrollment,credential,boot_id:''})
   const empty={installed:true,resources:[],revision:'a'.repeat(64),blocked:false,runtime:{},core:{version:'6.0.0',sha256:'a'.repeat(64),previous_version:'5.0.0',candidates:['6.1.0']}}
   const snapshot={...empty,modules:{sb:{...empty},fw:{...empty},pm:{...empty,core:{candidates:[]}}}}
   async function poll(result=null) {
@@ -161,9 +161,9 @@ try {
   snapshot.modules.pm.installed=true;await finish(task)
   await instances.getByRole('button',{name:'新增 PM 规则',exact:true}).click();await pmEditor.getByLabel('业务端口',{exact:true}).selectOption('23456');assert.equal(await page.locator('[data-testid^="pm-rule-"] [data-testid="pm-policy-editor"]').count(),0,'a new rule opens under its button')
   // A new rule warns at 3, alarms at 5 and blocks from the 6th.
-  const warnAt=pmEditor.getByLabel('起警告的 IP 数（0 关闭）',{exact:true});assert.equal(await warnAt.inputValue(),'3')
-  assert(await pmEditor.getByLabel(/个起阻断/).isChecked())
-  await pmEditor.getByText('当前设置：3 个起警告、5 个起报警、第 6 个起阻断',{exact:true}).waitFor()
+  const warnAt=pmEditor.getByLabel('告警阈值（IP 数，0 关闭）',{exact:true});assert.equal(await warnAt.inputValue(),'3')
+  assert(await pmEditor.getByLabel('>6 阻断后续连接',{exact:true}).isChecked())
+  await pmEditor.getByText('>3 告警 · >5 报警 · >6 阻断后续连接',{exact:true}).waitFor()
   await pmEditor.getByText(/提醒推送未启用/).waitFor()
   await warnAt.fill('0')
   assert.equal(await pmEditor.getByText(/提醒推送未启用/).count(),0,'metering only needs no warning')
@@ -180,13 +180,13 @@ try {
   await pmEditor.getByRole('button',{name:'取消',exact:true}).click();await pmEditor.waitFor({state:'detached'})
   task=await submit(instances.getByRole('button',{name:'重置用量',exact:true}));assert.equal(task.request.action,'reset');await finish(task)
   await instances.getByRole('button',{name:'编辑',exact:true}).click();await pmEditor.locator('summary').filter({hasText:'IP 告警'}).click()
-  await pmEditor.getByLabel('起警告的 IP 数（0 关闭）',{exact:true}).fill('3');await pmEditor.getByLabel('白名单 IP / 网段（可选，最多 32 项）',{exact:true}).fill('203.0.113.9, 2001:db8::9')
+  await pmEditor.getByLabel('告警阈值（IP 数，0 关闭）',{exact:true}).fill('2');await pmEditor.getByLabel('白名单 IP / 网段（可选，最多 32 项）',{exact:true}).fill('203.0.113.9, 2001:db8::9')
   task=await submit(pmEditor.getByRole('button',{name:'保存并应用',exact:true}))
   assert.deepEqual(task.request.payload.ip_limit,{max_ips:2,cooldown_min:30,whitelist:['203.0.113.9','2001:db8::9']})
   snapshot.modules.pm.resources=[task.request.payload];snapshot.modules.pm.revision='d'.repeat(64)
   snapshot.modules.pm.usage={'23456':{rx:0,tx:0,sampled_at:Math.floor(Date.now()/1000),period_start:'',alert:'normal',ip_count:4,ip_level:1,ip_alert:1,ip_list:['198.51.100.1','198.51.100.2','198.51.100.3','198.51.100.4']}}
-  await finish(task);await instances.locator('summary').filter({hasText:'规则详情'}).click();await instances.getByText(/3 个起警告、5 个起报警/).waitFor()
-  const online=instances.locator('details').filter({hasText:'TCP 在线 IP 4 个 · 警告'})
+  await finish(task);await instances.locator('summary').filter({hasText:'规则详情'}).click();await instances.getByText(/>2 告警 · >4 报警/).waitFor()
+  const online=instances.locator('details').filter({hasText:'TCP 在线 IP 4 个 · 告警'})
   assert.match(await online.getAttribute('class'),/text-amber/)
   await online.locator('summary').click();await online.getByText('198.51.100.1、198.51.100.2、198.51.100.3、198.51.100.4',{exact:true}).waitFor()
   // The week's chart is the Hub's difference between two reports.
@@ -212,11 +212,11 @@ try {
   const addSnell=row=>{const {_running,...resource}=row;snapshot.resources.push(resource);snapshot.runtime[String(row.port)]=_running;snapshot.revision=row.port.toString(16).padStart(64,'0')}
   await add.click();await editor.getByLabel('监听端口',{exact:true}).fill('40001');await editor.getByLabel(/同时启用 PM 统计/).check()
   await editor.getByLabel('配额（GiB，0 关闭）',{exact:true}).fill('100')
-  await editor.getByLabel('起警告的 IP 数（0 关闭）',{exact:true}).fill('4');await editor.getByLabel('白名单 IP / 网段（可选，最多 32 项）',{exact:true}).fill('203.0.113.0/33')
+  await editor.getByLabel('告警阈值（IP 数，0 关闭）',{exact:true}).fill('3');await editor.getByLabel('白名单 IP / 网段（可选，最多 32 项）',{exact:true}).fill('203.0.113.0/33')
   await editor.getByRole('button',{name:'保存并应用',exact:true}).click();await editor.getByText(/203\.0\.113\.0\/33 不是有效的 IP 地址/).waitFor()
   assert.equal(await decision().count(),0,'an invalid PM field stops before anything is submitted')
   await editor.getByLabel('白名单 IP / 网段（可选，最多 32 项）',{exact:true}).fill('203.0.113.0/24')
-  await editor.getByRole('button',{name:'保存并应用',exact:true}).click();assert.match(await decision().textContent(),/实例运行后应用 PM 规则（配额 100 GiB／IP 4 个起警告、6 个起报警、第 7 个起阻断）/)
+  await editor.getByRole('button',{name:'保存并应用',exact:true}).click();assert.match(await decision().textContent(),/实例运行后应用 PM 规则（配额 100 GiB／IP >3 告警 · >5 报警 · >6 阻断后续连接）/)
   let response=posted();await accept();await response;task=(await poll()).task
   assert.equal(task.request.module,undefined);assert.equal(task.request.payload.port,40001)
   addSnell(snellRow(40001,'activating'));await poll({id:task.request.id,status:'succeeded',message:'fixture applied'})
@@ -228,8 +228,7 @@ try {
   snapshot.modules.pm.resources.push(task.request.payload);snapshot.modules.pm.revision='e'.repeat(64);await poll({id:task.request.id,status:'succeeded',message:'fixture applied'})
   await progress.filter({hasText:'实例和 PM 规则已完成。'}).waitFor();assert(!await add.isDisabled())
   await instances.getByTestId('instance-40001').getByRole('button',{name:'PM 已统计',exact:true}).click()
-  await pmEditor.getByText('编辑 PM 规则',{exact:false}).waitFor();assert.equal(await pmEditor.getByLabel('配额（GiB，0 关闭）',{exact:true}).inputValue(),'100')
-  await pmEditor.getByRole('button',{name:'取消',exact:true}).click();await pmEditor.waitFor({state:'detached'})
+  await page.getByTestId('pm-rule-40001').waitFor();assert.equal(await pmEditor.count(),0,'an existing rule is shown, not opened for editing')
 
   // A failed instance submits no PM rule.
   await select('snell');await add.click();await editor.getByLabel('监听端口',{exact:true}).fill('40002');await editor.getByLabel(/同时启用 PM 统计/).check()
@@ -262,7 +261,7 @@ try {
   await poll({id:task.request.id,status:'rolled_back',message:'private binary path',code:'core_runtime'});await refresh()
   await instances.getByRole('alert').filter({hasText:/核心或业务实例健康检查失败/}).waitFor();assert.equal(await page.getByText(/private binary path/).count(),0)
   const second=await api('/api/nodes',{name:'东京服务节点',public:false}),enrollment2=await api(`/api/management/${second.id}/enrollment`,{}),credential2='d'.repeat(64)
-  await api('/api/management-agent/v1/enroll',{node:second.id,enrollment:enrollment2.enrollment,credential:credential2,boot_id:''})
+  await api('/api/management-agent/v1/enroll',{enrollment:enrollment2.enrollment,credential:credential2,boot_id:''})
   const secondPoll=await context.request.post(base+'/api/management-agent/v1/poll',{data:{snapshot,result:null},headers:{Authorization:'Bearer '+credential2,'X-Node-Manager-Protocol':'1'}});assert(secondPoll.ok())
   await page.reload();await instances.getByTestId('instance-12345').waitFor();await page.getByTestId(`node-manage-${second.id}`).click()
   assert.equal(await detail.getAttribute('data-node-id'),String(id));assert.equal(await nodePanel.getByTestId('node-maintenance').getAttribute('data-node-id'),String(second.id))

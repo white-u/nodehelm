@@ -542,12 +542,12 @@ fn internal(ip: &str) -> bool {
 }
 
 /// The original PM tool's layout, in plain text like every other alert. The
-/// levels are named by count: limit + 1 warns, limit + 3 alarms.
+/// levels are named as on the panel: over the limit warns, over limit + 2 alarms.
 pub(crate) fn ip_note(node: &str, alert: &IpAlert, places: &HashMap<String, String>) -> Note {
     let (title, level) = if alert.level >= 2 {
-        ("🔴 异常接入报警", format!("报警（{} 个及以上）", alert.max + 3))
+        ("🔴 异常接入报警", format!("报警（>{}）", alert.max + 2))
     } else {
-        ("🚨 异常接入警告", format!("警告（{} 个及以上）", alert.max + 1))
+        ("🚨 异常接入告警", format!("告警（>{}）", alert.max))
     };
     let mut lines = vec![
         format!(
@@ -557,7 +557,7 @@ pub(crate) fn ip_note(node: &str, alert: &IpAlert, places: &HashMap<String, Stri
         ),
         format!("在线 {} IP · 等级 {level}", alert.count),
         if alert.block {
-            format!("已开启阻断：第 {} 个起的新地址自动阻断 30 分钟", alert.max + 4)
+            format!("已开启阻断：>{} 的后续连接阻断 30 分钟", alert.max + 3)
         } else {
             "未开启阻断，只提醒".to_owned()
         },

@@ -328,7 +328,7 @@ do_uninstall() {
 		if [ -z "$YES" ]; then
 			interactive || die "无终端时请加 --yes 确认"
 			echo "将卸载后台并删除全部数据：数据库、密钥、主题、维护记录和服务器上的备份。" >/dev/tty
-			echo "如需留存，请先在后台「数据」页下载备份；网页备份不含服务管理密钥，恢复后节点需重新接入。" >/dev/tty
+			echo "如需留存，请先在后台「数据」页下载备份。" >/dev/tty
 			ask "输入 uninstall 确认: " ''
 			[ "$REPLY" = uninstall ] || die "已取消"
 		fi

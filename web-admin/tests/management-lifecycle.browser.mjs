@@ -42,7 +42,7 @@ try {
   async function createManaged(name,credential,supported=true,empty=false){
     const {id}=await api('/api/nodes',{name,public:false})
     const enrollment=await api(`/api/management/${id}/enrollment`,{})
-    await api('/api/management-agent/v1/enroll',{node:id,enrollment:enrollment.enrollment,credential,boot_id:''})
+    await api('/api/management-agent/v1/enroll',{enrollment:enrollment.enrollment,credential,boot_id:''})
     const snapshot=structuredClone(template)
     if(empty){snapshot.resources=[];snapshot.runtime={};for(const state of Object.values(snapshot.modules)){state.resources=[];state.runtime={}}}
     const node={id,name,credential,supported,snapshot}

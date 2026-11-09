@@ -4,13 +4,13 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Plus } from "lucide-react"
 import { InlinePanel, useServiceConfirmation } from "./ServiceInteractions"
-import { type ApplyIntent, type PmDraft, type PmPolicy, type PmUsage, type RootSnapshot, type Snapshot, pmAlerts, pmTrafficBars, type PmTrafficHour, type PmTrafficBar, gib, pmDraft, newPmDraft, pmPayload, ipThresholds, readManagement } from "./model"
+import { type ApplyIntent, type PmDraft, type PmPolicy, type PmUsage, type RootSnapshot, type Snapshot, pmAlerts, pmTrafficBars, type PmTrafficHour, type PmTrafficBar, gib, pmDraft, newPmDraft, pmPayload, ipThresholds, ipBlock, readManagement } from "./model"
 
 export function PmPanel({ node, nodeId, snapshot, view, writable, busy, feedback, refreshing, onDirtyChange, run, submit, opening, alerts = true }: {
   node: string
   nodeId: number
   alerts?: boolean
-  /** Opened from an instance row: edit its rule, or add one for its port, with a kept draft if any. */
+  /** Opened from an instance row: show its rule, or add one for its port, with a kept draft if any. */
   opening?: { port: number; draft?: PmDraft; seq: number }
   snapshot?: RootSnapshot
   view?: Snapshot
@@ -32,13 +32,18 @@ export function PmPanel({ node, nodeId, snapshot, view, writable, busy, feedback
     if (!candidates.some(candidate => candidate.port === port)) return null
     return draft ?? newPmDraft(port, candidates.find(c => c.port === port)?.name || "端口监控")
   }
-  // Opened from an instance row, the panel starts with that port's form.
+  // Opened from an instance row: an existing rule is only scrolled to, a missing one starts its form.
   const [start] = useState(() => {
-    if (!opening) return { form: null, editing: false, notice: "" }
-    const rule = rules?.find(item => item.port === opening.port)
-    const form = view?.installed ? draftFor(rule, opening.port, opening.draft) : null
-    return { form, editing: !!rule, notice: form ? "" : `端口 ${opening.port} 暂不能添加 PM 规则：实例需在运行中。` }
+    if (!opening || rules?.some(item => item.port === opening.port)) return { form: null, editing: false, notice: "" }
+    const form = view?.installed ? draftFor(undefined, opening.port, opening.draft) : null
+    return { form, editing: false, notice: form ? "" : `端口 ${opening.port} 暂不能添加 PM 规则：实例需在运行中。` }
   })
+  const openedRule = useRef<HTMLDivElement | null>(null)
+  // After the page's own scroll to the module area, which is queued first.
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => openedRule.current?.scrollIntoView({ block: "nearest", behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" }))
+    return () => cancelAnimationFrame(frame)
+  }, [])
   const [form, setForm] = useState<PmDraft | null>(start.form)
   const [revision, setRevision] = useState(start.form ? view?.revision ?? "" : "")
   const [editing, setEditing] = useState(start.editing)
@@ -117,7 +122,7 @@ export function PmPanel({ node, nodeId, snapshot, view, writable, busy, feedback
             const alert = usage?.alert ?? "normal"
             const tone = alert === "quota_warning" ? "bg-amber-500/10 text-amber-700 dark:text-amber-400" : alert === "quota_reached" || alert === "expired" ? "bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground"
             const label = pmAlerts[alert] ?? alert
-            return <div key={rule.port} data-testid={`pm-rule-${rule.port}`} className="min-w-0 space-y-4 rounded-lg border p-4 text-sm">
+            return <div key={rule.port} ref={rule.port === opening?.port ? openedRule : undefined} data-testid={`pm-rule-${rule.port}`} className="min-w-0 space-y-4 rounded-lg border p-4 text-sm">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1"><strong className="break-all font-medium">{rule.name}</strong><span className="text-xs text-muted-foreground">端口 {rule.port}</span></div>
                 {usage && <span className={`rounded px-2 py-1 text-xs ${tone}`}>{label}</span>}
@@ -177,18 +182,18 @@ export function PmFields({ form, setForm, busy, alerts = true }: { form: PmDraft
       <label>到期日期（可选）<Input type="date" value={form.expiry_date} onChange={e => setForm({ ...form, expiry_date: e.target.value })} /></label>
       <label>出站超速丢包（Mbps，0 关闭）<Input type="number" required min={0} max={10000} value={form.egress_mbps} onChange={e => setForm({ ...form, egress_mbps: Number(e.target.value) })} /></label>
     </fieldset>
-    <details className="text-sm" open={form.warn_ips > 0}>
+    <details className="text-sm" open={form.max_ips > 0}>
       <summary className="cursor-pointer text-muted-foreground">IP 告警与阻断</summary>
       <fieldset disabled={busy} className="mt-3 grid gap-3 sm:grid-cols-2">
-        <label>起警告的 IP 数（0 关闭）<Input aria-label="起警告的 IP 数（0 关闭）" type="number" required min={0} max={65536} value={form.warn_ips} onChange={e => setForm({ ...form, warn_ips: Number(e.target.value) })} />{form.warn_ips > 1 && <span className="text-xs text-muted-foreground">当前设置：{ipThresholds(form.warn_ips - 1, form.block)}</span>}</label>
-        <label>重复提醒间隔（分钟）<Input type="number" required min={1} max={525600} disabled={!form.warn_ips} value={form.cooldown_min} onChange={e => setForm({ ...form, cooldown_min: Number(e.target.value) })} /></label>
-        <label className="flex items-center gap-2 sm:col-span-2"><input type="checkbox" className="size-4" aria-label={form.warn_ips > 1 ? `${form.warn_ips + 3} 个起阻断` : "超限阻断"} disabled={!form.warn_ips} checked={form.block} onChange={e => setForm({ ...form, block: e.target.checked })} />{form.warn_ips > 1 ? `${form.warn_ips + 3} 个起阻断` : "超限阻断"}</label>
-        <label className="sm:col-span-2">白名单 IP / 网段（可选，最多 32 项）<textarea aria-label="白名单 IP / 网段（可选，最多 32 项）" className="block min-h-20 w-full rounded border bg-background p-2" disabled={!form.warn_ips} placeholder="例如：203.0.113.7、203.0.113.0/24、2001:db8::/64；每行或逗号分隔" value={form.whitelist} onChange={e => setForm({ ...form, whitelist: e.target.value })} /></label>
+        <label>告警阈值（IP 数，0 关闭）<Input aria-label="告警阈值（IP 数，0 关闭）" type="number" required min={0} max={65535} value={form.max_ips} onChange={e => setForm({ ...form, max_ips: Number(e.target.value) })} />{form.max_ips > 0 && <span className="text-xs text-muted-foreground">{ipThresholds(form.max_ips, form.block)}</span>}</label>
+        <label>重复提醒间隔（分钟）<Input type="number" required min={1} max={525600} disabled={!form.max_ips} value={form.cooldown_min} onChange={e => setForm({ ...form, cooldown_min: Number(e.target.value) })} /></label>
+        <label className="flex items-center gap-2 sm:col-span-2"><input type="checkbox" className="size-4" aria-label={form.max_ips > 0 ? ipBlock(form.max_ips) : "阻断后续连接"} disabled={!form.max_ips} checked={form.block} onChange={e => setForm({ ...form, block: e.target.checked })} />{form.max_ips > 0 ? ipBlock(form.max_ips) : "阻断后续连接"}</label>
+        <label className="sm:col-span-2">白名单 IP / 网段（可选，最多 32 项）<textarea aria-label="白名单 IP / 网段（可选，最多 32 项）" className="block min-h-20 w-full rounded border bg-background p-2" disabled={!form.max_ips} placeholder="例如：203.0.113.7、203.0.113.0/24、2001:db8::/64；每行或逗号分隔" value={form.whitelist} onChange={e => setForm({ ...form, whitelist: e.target.value })} /></label>
       </fieldset>
       <p className="mt-2 text-xs text-muted-foreground">白名单内的 IP 和网段不计数、不阻断。</p>
-      <details className="mt-2 text-xs text-muted-foreground"><summary className="cursor-pointer">统计与阻断说明</summary><p className="mt-2">每分钟检查，连续两次在线才计数；扫描和 Reality 验证失败不计入。达到阈值后按提醒间隔推送。阻断保留最早在线的 IP，新增 IP 拒绝 30 分钟；白名单或数量变更后下一分钟重新判断。</p></details>
+      <details className="mt-2 text-xs text-muted-foreground"><summary className="cursor-pointer">统计与阻断说明</summary><p className="mt-2">每分钟检查，连续两次在线才计数；扫描和 Reality 验证失败不计入。超过阈值后按提醒间隔推送。阻断保留最早在线的 IP，新增 IP 拒绝 30 分钟；白名单或数量变更后下一分钟重新判断。</p></details>
     </details>
-    {!alerts && (form.quota_gb > 0 || form.warn_ips > 0) && <p role="status" className="text-xs text-destructive">提醒推送未启用，可在“通知”页配置。</p>}
+    {!alerts && (form.quota_gb > 0 || form.max_ips > 0) && <p role="status" className="text-xs text-destructive">提醒推送未启用，可在“通知”页配置。</p>}
   </>
 }
 
@@ -197,7 +202,7 @@ function OnlineIps({ usage }: { usage: PmUsage }) {
   if (usage.ip_count == null) return null
   const list = usage.ip_list ?? []
   const tone = usage.ip_level === 2 ? "text-destructive" : usage.ip_level === 1 ? "text-amber-600 dark:text-amber-400" : undefined
-  const label = `TCP 在线 IP ${usage.ip_count} 个${usage.ip_level === 2 ? " · 报警" : usage.ip_level === 1 ? " · 警告" : ""}`
+  const label = `TCP 在线 IP ${usage.ip_count} 个${usage.ip_level === 2 ? " · 报警" : usage.ip_level === 1 ? " · 告警" : ""}`
   if (!list.length) return <p className={tone}>{label}</p>
   return <details className={tone}>
     <summary className="cursor-pointer">{label}</summary>

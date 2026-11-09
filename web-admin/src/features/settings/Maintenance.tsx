@@ -299,14 +299,7 @@ export function Data() {
       </Card>
 
       <Card className="gap-4 p-5">
-        <div>
-          <h3 className="text-sm font-medium">备份</h3>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            导出的是整个数据库，含节点凭证与登录密码哈希，请当作密钥保管。恢复会用备份文件整体覆盖当前数据，当前节点、设置、历史全部以备份为准，所有设备需要重新登录。服务管理的节点绑定保留，节点会自动重连并重新上报配置，VPS 业务服务继续运行；操作记录和 PM 流量历史不恢复。
-            <br />
-            请用这里导出的文件恢复：直接复制 <code>monitor.db</code> 会丢掉预写日志里还没落盘的那部分。
-          </p>
-        </div>
+        <h3 className="text-sm font-medium">备份</h3>
         <div className="flex flex-wrap gap-2">
           {/* The browser's own download: the file is streamed straight from
               the response, never held in the page. */}
@@ -344,7 +337,7 @@ export function Data() {
       {pending && (
         <ConfirmDialog
           title="用备份覆盖当前数据？"
-          description={`将用 ${pending.name}（${bytes(pending.size)}）整体替换当前数据库。当前的节点、设置和历史全部丢失，且无法撤销。`}
+          description={`将用 ${pending.name}（${bytes(pending.size)}）整体替换当前数据库，无法撤销。`}
           confirmLabel={busy === "restore" ? `已上传 ${bytes(sent)} / ${bytes(pending.size)}` : "确认恢复"}
           busy={!!busy}
           onClose={() => { abort.current?.abort(); setPending(null) }}
