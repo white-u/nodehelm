@@ -31,18 +31,15 @@ cd web-admin
 npm run dev
 ```
 
-打开 Vite 输出地址下的 `/admin/`；[vite.config.ts](web-admin/vite.config.ts) 将 `/api`（含 WebSocket）和图标代理到 `127.0.0.1:9911`。也可直接访问 hub 的 `/admin/` 查看已嵌入的构建版本。纯 HTTP 本地入口可做界面和已有数据联调，但添加/安装节点要求 HTTPS 域名入口；真实 agent 联调应按 [部署说明](OPERATIONS.md) 配置可访问的域名。
+打开 Vite 输出地址下的 `/admin/`；[vite.config.ts](web-admin/vite.config.ts) 将 `/api`（含 WebSocket）和图标代理到 `127.0.0.1:9911`。也可直接访问 hub 的 `/admin/` 查看已嵌入的构建版本。默认主题同样在 `web-theme/` 下 `npm run dev`，代理方式见 [web-theme/README.md](web-theme/README.md)。纯 HTTP 本地入口可做界面和已有数据联调，但添加/安装节点要求 HTTPS 域名入口；真实 agent 联调应按 [部署说明](OPERATIONS.md) 配置可访问的域名。
 
 ## 检查与测试
 
-以下顺序与 [CI](.github/workflows/ci.yml) 一致，前提是主题和后台资源已构建：
+以下顺序与 [CI](.github/workflows/ci.yml) 一致，前提是两个前端的依赖已安装：
 
 ```sh
-cd web-admin
-npm run lint
-npm test
-npm run build
-cd ..
+(cd web-admin && npm run lint && npm test && npm run build)
+(cd web-theme && npm run lint && npm test && npm run build)
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 python3 -m unittest discover -s management/tests
@@ -57,14 +54,14 @@ scripts/e2e.sh target/debug/monitor-hub agent/target/release/monitor-agent
 
 `integration_http.py` 用真实后台和管理组件走一遍登录、绑定、上报与回执；`e2e.sh` 用后台与监控 agent 在回环上核对节点上报和公开字段。
 
-`npm test` 使用 Node 直接运行 `api.test.ts` 和服务表单 `model.test.ts`，应使用 CI 同代的 Node。它验证请求和辅助数据逻辑，并非浏览器端到端覆盖。Rust 用例主要放在各模块内，分时流量数据库测试通过 `db/mod.rs` 引入 `src/testdata/traffic-period.rs`。
+`web-admin` 的 `npm test` 使用 Node 直接运行 `api.test.ts` 和服务表单 `model.test.ts`，`web-theme` 的运行格式化与实时指标测试，应使用 CI 同代的 Node（22.18 以下不能直接运行 `.ts`）。它验证请求和辅助数据逻辑，并非浏览器端到端覆盖。Rust 用例主要放在各模块内，分时流量数据库测试通过 `db/mod.rs` 引入 `src/testdata/traffic-period.rs`。
 
 | 修改范围 | 必要关联检查 |
 | --- | --- |
 | 流量基线或分时表 | `cargo test traffic_period`，并检查 `db/tests.rs` 的累计、恢复、裁剪测试 |
 | API / 身份 / 公开字段 | 对应 Rust 模块测试、`npm test`，必要时跑 agent 集成 |
 | 管理后台 | lint、test、build；布局交互仍需实际页面验证 |
-| 主题或嵌入流程 | 固定主题下载校验、后台 build、Cargo build，检查默认与磁盘主题 |
+| 默认主题或嵌入流程 | `web-theme` 的 lint、test、build 与版本一致，Cargo build，检查默认与磁盘主题；不得调用契约以外的接口 |
 | 安装器 | ShellCheck 和语法检查；实际服务生命周期在专用 Linux 测试机验证 |
 
 定向测试通过不代替相关集成检查，测试筛选无匹配时也不视为覆盖成功。
