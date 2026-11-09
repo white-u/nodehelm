@@ -14,6 +14,7 @@ import zipfile
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from agent import execute_module_task
 from controller import Controller
+from modules import SPECS
 import install
 from modules import request
 from protocol import Rejected
@@ -79,7 +80,7 @@ class CoreLifecycleTests(unittest.TestCase):
         self.driver.runtime = self.systemd.runtime
         self.driver.unit_metadata = self.systemd.metadata
         self.driver.require_platform = lambda: None
-        self.c = Controller(self.root, self.driver)
+        self.c = Controller(self.root, self.driver, SPECS['snell'])
         self.seq = 0
 
         self.binary = {'6.0.0': b'trusted original binary', '6.1.0': b'trusted newer binary'}
@@ -301,7 +302,7 @@ class CoreLifecycleTests(unittest.TestCase):
             with self.assertRaises(Interrupted):
                 self.c.execute(self.req('core_upgrade', version='6.1.0'))
         self.assertIs(read(self.c.journal)['backup']['mutation_started'], False)
-        self.assertEqual(Controller(self.root, self.driver).recover()['status'], 'rolled_back')
+        self.assertEqual(Controller(self.root, self.driver, SPECS['snell']).recover()['status'], 'rolled_back')
         self.assertEqual(self.systemd.mutations(), [])
         self.assertEqual(self.systemd.active, set())
         self.assertFalse(self.c.journal.exists())
@@ -326,7 +327,7 @@ class CoreLifecycleTests(unittest.TestCase):
                     journal = read(self.c.journal)
                     journal['backup'].pop('mutation_started')
                     write(self.c.journal, journal)
-                result = Controller(self.root, self.driver).recover()
+                result = Controller(self.root, self.driver, SPECS['snell']).recover()
                 active = self.driver.unit(12345)
                 if legacy:
                     self.assertEqual(result['status'], 'recovery_failed')
@@ -365,7 +366,7 @@ class CoreLifecycleTests(unittest.TestCase):
         journal = read(self.c.journal)
         journal['backup'].pop('mutation_started')
         write(self.c.journal, journal)
-        restarted = Controller(self.root, self.driver)
+        restarted = Controller(self.root, self.driver, SPECS['snell'])
         self.opener.side_effect = AssertionError('recovery must not download')
         self.assertEqual(restarted.recover()['status'], 'rolled_back')
         self.assertEqual(self.driver.binary.read_bytes(), self.binary['6.0.0'])
@@ -388,7 +389,7 @@ class CoreLifecycleTests(unittest.TestCase):
             self.c.execute(self.req('core_uninstall'))
         self.assertTrue(unknown.exists())
         unknown.unlink()
-        pm = Controller(self.root / 'pm', FakeDriver(), 'pm')
+        pm = Controller(self.root / 'pm', FakeDriver(), SPECS['pm'])
         write(pm.state, {'installed': True, 'resources': [{'port': 12345}]})
         result = execute_module_task({'snell': self.c, 'pm': pm},
                                      {'request': self.req('core_uninstall'), 'expires': time.time() + 30})

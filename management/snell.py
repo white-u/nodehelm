@@ -4,10 +4,7 @@ import re
 import secrets
 from controller import Controller
 from core_driver import CoreDriver
-from protocol import Rejected, address, fields, name, port
-
-MODULE = 'snell'
-ACTIONS = frozenset({'install', 'apply', 'delete', 'core_upgrade', 'core_rollback', 'core_uninstall'})
+from protocol import Rejected, Spec, address, fields, name, port
 
 
 def resource(value):
@@ -24,8 +21,12 @@ def resource(value):
     return dict(port=listen, name=label, host=address(value.get('host')), public_port=public_port, mode=mode, psk=psk)
 
 
+SPEC = Spec('snell', frozenset({'install', 'apply', 'delete', 'core_upgrade', 'core_rollback', 'core_uninstall'}),
+            resource)
+
+
 class Driver(CoreDriver):
-    module = MODULE
+    module = SPEC.name
     title = 'Snell'
     binary_name = 'snell-server'
     subdirectory = ''
@@ -64,4 +65,4 @@ WantedBy=multi-user.target
 
 
 def controller(root):
-    return Controller(root, Driver(root), MODULE)
+    return Controller(root, Driver(root), SPEC)

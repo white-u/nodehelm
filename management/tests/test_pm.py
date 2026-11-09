@@ -10,6 +10,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from agent import execute_module_task
 from controller import Controller
+from modules import SPECS
 from protocol import Rejected, revision
 import pm
 from pm import Driver, GIB, batch, block_script, peers, period_start, plan, reality_probes, watch
@@ -402,7 +403,7 @@ class PmTests(unittest.TestCase):
                 with self.assertRaises(KeyboardInterrupt):
                     driver.disable_empty()
             lock.assert_called_once_with(lock_writer=False)
-            controller = Controller(root, driver, 'pm')
+            controller = Controller(root, driver, SPECS['pm'])
             journal = read(controller.journal)
             self.assertTrue(journal['local'])
             self.assertEqual(journal['phase'], 'prepared')
@@ -434,8 +435,8 @@ class PmTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)
-            snell = Controller(root / 'snell', Probe())
-            pm = Controller(root / 'pm', FakeDriver())
+            snell = Controller(root / 'snell', Probe(), SPECS['snell'])
+            pm = Controller(root / 'pm', FakeDriver(), SPECS['pm'])
             snell_state = {'installed': True, 'resources': []}
             pm_state = {'installed': True, 'resources': []}
             write(snell.state, snell_state)

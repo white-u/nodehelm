@@ -15,6 +15,7 @@ import time
 import uuid
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]))
 from controller import Controller
+from modules import SPECS
 from protocol import Rejected
 import fw
 import sb
@@ -68,7 +69,7 @@ def main():
         if module=='snell':driver.binary=root/'snell-server';driver.configs=directory/'configs'
         driver.unit=lambda port,m=module:f'node-manager-acceptance-{tag}-{m}-{port}.service'
         drivers.append(driver)
-        return Controller(directory,driver,module),driver
+        return Controller(directory,driver,SPECS[module]),driver
     def execute(c,action,payload=None,expected='succeeded'):
         req=dict(id=uuid.uuid4().hex,action=action,payload=payload or {},revision=c.snapshot()['revision'])
         if c.module!='snell':req['module']=c.module

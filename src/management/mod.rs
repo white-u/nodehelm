@@ -32,10 +32,10 @@ mod lifecycle;
 #[cfg(test)]
 mod lifecycle_tests;
 mod models;
+mod pm;
 mod tasks;
 #[cfg(test)]
 mod tests;
-mod traffic;
 
 pub use self::{enroll::*, tasks::*};
 
@@ -61,7 +61,7 @@ pub fn ensure(c: &Connection) -> Result<()> {
       module TEXT NOT NULL DEFAULT '', action TEXT NOT NULL DEFAULT '');",
     )?;
     c.execute_batch("CREATE TABLE IF NOT EXISTS managed_maintenance (node INTEGER PRIMARY KEY REFERENCES managed_node(node) ON DELETE CASCADE, token TEXT NOT NULL, expires INTEGER NOT NULL);")?;
-    c.execute_batch(traffic::SCHEMA)?;
+    c.execute_batch(pm::SCHEMA)?;
     let columns = {
         let mut statement = c.prepare("PRAGMA table_info(managed_operation)")?;
         let result = statement
@@ -311,7 +311,7 @@ pub async fn port_traffic(
     Path(node): Path<i64>,
     Query(input): Query<TrafficPort>,
 ) -> Response {
-    response(traffic::read(&app.db.conn(), node, input.port.into(), now()))
+    response(pm::read(&app.db.conn(), node, input.port.into(), now()))
 }
 #[derive(Deserialize, Default)]
 pub struct ExportFormat {

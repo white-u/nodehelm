@@ -14,9 +14,9 @@
 | [install.py](install.py) | 安装登记（上报本机 boot ID 供后台核对机器）、首次上报确认、组件升级回退、恢复和组件移除 |
 | [lifecycle.py](lifecycle.py) | 持久卸载计划、步骤推进、模块回执确认和独立清理执行器 |
 | [menu.py](menu.py) | 节点本机菜单 `sudo nodehelm`：升级、状态、日志与恢复，命令随组件安装和清理 |
-| [modules.py](modules.py) | 模块注册表：模块清单、请求校验入口、各模块 Controller 与核心驱动 |
-| [controller.py](controller.py) | 与模块无关的事务：版本比对、去重回执、提交和失败恢复 |
-| [protocol.py](protocol.py) | 协议版本、请求外层校验、配置版本摘要、错误模型及多模块共用的字段检查 |
+| [modules.py](modules.py) | 模块注册表：模块清单与各模块 `Spec`、请求校验入口、各模块 Controller 与核心驱动；只由入口 `agent.py`、`install.py` 导入 |
+| [controller.py](controller.py) | 与模块无关的事务：版本比对、去重回执、提交和失败恢复；模块差异来自构造时传入的驱动和 `Spec` |
+| [protocol.py](protocol.py) | 协议版本、模块声明 `Spec`、请求外层校验、配置版本摘要、错误模型及多模块共用的字段检查 |
 | [core_driver.py](core_driver.py) | Snell／SB／FW 共用的核心驱动基类：可信核心下载、校验、切换与回退，实例文件及 systemd 单元归属；系统命令与原子写入 |
 | [storage.py](storage.py) | 状态文件读写、原子替换与目录操作 |
 | [core_assets.json](core_assets.json) | 核心版本、架构、发行地址与摘要清单 |
@@ -24,7 +24,7 @@
 
 ## 四个业务模块入口
 
-每个模块一个文件，包含 `MODULE`、支持的 `ACTIONS`、字段校验 `resource`、驱动 `Driver` 和 `controller(root)`，由 [modules.py](modules.py) 注册。修改一个模块只改它自己的文件；模块之间不互相引用，共用部分只放在 `protocol.py` 和 `core_driver.py`。
+每个模块一个文件，包含字段校验 `resource`、模块声明 `SPEC`（名称、支持的操作、字段校验）、驱动 `Driver` 和 `controller(root)`，由 [modules.py](modules.py) 注册。修改一个模块只改它自己的文件；模块之间不互相引用，共用部分只放在 `protocol.py`、`controller.py` 和 `core_driver.py`。
 
 | 模块 | 文件 | 内容 |
 | --- | --- | --- |
@@ -33,7 +33,12 @@
 | FW：Realm 转发 | [fw.py](fw.py) | 字段、Realm 配置、自环检查与目标连通检查 |
 | PM：端口策略 | [pm.py](pm.py) | 字段、计量、配额、重置、到期策略、限速、在线 IP 统计、告警与阻断、定时维护及 `PMController` |
 
-后台对应的模型在 [models.rs](../src/management/models.rs)，页面在 [Management.tsx](../web-admin/src/features/services/Management.tsx)。新增模块：新建模块文件，在 `modules.py` 注册，并加入后台 [enroll.rs](../src/management/enroll.rs) 的 `FILES`；再沿后台模型及页面入口补齐。
+后台对应的模型在 [models.rs](../src/management/models.rs)，页面在 [Management.tsx](../web-admin/src/features/services/Management.tsx)。
+
+新增模块需要改动：
+
+- 组件：新建模块文件并在 `modules.py` 注册；在 `install.py` 的 `MODULES`（自有状态目录时）和 `CORES`（有核心时）、`lifecycle.py` 的 `MODULES`、`menu.py` 的 `NAMES` 登记。这三个文件要能脱离模块文件单独运行，所以各自保留清单，由 `tests/test_modules.py` 的 `ModuleListTests` 核对与注册表一致。
+- 后台：[enroll.rs](../src/management/enroll.rs) 的 `FILES`、[tasks.rs](../src/management/tasks.rs) 的 `validate_request`、[models.rs](../src/management/models.rs) 的字段校验；模块有自己的后台逻辑时单独成文件，参照 PM 的 [pm.rs](../src/management/pm.rs)。页面入口见 [web-admin](../web-admin/AGENTS.md)。
 
 ## 执行与状态关系
 

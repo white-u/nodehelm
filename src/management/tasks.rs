@@ -483,7 +483,7 @@ pub async fn poll(State(app): State<Shared>, headers: HeaderMap, Json(input): Js
         let (mut notes, ip_alerts) =
             old.as_ref().map_or_else(Default::default, |old| snapshot_events(old, &plain, &thresholds));
         if let Some(old) = &old {
-            traffic::record(&tx, node, old, &plain, now())?;
+            pm::record(&tx, node, old, &plain, now())?;
         }
         if let Some(result) = &input.result {
             if !valid_hex(&result.id, 32)
@@ -548,7 +548,7 @@ pub async fn poll(State(app): State<Shared>, headers: HeaderMap, Json(input): Js
                 if (module.as_str(), action.as_str(), result.status.as_str()) == ("pm", "delete", "succeeded")
                 {
                     if let Some(port) = open(&bytes, node, &payload)?["payload"]["port"].as_i64() {
-                        traffic::forget(&tx, node, port)?;
+                        pm::forget(&tx, node, port)?;
                     }
                 }
                 if matches!(action.as_str(), "core_upgrade" | "core_rollback") {
@@ -610,83 +610,18 @@ pub async fn poll(State(app): State<Shared>, headers: HeaderMap, Json(input): Js
 /// What became worth telling an administrator between two reports. The page reads
 /// on demand, so nobody is looking when a quota runs out. Fixed wording, ports and
 /// rule names only: a report carries client secrets beside these fields.
-///
-/// Usage is compared against `thresholds` (ascending percents ending at 100) in
-/// both reports, so each step sounds once per billing period; the 100 % step is
-/// the quota-reached message.
 pub(super) fn snapshot_events(
     old: &Value,
     new: &Value,
     thresholds: &[u64],
 ) -> (Vec<String>, Vec<notify::IpAlert>) {
-    let (mut events, mut ips) = (Vec::new(), Vec::new());
+    let mut events = Vec::new();
     if new["blocked"] == true && old["blocked"] != true {
         events.push("配置漂移或有未恢复事务，已暂停写入，请在 VPS 核实".to_owned());
     }
-    let Some(usage) = new["modules"]["pm"]["usage"].as_object() else { return (events, ips) };
-    for (port, state) in usage {
-        let (rule, before) = (rule_of(new, port), &old["modules"]["pm"]["usage"][port.as_str()]);
-        let alert = state["alert"].as_str().unwrap_or_default();
-        let what = match alert {
-            "expired" => Some("已到期，匹配流量已被阻断"),
-            _ => None,
-        };
-        if let Some(what) = what.filter(|_| before["alert"].as_str() != Some(alert)) {
-            events.push(format!("PM 端口 {port}：{what}"));
-        }
-        let step = threshold(state, &rule, thresholds);
-        let was = if before["period_start"] == state["period_start"] {
-            threshold(before, &rule_of(old, port), thresholds)
-        } else {
-            0
-        };
-        if step > was {
-            events.push(if step >= 100 {
-                format!("PM 端口 {port}：已达配额，匹配流量已被丢弃")
-            } else {
-                format!("PM 端口 {port}：用量已达配额 {step}%")
-            });
-        }
-        let level = state["ip_level"].as_u64().unwrap_or(0);
-        if level > 0 && state["ip_alert"] != before["ip_alert"] {
-            ips.push(notify::IpAlert {
-                port: port.clone(),
-                name: rule["name"].as_str().unwrap_or_default().to_owned(),
-                count: state["ip_count"].as_u64().unwrap_or(0),
-                max: rule["ip_limit"]["max_ips"].as_u64().unwrap_or(0),
-                block: rule["ip_limit"]["block"] == true,
-                level,
-                ips: state["ip_list"]
-                    .as_array()
-                    .map(|l| l.iter().filter_map(|ip| ip.as_str().map(str::to_owned)).collect())
-                    .unwrap_or_default(),
-            });
-        }
-    }
+    let (pm, ips) = pm::events(old, new, thresholds);
+    events.extend(pm);
     (events, ips)
-}
-fn rule_of(snapshot: &Value, port: &str) -> Value {
-    snapshot["modules"]["pm"]["resources"]
-        .as_array()
-        .and_then(|rules| rules.iter().find(|r| r["port"].as_u64() == port.parse().ok()))
-        .cloned()
-        .unwrap_or(Value::Null)
-}
-/// The highest threshold a report's usage has reached, 0 for none. Counting
-/// follows the rule's billing direction; a quota the node reports as reached is
-/// 100 % even if the counters lag the nftables quota.
-fn threshold(usage: &Value, rule: &Value, thresholds: &[u64]) -> u64 {
-    let quota = rule["quota_gb"].as_u64().unwrap_or(0) as u128 * (1 << 30);
-    if quota == 0 || !matches!(usage["alert"].as_str(), Some("normal" | "quota_warning" | "quota_reached")) {
-        return 0;
-    }
-    if usage["alert"] == "quota_reached" {
-        return 100;
-    }
-    let tx = usage["tx"].as_u64().unwrap_or(0) as u128;
-    let used =
-        if rule["quota_mode"] == "out_only" { tx } else { tx + usage["rx"].as_u64().unwrap_or(0) as u128 };
-    thresholds.iter().copied().filter(|&t| used * 100 >= quota * t as u128).max().unwrap_or(0)
 }
 /// Bound nodes whose component stopped polling though nothing explains it: not
 /// one uninstalling, which stops its own agent, nor one under local maintenance.
@@ -710,5 +645,5 @@ pub fn prune_operations(db: &Db, now: i64) -> Result<usize> {
          ('succeeded','rolled_back','rejected','expired','checked','cancelled')",
         [now - OPERATION_DAYS * 86_400],
     )?;
-    Ok(operations + traffic::prune(&c, now)?)
+    Ok(operations + pm::prune(&c, now)?)
 }

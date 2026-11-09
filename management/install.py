@@ -29,11 +29,15 @@ JOURNAL = 'component-recovery.json'
 LIFECYCLE_LOCK = pathlib.Path('/run/node-manager-component-lifecycle.lock')
 PURGE_JOURNAL = pathlib.Path('/var/lib/.node-manager-component-purge.json')
 MODULES = ('sb', 'fw', 'pm')
+# Each core-owning module's version assumed before cores were recorded, and its file.
+CORES = {'snell': ('6.0.0', 'snell-server'), 'sb': ('1.14.4', 'sing-box'), 'fw': ('2.9.6', 'realm')}
 PM_SERVICE = 'node-manager-pm.service'
 PM_TIMER = 'node-manager-pm.timer'
 DIGEST = re.compile(r'[0-9a-f]{64}')
 BACKUP_ID = re.compile(r'[0-9a-f]{32}')
-# The Hub decides what a release contains, so adding a module needs no installer change.
+# The Hub decides what a release contains, so adding a file needs no installer change.
+# Adding a module does: MODULES and check_core_versions, which cannot import the
+# module files (this file also runs alone, as the old or the cleanup installer).
 COMPONENT_FILE = re.compile(r'[a-z][a-z0-9_]*\.(?:py|json)')
 
 SERVICE_UNIT = '''[Unit]
@@ -486,9 +490,7 @@ def finish(record, binding, phase):
 
 def check_core_versions(incoming):
     """A component switch must keep understanding the installed core state."""
-    versions = {'snell': ('6.0.0', 'snell-server'), 'sb': ('1.14.4', 'sing-box'),
-                'fw': ('2.9.6', 'realm')}
-    for module, (legacy, filename) in versions.items():
+    for module, (legacy, filename) in CORES.items():
         directory = ROOT if module == 'snell' else ROOT / module
         state = read_json(directory / 'state.json', {})
         if not state.get('installed'):

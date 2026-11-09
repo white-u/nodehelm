@@ -1,17 +1,18 @@
 """Serialized state machine; backend restarts never imply replay of an operation.
 Module-agnostic: what differs between modules comes from the driver and from
-the module's declared ACTIONS, looked up in `modules.py`."""
+the `Spec` the module declares, both given by whoever builds the controller."""
 import fcntl
 import hashlib
 import hmac
 import secrets
-from protocol import CORE_ACTIONS, Rejected, canonical, revision
+from protocol import CORE_ACTIONS, Rejected, canonical, request, revision
 from storage import private_directory, read, write, remove
 
 
 class Controller:
-    def __init__(self, directory, driver, module="snell"):
-        self.module = module
+    def __init__(self, directory, driver, spec):
+        self.spec = spec
+        self.module = spec.name
         self.root = private_directory(directory)
         self.driver = driver
         self.state = self.root / 'state.json'
@@ -44,11 +45,8 @@ class Controller:
             self.driver.refresh(read(self.state, {'installed': False, 'resources': []}))
 
     def execute(self, raw, *, local=False):
-        # Imported here: the registry imports every module, and each module this file.
-        from modules import MODULES, request
-        req = request(raw)
-        if req.get('module', 'snell') != self.module:
-            raise Rejected('模块与本地执行器不匹配')
+        # Only this module is accepted: a request for another one is refused here.
+        req = request(raw, {self.module: self.spec})
         with (self.root / 'write.lock').open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             digest = hmac.new(bytes.fromhex(self.key), canonical(req).encode(), hashlib.sha256).hexdigest()
@@ -87,7 +85,7 @@ class Controller:
                 if not before['installed']:
                     raise Rejected('请先安装所选模块核心')
                 if action == 'core_uninstall':
-                    if 'core_uninstall' not in MODULES[self.module].ACTIONS:
+                    if 'core_uninstall' not in self.spec.actions:
                         raise Rejected('此模块不支持核心卸载', 'core_version')
                     if before['resources']:
                         raise Rejected('请先删除所有受管 PM 规则', 'core_in_use')

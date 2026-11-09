@@ -16,15 +16,15 @@
 | [traffic_period.rs](traffic_period.rs) | 四时段归类、扩展表、历史读取与裁剪 |
 | [management/mod.rs](management/mod.rs) | 管理开关、加密与身份、设置、端口流量与配置导出、路由组合 |
 | [management/enroll.rs](management/enroll.rs) | 登记绑定（核对执行机器与监控 Agent 的 boot ID）、解绑与放弃、组件文件分发 `FILES` 及生成的一行接入脚本 `enroll.sh` |
-| [management/tasks.rs](management/tasks.rs) | 状态读取、面板提交的普通任务、组件轮询与回执、快照事件、组件静默与操作记录清理 |
+| [management/tasks.rs](management/tasks.rs) | 状态读取、面板提交的普通任务、组件轮询与回执、快照事件组合（模块事件由各模块提供）、组件静默与操作记录清理 |
 | [management/lifecycle.rs](management/lifecycle.rs) | 节点模块／全部卸载任务、进度、继续操作及最终确认 |
 | [management/models.rs](management/models.rs) | SB／FW／PM 字段校验（每个模块一个函数）、核心元数据、业务快照模型、SB 分享链接及 sing-box 客户端配置生成 |
-| [management/traffic.rs](management/traffic.rs) | 受管 PM 端口的小时流量：由相邻两次上报算出增量，保留 7 天，删除规则时清除 |
+| [management/pm.rs](management/pm.rs) | 后台的 PM 逻辑：受管端口小时流量（由相邻两次上报算出增量，保留 7 天，删除规则时清除），以及上报引起的到期、配额阈值和 IP 告警事件 |
 | [notify.rs](notify.rs) | 通知模板、队列及 Telegram／Webhook 发送 |
 | [frontend.rs](frontend.rs) | 管理静态资源、公开主题、主题包与图标 |
 | [testdata/](testdata/) | 旧数据库 schema 和分时流量回归材料 |
 
-服务管理集中在 `management/`：`mod.rs` 组合路由并放共用部分，`enroll.rs`、`tasks.rs`、`models.rs`、`lifecycle.rs` 和 `traffic.rs` 为其内部子模块，测试在 `tests.rs` 与 `lifecycle_tests.rs`。顶层模块由 `main.rs` 组合，服务管理路由由 `main.rs` 与 `management/mod.rs` 共同挂载。
+服务管理集中在 `management/`：`mod.rs` 组合路由并放共用部分，`enroll.rs`、`tasks.rs`、`models.rs`、`lifecycle.rs` 和 `pm.rs` 为其内部子模块，测试在 `tests.rs` 与 `lifecycle_tests.rs`。顶层模块由 `main.rs` 组合，服务管理路由由 `main.rs` 与 `management/mod.rs` 共同挂载。
 
 ## 按功能定位
 

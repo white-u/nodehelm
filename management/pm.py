@@ -15,11 +15,9 @@ import time
 
 from controller import Controller
 from core_driver import atomic, command
-from protocol import Rejected, fields, name, port, revision
+from protocol import Rejected, Spec, fields, name, port, revision
 from storage import private_directory, read, remove, write
 
-MODULE = 'pm'
-ACTIONS = frozenset({'install', 'apply', 'delete', 'reset', 'core_uninstall'})
 
 ROOT = pathlib.Path('/var/lib/node-manager/pm')
 SYSTEMD = pathlib.Path('/etc/systemd/system')
@@ -114,6 +112,10 @@ def resource(value):
     if 'ip_limit' in value:
         rule['ip_limit'] = ip_limit(value['ip_limit'])
     return rule
+
+
+SPEC = Spec('pm', frozenset({'install', 'apply', 'delete', 'reset', 'core_uninstall'}),
+            resource)
 
 
 def period_start(today, day):
@@ -770,8 +772,6 @@ class Driver:
             yield
 
     def disable_empty(self):
-        from controller import Controller
-
         # The controller takes the writer lock. Keep the outer lifecycle locks
         # here so local uninstall cannot run during component maintenance.
         with self.local_lock(lock_writer=False):
@@ -780,7 +780,7 @@ class Driver:
                 if any(path.exists() or path.is_symlink() for path, _ in self.unit_files()):
                     raise Rejected('存在无法确认归属的 PM 单元，请核实本机状态')
                 return
-            controller = Controller(self.root, self, 'pm')
+            controller = Controller(self.root, self, SPEC)
             result = controller.execute({'id': secrets.token_hex(16), 'module': 'pm',
                                          'action': 'core_uninstall', 'revision': revision(state),
                                          'payload': {}}, local=True)
@@ -898,8 +898,8 @@ class PMController(Controller):
 
 
 def controller(root):
-    directory = root / MODULE
-    return PMController(directory, Driver(directory), MODULE)
+    directory = root / SPEC.name
+    return PMController(directory, Driver(directory), SPEC)
 
 
 if __name__ == '__main__':

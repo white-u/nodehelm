@@ -14,6 +14,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import agent
 from agent import base_url, component_digest, execute_module_task, execute_task, exchange, files_digest, recover_idle, run_action
 from controller import Controller
+from modules import SPECS
 from modules import request
 from protocol import PROTOCOL, Rejected
 from storage import read, write
@@ -150,7 +151,7 @@ class ExchangeTests(unittest.TestCase):
 class TransportTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
-        self.d=Driver();self.c=Controller(self.tmp.name,self.d)
+        self.d=Driver();self.c=Controller(self.tmp.name,self.d, SPECS['snell'])
         self.req={'id':'a'*32,'action':'install','revision':self.c.snapshot()['revision'],'payload':{}}
     def test_idle_recovery_clears_old_null_receipt_without_touching_poller(self):
         pending = self.c.root / 'pending-result.json'
@@ -217,9 +218,9 @@ class TransportTests(unittest.TestCase):
         write(path, {'enrollment': 'expired'})
         unit = {'LoadState': 'not-found', 'FragmentPath': '', 'DropInPaths': ''}
         with patch('agent.ROOT', self.c.root), \
-                patch('snell.controller', lambda root: Controller(root, self.d)), \
-                patch('sb.controller', lambda root: Controller(root / 'sb', Driver(), 'sb')), \
-                patch('fw.controller', lambda root: Controller(root / 'fw', Driver(), 'fw')), \
+                patch('snell.controller', lambda root: Controller(root, self.d, SPECS['snell'])), \
+                patch('sb.controller', lambda root: Controller(root / 'sb', Driver(), SPECS['sb'])), \
+                patch('fw.controller', lambda root: Controller(root / 'fw', Driver(), SPECS['fw'])), \
                 patch('install.check_agent_unit', return_value=unit), patch('install.ctl') as ctl:
             unit['DropInPaths'] = '/etc/systemd/system/node-manager-agent.service.d/foreign.conf'
             with self.assertRaisesRegex(Rejected, '拒绝解绑'):
@@ -240,7 +241,7 @@ class TransportTests(unittest.TestCase):
     def test_expired_uncertain_task_is_not_declared_unexecuted(self):
         self.d.crash=True
         with self.assertRaises(SystemExit):self.c.execute(self.req)
-        restarted=Controller(self.tmp.name,self.d)
+        restarted=Controller(self.tmp.name,self.d, SPECS['snell'])
         self.assertTrue(restarted.snapshot()['blocked'])
         result=execute_task(restarted,{'request':self.req,'expires':time.time()-1})
         self.assertEqual(result['status'],'recovery_failed')

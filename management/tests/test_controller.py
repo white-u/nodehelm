@@ -4,6 +4,7 @@ import tempfile
 import unittest
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from controller import Controller
+from modules import SPECS
 from protocol import Rejected
 from snell import Driver as SnellDriver, resource
 from storage import read, write
@@ -29,7 +30,7 @@ class Tests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.driver = Driver()
-        self.c = Controller(self.tmp.name, self.driver)
+        self.c = Controller(self.tmp.name, self.driver, SPECS['snell'])
         self.seq = 0
     def req(self, action='install', payload=None):
         self.seq += 1
@@ -46,7 +47,7 @@ class Tests(unittest.TestCase):
     def test_replay_never_reexecutes(self):
         r = self.req()
         first = self.c.execute(r)
-        restarted = Controller(self.tmp.name, self.driver)
+        restarted = Controller(self.tmp.name, self.driver, SPECS['snell'])
         self.assertEqual(restarted.execute(r), first)
         self.assertEqual(self.driver.calls, 1)
         r['action'] = 'delete'; r['payload'] = {'port': 12345}
@@ -93,7 +94,7 @@ class Tests(unittest.TestCase):
         self.assertEqual(self.c.execute(self.req())['status'], 'recovery_failed')
         with self.assertRaises(Rejected): self.c.execute(self.req())
         self.driver.restore_fail = False
-        restarted = Controller(self.tmp.name, self.driver)
+        restarted = Controller(self.tmp.name, self.driver, SPECS['snell'])
         self.assertEqual(restarted.recover()['status'], 'rolled_back')
         self.assertFalse(restarted.snapshot()['blocked'])
     def test_crash_after_commit_does_not_restore_old_state(self):
@@ -120,6 +121,6 @@ class Tests(unittest.TestCase):
     def test_missing_key_with_receipts_fails_closed(self):
         self.install()
         (self.c.root / 'dedup-key.json').unlink()
-        with self.assertRaises(Rejected): Controller(self.tmp.name, self.driver)
+        with self.assertRaises(Rejected): Controller(self.tmp.name, self.driver, SPECS['snell'])
 
 if __name__ == '__main__': unittest.main()

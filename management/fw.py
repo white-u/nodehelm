@@ -3,11 +3,8 @@ import ipaddress
 import socket
 from controller import Controller
 from core_driver import CoreDriver, command
-from protocol import Rejected, fields, name, port
+from protocol import Rejected, Spec, fields, name, port
 from storage import private_directory
-
-MODULE = 'fw'
-ACTIONS = frozenset({'install', 'apply', 'delete', 'check', 'core_upgrade', 'core_rollback', 'core_uninstall'})
 
 
 def resource(value):
@@ -23,11 +20,15 @@ def resource(value):
     return dict(port=listen, name=label, target_host=target, target_port=target_port)
 
 
+SPEC = Spec('fw', frozenset({'install', 'apply', 'delete', 'check', 'core_upgrade', 'core_rollback', 'core_uninstall'}),
+            resource)
+
+
 class Driver(CoreDriver):
-    module = MODULE
+    module = SPEC.name
     title = 'FW'
     binary_name = 'realm'
-    subdirectory = MODULE
+    subdirectory = SPEC.name
     legacy_version = '2.9.6'
 
     def complete(self, item, existing):
@@ -79,6 +80,6 @@ WantedBy=multi-user.target
 
 
 def controller(root):
-    directory = private_directory(root / MODULE)
+    directory = private_directory(root / SPEC.name)
     private_directory(directory / 'configs')
-    return Controller(directory, Driver(root), MODULE)
+    return Controller(directory, Driver(root), SPEC)

@@ -10,6 +10,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from modules import request
 from protocol import Rejected
 from controller import Controller
+from modules import SPECS
 import fw
 import sb
 from core_driver import CoreDriver
@@ -69,7 +70,7 @@ class ModuleTests(unittest.TestCase):
         class Probe(FakeDriver):
             def check_target(self,item): self.calls += 1
         with tempfile.TemporaryDirectory() as root:
-            d=Probe();c=Controller(root,d,'fw')
+            d=Probe();c=Controller(root,d,SPECS['fw'])
             write(c.state,{'installed':True,'resources':[{'name':'test','port':12345,'target_host':'127.0.0.1','target_port':12346}]})
             before=c.state.read_bytes();req={'module':'fw','id':'c'*32,'action':'check','revision':c.snapshot()['revision'],'payload':{'port':12345}}
             self.assertEqual(c.execute(req)['status'],'checked');self.assertEqual(c.execute(req)['status'],'checked')
@@ -79,7 +80,7 @@ class ModuleTests(unittest.TestCase):
         from storage import write
         import time
         with tempfile.TemporaryDirectory() as root:
-            a=Controller(pathlib.Path(root)/'snell',FakeDriver());b=Controller(pathlib.Path(root)/'fw',FakeDriver(),'fw')
+            a=Controller(pathlib.Path(root)/'snell',FakeDriver(),SPECS['snell']);b=Controller(pathlib.Path(root)/'fw',FakeDriver(),SPECS['fw'])
             write(a.state,{'installed':True,'resources':[{'name':'Snell','port':12345,'host':'example.com','public_port':12345,'psk':'x'*32,'mode':'default'}]})
             task={'expires':time.time()+60,'request':{'id':'d'*32,'module':'fw','action':'apply','revision':b.snapshot()['revision'],'payload':{'name':'FW','port':12345,'target_host':'192.0.2.1','target_port':23456}}}
             self.assertEqual(execute_module_task({'snell':a,'fw':b},task)['status'],'rejected')
@@ -108,7 +109,7 @@ class ModuleTests(unittest.TestCase):
         self.assertIn('remote = "192.0.2.1:23456"',fw_config)
     def test_module_identity_cannot_reuse_another_controllers_journal(self):
         with tempfile.TemporaryDirectory() as root:
-            c=Controller(root,FakeDriver(),'fw')
+            c=Controller(root,FakeDriver(),SPECS['fw'])
             req={'id':'a'*32,'action':'install','revision':c.snapshot()['revision'],'payload':{}}
             with self.assertRaises(Rejected):c.execute(req)
             self.assertEqual(c.execute({**req,'module':'fw'})['status'],'succeeded')
@@ -179,3 +180,21 @@ class ModuleTests(unittest.TestCase):
             with self.assertRaises(Rejected):sb.Driver.check_reality('target.example')
 
 if __name__=='__main__':unittest.main()
+
+
+class ModuleListTests(unittest.TestCase):
+    """install.py, lifecycle.py and menu.py run without the module files, so each
+    keeps its own list; this holds them to the registry."""
+
+    def test_every_module_list_matches_the_registry(self):
+        import install, lifecycle, menu, modules
+        self.assertEqual(set(lifecycle.MODULES), set(modules.MODULES))
+        self.assertEqual(set(menu.NAMES), set(modules.MODULES))
+        # Snell keeps its state in the root, every other module in its own directory.
+        self.assertEqual(set(install.MODULES), set(modules.MODULES) - {'snell'})
+
+    def test_installer_core_table_matches_each_core_driver(self):
+        import install, modules
+        expected = {name: (module.Driver.legacy_version, module.Driver.binary_name)
+                    for name, module in modules.MODULES.items() if issubclass(module.Driver, CoreDriver)}
+        self.assertEqual(install.CORES, expected)

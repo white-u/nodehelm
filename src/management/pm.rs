@@ -1,9 +1,12 @@
-//! Hourly PM traffic per port for the instance chart, kept for a week. It is the
-//! difference between two consecutive reports, so the node sends nothing new.
+//! PM on the hub: hourly traffic per port for the instance chart, and the events
+//! a report raises. Traffic is kept for a week and is the difference between two
+//! consecutive reports, so the node sends nothing new.
 
 use anyhow::Result;
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
+
+use crate::notify;
 
 const KEEP: i64 = 7 * 86_400;
 
@@ -62,6 +65,79 @@ pub(super) fn read(c: &Connection, node: i64, port: i64, now: i64) -> Result<Val
 
 pub fn prune(c: &Connection, now: i64) -> Result<usize> {
     Ok(c.execute("DELETE FROM managed_port_traffic WHERE hour<=?1", [now - KEEP])?)
+}
+
+/// PM's part of a report's events: expiry, quota steps and IP alerts per port.
+///
+/// Usage is compared against `thresholds` (ascending percents ending at 100) in
+/// both reports, so each step sounds once per billing period; the 100 % step is
+/// the quota-reached message.
+pub(super) fn events(old: &Value, new: &Value, thresholds: &[u64]) -> (Vec<String>, Vec<notify::IpAlert>) {
+    let (mut events, mut ips) = (Vec::new(), Vec::new());
+    let Some(usage) = new["modules"]["pm"]["usage"].as_object() else { return (events, ips) };
+    for (port, state) in usage {
+        let (rule, before) = (rule_of(new, port), &old["modules"]["pm"]["usage"][port.as_str()]);
+        let alert = state["alert"].as_str().unwrap_or_default();
+        let what = match alert {
+            "expired" => Some("已到期，匹配流量已被阻断"),
+            _ => None,
+        };
+        if let Some(what) = what.filter(|_| before["alert"].as_str() != Some(alert)) {
+            events.push(format!("PM 端口 {port}：{what}"));
+        }
+        let step = threshold(state, &rule, thresholds);
+        let was = if before["period_start"] == state["period_start"] {
+            threshold(before, &rule_of(old, port), thresholds)
+        } else {
+            0
+        };
+        if step > was {
+            events.push(if step >= 100 {
+                format!("PM 端口 {port}：已达配额，匹配流量已被丢弃")
+            } else {
+                format!("PM 端口 {port}：用量已达配额 {step}%")
+            });
+        }
+        let level = state["ip_level"].as_u64().unwrap_or(0);
+        if level > 0 && state["ip_alert"] != before["ip_alert"] {
+            ips.push(notify::IpAlert {
+                port: port.clone(),
+                name: rule["name"].as_str().unwrap_or_default().to_owned(),
+                count: state["ip_count"].as_u64().unwrap_or(0),
+                max: rule["ip_limit"]["max_ips"].as_u64().unwrap_or(0),
+                block: rule["ip_limit"]["block"] == true,
+                level,
+                ips: state["ip_list"]
+                    .as_array()
+                    .map(|l| l.iter().filter_map(|ip| ip.as_str().map(str::to_owned)).collect())
+                    .unwrap_or_default(),
+            });
+        }
+    }
+    (events, ips)
+}
+fn rule_of(snapshot: &Value, port: &str) -> Value {
+    snapshot["modules"]["pm"]["resources"]
+        .as_array()
+        .and_then(|rules| rules.iter().find(|r| r["port"].as_u64() == port.parse().ok()))
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+/// The highest threshold a report's usage has reached, 0 for none. Counting
+/// follows the rule's billing direction; a quota the node reports as reached is
+/// 100 % even if the counters lag the nftables quota.
+fn threshold(usage: &Value, rule: &Value, thresholds: &[u64]) -> u64 {
+    let quota = rule["quota_gb"].as_u64().unwrap_or(0) as u128 * (1 << 30);
+    if quota == 0 || !matches!(usage["alert"].as_str(), Some("normal" | "quota_warning" | "quota_reached")) {
+        return 0;
+    }
+    if usage["alert"] == "quota_reached" {
+        return 100;
+    }
+    let tx = usage["tx"].as_u64().unwrap_or(0) as u128;
+    let used =
+        if rule["quota_mode"] == "out_only" { tx } else { tx + usage["rx"].as_u64().unwrap_or(0) as u128 };
+    thresholds.iter().copied().filter(|&t| used * 100 >= quota * t as u128).max().unwrap_or(0)
 }
 
 #[cfg(test)]

@@ -1,8 +1,8 @@
 """The business modules this component runs. Each lives in its own file, with
-`MODULE`, `ACTIONS`, `resource` (accepted fields) and `controller(root)`; one
-module's changes stay in its file. Adding a module: its file, an entry here and
-in the Hub's `FILES`. Rules spanning modules (PM following a business port) sit
-in agent.py and lifecycle.py, not in any module."""
+`resource` (accepted fields), its `SPEC`, `Driver` and `controller(root)`; one
+module's changes stay in its file. Rules spanning modules (PM following a
+business port) sit in agent.py and lifecycle.py, not in any module. Adding a
+module: see "四个业务模块入口" in AGENTS.md."""
 import fw
 import pm
 import sb
@@ -10,11 +10,12 @@ import snell
 from core_driver import CoreDriver
 from protocol import request as parse
 
-MODULES = {module.MODULE: module for module in (snell, sb, fw, pm)}
+MODULES = {module.SPEC.name: module for module in (snell, sb, fw, pm)}
+SPECS = {name: module.SPEC for name, module in MODULES.items()}
 
 
 def request(value):
-    return parse(value, MODULES)
+    return parse(value, SPECS)
 
 
 def controllers(root):

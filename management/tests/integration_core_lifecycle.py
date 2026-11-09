@@ -22,6 +22,7 @@ import pm
 from agent import execute_module_task
 from pm import PMController
 from controller import Controller
+from modules import SPECS
 from protocol import Rejected
 import fw
 import sb
@@ -74,7 +75,7 @@ def build(root, module):
     driver.unit_pattern = lambda: f'{root.name}-{module}-*.service'
     service, pid = driver.service, os.getpid()
     driver.service = lambda port: service_namespace(service(port), pid)
-    return Controller(state, driver, module), driver
+    return Controller(state, driver, SPECS[module]), driver
 
 
 def task(controller, action, payload=None):
@@ -317,7 +318,7 @@ def run_pm(root):
     with pm_units(root, os.getpid(), os.stat('/proc/self/ns/net').st_ino):
         state = root / 'state' / 'pm'
         driver = pm.Driver(state, SYSTEMD)
-        controller = PMController(state, driver, 'pm')
+        controller = PMController(state, driver, SPECS['pm'])
         pm.nft('add', 'table', 'inet', 'port_monitor')
         pm.nft('add', 'counter', 'inet', 'port_monitor', 'original')
         legacy = pm.entries('list', 'table', 'inet', 'port_monitor')

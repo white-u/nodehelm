@@ -16,6 +16,7 @@ import agent
 import install
 import lifecycle
 from controller import Controller
+from modules import SPECS
 from protocol import Rejected
 from storage import read, write
 
@@ -70,7 +71,7 @@ class NodeLifecycleTests(unittest.TestCase):
         self.root.mkdir(mode=0o700)
         self.calls = []
         self.controllers = {name: Controller(self.root if name == 'snell' else self.root / name,
-                                            Driver(name, self.calls), name) for name in lifecycle.MODULES}
+                                            Driver(name, self.calls), SPECS[name]) for name in lifecycle.MODULES}
         self.binding = {'server': 'https://panel.example.com', 'node': 1, 'credential': 'a' * 64}
         self.job = {'id': 'b' * 32, 'scope': 'snell', 'attempt': 1}
         self.engine = lifecycle.Lifecycle(self.controllers, agent.execute_module_task, lambda: {}, self.binding, self.root)

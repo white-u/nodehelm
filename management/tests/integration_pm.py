@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from controller import Controller
+from modules import SPECS
 from protocol import Rejected, revision
 import pm
 from pm import Driver, TABLE, entries, nft, plan
@@ -59,7 +60,7 @@ for line in sys.stdin:
             units = root / 'units'
             units.mkdir()
             driver = Driver(root / 'pm', units)
-            controller = Controller(root / 'pm', driver, 'pm')
+            controller = Controller(root / 'pm', driver, SPECS['pm'])
             server.bind(('192.0.2.1', port))
             server.settimeout(0.3)
 

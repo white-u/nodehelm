@@ -9,11 +9,8 @@ import tempfile
 import uuid
 from controller import Controller
 from core_driver import CoreDriver, binary_hash, command
-from protocol import Rejected, address, fields, name, port
+from protocol import Rejected, Spec, address, fields, name, port
 from storage import private_directory
-
-MODULE = 'sb'
-ACTIONS = frozenset({'install', 'apply', 'delete', 'core_upgrade', 'core_rollback', 'core_uninstall'})
 
 
 def resource(value):
@@ -40,11 +37,15 @@ def resource(value):
     return dict(port=listen, name=label, host=address(value.get('host')), public_port=public_port, protocol=protocol, sni=sni, psk=psk)
 
 
+SPEC = Spec('sb', frozenset({'install', 'apply', 'delete', 'core_upgrade', 'core_rollback', 'core_uninstall'}),
+            resource)
+
+
 class Driver(CoreDriver):
-    module = MODULE
+    module = SPEC.name
     title = 'SB'
     binary_name = 'sing-box'
-    subdirectory = MODULE
+    subdirectory = SPEC.name
     legacy_version = '1.14.4'
     version_arg = 'version'
 
@@ -145,6 +146,6 @@ WantedBy=multi-user.target
 
 
 def controller(root):
-    directory = private_directory(root / MODULE)
+    directory = private_directory(root / SPEC.name)
     private_directory(directory / 'configs')
-    return Controller(directory, Driver(root), MODULE)
+    return Controller(directory, Driver(root), SPEC)
