@@ -33,7 +33,7 @@
 | FW：Realm 转发 | [fw.py](fw.py) | 字段、Realm 配置、自环检查与目标连通检查 |
 | PM：端口策略 | [pm.py](pm.py) | 字段、计量、配额、重置、到期策略、限速、在线 IP 统计、告警与阻断、定时维护及 `PMController` |
 
-后台对应的模型在 [models.rs](../src/management/models.rs)，页面在 [Management.tsx](../web-admin/src/features/services/Management.tsx)。新增模块：新建模块文件，在 `modules.py` 注册，并加入后台 [mod.rs](../src/management/mod.rs) 的 `FILES`；再沿后台模型及页面入口补齐。
+后台对应的模型在 [models.rs](../src/management/models.rs)，页面在 [Management.tsx](../web-admin/src/features/services/Management.tsx)。新增模块：新建模块文件，在 `modules.py` 注册，并加入后台 [enroll.rs](../src/management/enroll.rs) 的 `FILES`；再沿后台模型及页面入口补齐。
 
 ## 执行与状态关系
 
@@ -42,7 +42,7 @@
 - 全部卸载：模块清理后，`node-manager-cleanup.service` 使用独立材料完成组件清理与收尾确认。
 - 安装登记：后台的 `enroll.sh` 校验并运行 `install.py`；`install.py` 持久待登记身份，完成绑定后，由 Agent 的本次首次上报确认安装结果。后台明确拒绝时显示其原因，并清除本次新建的待登记身份。
 
-默认程序目录为 `/opt/node-manager`，状态目录为 `/var/lib/node-manager`；SB／FW／PM 的状态在各自子目录，Snell 位于状态根目录。组件文件集由后台 [management/mod.rs](../src/management/mod.rs) 的 `FILES` 定义并分发，`install.py` 按清单安装、替换和移除。
+默认程序目录为 `/opt/node-manager`，状态目录为 `/var/lib/node-manager`；SB／FW／PM 的状态在各自子目录，Snell 位于状态根目录。组件文件集由后台 [management/enroll.rs](../src/management/enroll.rs) 的 `FILES` 定义并分发，`install.py` 按清单安装、替换和移除。
 
 `state.json` 表示模块状态，`recovery.json` 记录事务，`receipts/` 保存模块回执；`lifecycle-job.json` 保存节点卸载进度及本地确认，独立收尾材料位于 `/var/lib/node-manager-cleanup`。
 

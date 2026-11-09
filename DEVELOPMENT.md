@@ -62,11 +62,11 @@ scripts/e2e.sh target/debug/monitor-hub agent/target/release/monitor-agent
 
 `integration_http.py` 用真实后台和管理组件走一遍登录、绑定、上报与回执；`e2e.sh` 用后台与监控 agent 在回环上核对节点上报和公开字段。
 
-`npm test` 使用 Node 直接运行 `api.test.ts` 和服务表单 `model.test.ts`，应使用 CI 同代的 Node。它验证请求和辅助数据逻辑，并非浏览器端到端覆盖。Rust 用例主要放在各模块内，分时流量数据库测试通过 `db.rs` 引入 `src/testdata/traffic-period.rs`。
+`npm test` 使用 Node 直接运行 `api.test.ts` 和服务表单 `model.test.ts`，应使用 CI 同代的 Node。它验证请求和辅助数据逻辑，并非浏览器端到端覆盖。Rust 用例主要放在各模块内，分时流量数据库测试通过 `db/mod.rs` 引入 `src/testdata/traffic-period.rs`。
 
 | 修改范围 | 必要关联检查 |
 | --- | --- |
-| 流量基线或分时表 | `cargo test traffic_period`，并检查 `db.rs` 的累计、恢复、裁剪测试 |
+| 流量基线或分时表 | `cargo test traffic_period`，并检查 `db/tests.rs` 的累计、恢复、裁剪测试 |
 | API / 身份 / 公开字段 | 对应 Rust 模块测试、`npm test`，必要时跑 agent 集成 |
 | 管理后台 | lint、test、build；布局交互仍需实际页面验证 |
 | 主题或嵌入流程 | 固定主题下载校验、后台 build、Cargo build，检查默认与磁盘主题 |

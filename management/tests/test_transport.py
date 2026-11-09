@@ -31,7 +31,7 @@ class Driver:
 
 class SharedOperationTests(unittest.TestCase):
     def test_agent_agrees_with_the_hub_on_every_operation(self):
-        # The same fixture is asserted against validate_request in src/management/mod.rs.
+        # The same fixture is asserted against validate_request in src/management/tests.rs.
         cases=json.loads((pathlib.Path(__file__).parent/'operations.json').read_text())
         for case in cases:
             raw={'id':'a'*32,'revision':'b'*64,'module':case['module'],'action':case['action'],'payload':case['payload']}
@@ -42,13 +42,13 @@ class SharedOperationTests(unittest.TestCase):
 
 class ComponentDigestTests(unittest.TestCase):
     def test_matches_the_hub_fixture(self):
-        # The same fixture is asserted in src/management/mod.rs.
+        # The same fixture is asserted in src/management/lifecycle_tests.rs.
         with tempfile.TemporaryDirectory() as directory:
             root=pathlib.Path(directory)
             (root/'a.py').write_text('x');(root/'b.json').write_text('y')
             self.assertEqual(files_digest(root,{'b.json','a.py'}),'9729e99f400a67b08485e1f9a207d5df22e349dd671e85a8233b7ec9b1488101')
     def test_hub_embeds_exactly_the_installed_file_set(self):
-        source=pathlib.Path(__file__).resolve().parents[2]/'src/management/mod.rs'
+        source=pathlib.Path(__file__).resolve().parents[2]/'src/management/enroll.rs'
         management=source.parents[2]/'management'
         shipped={path.name for path in management.iterdir() if path.suffix in ('.py','.json') and not path.name.startswith('.')}
         self.assertEqual(set(re.findall(r'include_str!\("\.\./\.\./management/([^"/]+)"\)',source.read_text())),shipped)

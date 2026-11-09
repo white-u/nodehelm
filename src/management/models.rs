@@ -32,21 +32,35 @@ fn port(value: &Value) -> bool {
 fn string<'a>(value: &'a Value, key: &str) -> &'a str {
     value[key].as_str().unwrap_or("")
 }
+/// One module's own field rules, given whether the value is a component's snapshot.
+type Fields = (&'static [&'static str], fn(&Value, bool) -> Result<()>);
+
+/// Checks an SB, FW or PM resource; Snell's is the `Resource` struct in tasks.rs.
+/// What these share is checked here, and each module's own rules in its
+/// function below, so changing one leaves the others.
 pub fn resource(module: &str, value: &Value, snapshot: bool) -> Result<()> {
     let Some(map) = value.as_object() else { refuse!("模块配置格式错误") };
-    let mut fields = vec!["port", "name"];
-    match module {
-        "sb" => fields.extend(["host", "public_port", "protocol", "sni", "psk"]),
-        "fw" => fields.extend(["target_host", "target_port"]),
-        "pm" => {
-            fields.extend(["quota_gb", "quota_mode", "reset_day", "expiry_date", "egress_mbps", "ip_limit"])
-        }
+    let (fields, check): Fields = match (module, snapshot) {
+        ("sb", false) => (&["host", "public_port", "protocol", "sni", "psk"], sb),
+        ("sb", true) => (
+            &[
+                "host",
+                "public_port",
+                "protocol",
+                "sni",
+                "psk",
+                "uuid",
+                "private_key",
+                "public_key",
+                "short_id",
+            ],
+            sb,
+        ),
+        ("fw", _) => (&["target_host", "target_port"], fw),
+        ("pm", _) => (&["quota_gb", "quota_mode", "reset_day", "expiry_date", "egress_mbps", "ip_limit"], pm),
         _ => refuse!("不支持的模块"),
-    }
-    if snapshot && module == "sb" {
-        fields.extend(["uuid", "private_key", "public_key", "short_id"]);
-    }
-    if map.keys().any(|k| !fields.contains(&k.as_str())) {
+    };
+    if map.keys().any(|k| !["port", "name"].contains(&k.as_str()) && !fields.contains(&k.as_str())) {
         refuse!("模块包含不支持字段");
     }
     let name = string(value, "name");
@@ -57,30 +71,10 @@ pub fn resource(module: &str, value: &Value, snapshot: bool) -> Result<()> {
     {
         refuse!("名称或监听端口无效");
     }
-    if module == "pm" {
-        if value["port"].as_u64().is_none_or(|n| n < 1024)
-            || value["quota_gb"].as_u64().is_none_or(|n| n > 8589934591)
-            || value["reset_day"].as_u64().is_none_or(|n| n > 31)
-            || value["egress_mbps"].as_u64().is_none_or(|n| n > 10000)
-            || !matches!(string(value, "quota_mode"), "in_out" | "out_only")
-            || value["expiry_date"].as_str().is_none_or(|d| !d.is_empty() && !pm_date(d))
-        {
-            refuse!("PM 端口或策略值无效");
-        }
-        if let Some(limit) = map.get("ip_limit") {
-            ip_limit(limit)?;
-        }
-        return Ok(());
-    }
-    if module == "fw" {
-        let Ok(ip) = string(value, "target_host").parse::<std::net::Ipv4Addr>() else {
-            refuse!("目标必须为 IPv4 地址")
-        };
-        if ip.is_unspecified() || ip.is_multicast() || ip.is_link_local() || !port(&value["target_port"]) {
-            refuse!("转发目标或端口无效");
-        }
-        return Ok(());
-    }
+    check(value, snapshot)
+}
+
+fn sb(value: &Value, snapshot: bool) -> Result<()> {
     if !host(string(value, "host")) || !port(&value["public_port"]) {
         refuse!("客户端访问地址或端口无效");
     }
@@ -122,6 +116,32 @@ pub fn resource(module: &str, value: &Value, snapshot: bool) -> Result<()> {
             }
         }
         _ => refuse!("SB 仅支持 Reality 或 SS2022"),
+    }
+    Ok(())
+}
+
+fn fw(value: &Value, _snapshot: bool) -> Result<()> {
+    let Ok(ip) = string(value, "target_host").parse::<std::net::Ipv4Addr>() else {
+        refuse!("目标必须为 IPv4 地址")
+    };
+    if ip.is_unspecified() || ip.is_multicast() || ip.is_link_local() || !port(&value["target_port"]) {
+        refuse!("转发目标或端口无效");
+    }
+    Ok(())
+}
+
+fn pm(value: &Value, _snapshot: bool) -> Result<()> {
+    if value["port"].as_u64().is_none_or(|n| n < 1024)
+        || value["quota_gb"].as_u64().is_none_or(|n| n > 8589934591)
+        || value["reset_day"].as_u64().is_none_or(|n| n > 31)
+        || value["egress_mbps"].as_u64().is_none_or(|n| n > 10000)
+        || !matches!(string(value, "quota_mode"), "in_out" | "out_only")
+        || value["expiry_date"].as_str().is_none_or(|d| !d.is_empty() && !pm_date(d))
+    {
+        refuse!("PM 端口或策略值无效");
+    }
+    if let Some(limit) = value.get("ip_limit") {
+        ip_limit(limit)?;
     }
     Ok(())
 }

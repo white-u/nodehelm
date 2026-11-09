@@ -45,6 +45,6 @@
 
 “节点管理”在页面内展开，由 `Management.tsx` 单独选择目标；重复点击入口保持对应节点管理展开，通过面板“收起”关闭；打开时暂时隐藏模块配置区，保留所选模块和草稿。未接入节点不展示默认模块配置，接入后才显示服务配置区。`ServiceDetail.tsx` 中的 `NodeManagement` 负责接入、全部卸载、紧急撤销授权、失效节点处理及卸载进度恢复。核心版本与升级入口始终位于实例列表上方，“模块维护”展开回退和卸载。完整卸载进度在节点管理中查看，卸载结果和操作记录默认折叠。服务操作、草稿放弃和名称确认均在页内完成，不使用原生确认框或侧栏。Snell 配置文本及 SB 的 vless／ss 分享链接在对应实例下方展开，只展示配置和复制按钮；实例行展示名称、运行状态和端口，映射时附客户端端口。PM 表单和用量逻辑位于 `PortPolicies.tsx`，每条规则显示 TCP 在线 IP（按警告／报警着色），IP 告警按“起警告的 IP 数”填写，新规则默认 3 个起警告、5 个起报警、第 6 个起阻断和可展开的“用量详情（近 7 天）”；其中 `PmFields` 同时用于新增实例时可选的“同时启用 PM 统计”（默认不勾选）。实例行在端口后提供“PM 已统计／添加 PM”入口，跳到 PM 页对应表单；删除带 PM 规则的实例时先删规则再删实例。两步操作由 `Management.tsx` 在第一步确认成功后提交第二步（新实例需运行中，最多等 30 秒），期间显示进度并暂停写入；第二步未完成时保留 PM 参数供“添加 PM”继续。状态读取及结果确认调度继续由 `Management.tsx` 负责。
 
-字段与动作对应 [management/mod.rs](../src/management/mod.rs)、[models.rs](../src/management/models.rs) 和 [Python 模型](../management/AGENTS.md)。页面功能及交互变化时，同步这些实际消费者与对应文档入口。
+字段与动作对应 [management/tasks.rs](../src/management/tasks.rs)、[models.rs](../src/management/models.rs) 和 [Python 模型](../management/AGENTS.md)。页面功能及交互变化时，同步这些实际消费者与对应文档入口。
 
 PM 白名单支持 IP 地址及 CIDR 网段；规则卡片的次要参数收在“规则详情”。“用量详情”首次展开时读取小时历史，按 UTC 与账期一致，由 `model.ts` 的 `pmTrafficBars` 分组并区分无记录／未来时段。提示与操作记录的颜色由 `model.ts` 的 `serviceFeedbackClass` 统一，先看结果再看动作。
