@@ -24,7 +24,7 @@
 | 四步快速部署 | [QUICK_START.md](QUICK_START.md) |
 | 从零部署步骤 | [DEPLOY.md](DEPLOY.md) |
 | 独立部署、反代、接入和恢复 | [NODE_MANAGEMENT_DEPLOY.md](NODE_MANAGEMENT_DEPLOY.md) |
-| 日常运维速查 | [OPERATIONS.md](OPERATIONS.md) |
+| 日常运维速查、通知事件与延迟通知规则 | [OPERATIONS.md](OPERATIONS.md) |
 | 源码构建与联调 | [DEVELOPMENT.md](DEVELOPMENT.md) |
 
 ## 常用任务入口
