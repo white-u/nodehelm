@@ -3,7 +3,7 @@
 # and runs the usual maintenance.
 #   curl -fsSL https://github.com/white-u/nodehelm/releases/latest/download/nodehelm.sh | sudo sh
 #   ... | sudo sh -s -- --site https://hub.example.com --yes
-#   ... | sudo sh -s -- status
+#   ... | sudo sh -s -- update --yes
 # Prompts read the terminal, so a piped script still asks; without one, pass
 # the options. The work itself stays in the package's install-hub.sh,
 # update-hub.sh and hub-lifecycle.py.
@@ -14,29 +14,26 @@ CODE=/opt/node-manager-hub
 DATA=/var/lib/node-manager-hub
 UNIT=node-manager-hub
 PLAN=/opt/.node-manager-hub-install.json
-SITE='' PORT='' YES='' PACKAGE='' VERSION='' EXTRA='' KEEP='' ACTION=''
+JOURNAL=/var/lib/node-manager-hub-lifecycle/$UNIT.service/recovery.json
+SITE='' PORT='' YES='' PACKAGE='' VERSION='' EXTRA='' ACTION=''
 
 usage() {
 	cat >&2 <<'EOF'
 用法: nodehelm-hub [命令] [选项]（安装前用 nodehelm.sh）
 
-命令（省略时：未安装则安装，已安装则显示菜单；无终端时直接更新）
-  install          安装后台
-  update           更新到最新版本，失败自动回退
-  status           运行状态与版本
-  logs             最近日志
-  reset-password   重置应急密码，所有会话退出
-  backup           一致性备份（日常备份建议用后台「数据」页下载）
-  recover          完成中断的更新或卸载
-  uninstall        卸载并删除全部数据；加 --keep-data 则保留数据以便重装
+命令（省略时：未安装则安装，已安装则显示菜单，无终端加 --yes 则更新）
+  install          安装
+  update           更新，失败自动回退
+  logs             服务状态与最近日志
+  reset-password   重置应急密码
+  uninstall        卸载并删除全部数据
+中断的操作会在下次运行时自动完成。
 
 选项
   --site https://域名   后台 HTTPS 地址（安装）
   --port 端口           本机监听端口，默认 9911（安装）
   --version vX.Y.Z      指定版本，默认最新
   --package 文件        使用本地发布包（离线）
-  --reuse-data          复用卸载时保留的数据（安装）
-  --keep-data           卸载时保留数据库、密钥和主题（卸载）
   --yes                 不询问，按参数和默认值执行
 EOF
 	exit 2
@@ -45,7 +42,7 @@ die() { echo "NodeHelm: $*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
 	case $1 in
-	install | update | status | logs | reset-password | backup | recover | uninstall)
+	install | update | logs | reset-password | uninstall)
 		[ -z "$ACTION" ] || usage
 		ACTION=$1; shift ;;
 	--site | --port | --version | --package)
@@ -58,8 +55,6 @@ while [ $# -gt 0 ]; do
 		esac
 		shift 2 ;;
 	--yes | -y) YES=1; shift ;;
-	--reuse-data) EXTRA=$1; shift ;;
-	--keep-data) KEEP=1; shift ;;
 	-h | --help) usage ;;
 	*) echo "未知参数: $1" >&2; usage ;;
 	esac
@@ -83,22 +78,19 @@ ask() {
 	read -r REPLY </dev/tty || REPLY=''
 	[ -n "$REPLY" ] || REPLY=$2
 }
+# Defaults to yes; a second argument n makes Enter cancel.
 confirm() {
 	[ -z "$YES" ] || return 0
-	interactive || die "无终端时请加 --yes 确认"
-	ask "$1 [Y/n] " y
+	interactive || die "无终端时请加 --yes"
+	if [ "${2:-y}" = n ]; then ask "$1 [y/N] " n; else ask "$1 [Y/n] " y; fi
 	case $REPLY in [Yy]*) ;; *) die "已取消" ;; esac
 }
 
-# Installed = a running installation's unit and program. A kept-data uninstall
-# leaves only the ownership marker, which is a fresh install with --reuse-data.
+# Installed = a running installation's unit and program.
 installed() { [ -f "/etc/systemd/system/$UNIT.service" ] && [ -f "$CODE/monitor-hub" ] && [ ! -e "$PLAN" ]; }
 need_installed() { installed || die "本机未安装 NodeHelm 后台"; }
 listen() {
 	systemctl show -p ExecStart "$UNIT" | sed -n 's/.*--listen \([^ ;]*\).*/\1/p' | head -n 1
-}
-site() {
-	systemctl show -p ExecStart "$UNIT" | sed -n 's/.*--site \([^ ;]*\).*/\1/p' | head -n 1
 }
 
 latest_tag() {
@@ -108,10 +100,9 @@ latest_tag() {
 	echo "${tag##*/}"
 }
 
-# Whether the installed hub is release $1, read from that release's checksum
-# list alone: 0 yes, 1 no, 2 the list could not be read.
+# Whether the installed hub is release $1, read from that release's checksum list alone.
 is_release() {
-	SUMS=$(curl -fsSL --proto '=https' -m 20 "https://github.com/$REPO/releases/download/$1/sha256sums.txt" 2>/dev/null) || return 2
+	SUMS=$(curl -fsSL --proto '=https' -m 20 "https://github.com/$REPO/releases/download/$1/sha256sums.txt" 2>/dev/null) || return 1
 	echo "$SUMS" | grep -q "^$(sha256sum "$CODE/monitor-hub" | cut -d' ' -f1)  monitor-hub-$ARCH-unknown-linux-musl\$"
 }
 
@@ -128,7 +119,7 @@ fetch() {
 	else
 		TAG=$(latest_tag) || die "无法访问 GitHub；可下载发布包后用 --package"
 		URL=https://github.com/$REPO/releases/download/$TAG
-		echo "下载 NodeHelm $TAG（$ARCH）"
+		echo "下载 $TAG…"
 		# A progress bar on a terminal; quiet in logs and unattended runs.
 		if [ -t 2 ]; then PROGRESS=--progress-bar; else PROGRESS=--silent; fi
 		curl "$PROGRESS" -fSL --proto '=https' -o "$WORK/$NAME" "$URL/$NAME" || die "下载发布包失败"
@@ -139,8 +130,9 @@ fetch() {
 	PKG=$WORK/node-manager
 	(cd "$PKG" && sha256sum --check --quiet sha256sums.txt) || die "包内文件校验失败"
 }
-# The installed version's own maintenance tools, so backup, removal and recovery
-# need neither a download nor GitHub. Older installs fetch them instead.
+# The installed version's own maintenance tools, so removal and recovery need
+# neither a download nor GitHub. A removal interrupted after deleting them
+# fetches the package's copy.
 TOOLS=$CODE/tools
 lifecycle() {
 	if [ -f "$TOOLS/hub-lifecycle.py" ]; then
@@ -179,12 +171,12 @@ place_command() {
 proxy_notes() {
 	cat <<EOF
 
-下一步：在反向代理把 $1 转发到 http://$2，并确认：
-  1. 支持 WebSocket（Upgrade/Connection 头），读写超时不低于 150 秒，关闭缓冲与缓存
-  2. 请求体上限不低于 8 MiB（备份导入、主题上传；Nginx 默认 1 MB 会返回 413）
-  3. 设置 X-Forwarded-Proto: https，并用真实对端地址覆盖 X-Forwarded-For
-  4. 放行 GET/POST/PUT/DELETE，不记录 Authorization、Cookie 和请求体
-证书须由公共 CA 签发；节点只接受有效证书。Caddy 或 Cloudflare Tunnel 可自动处理证书。
+反向代理：$1 → http://$2
+  - 支持 WebSocket，读写超时 ≥150 秒，关闭缓冲与缓存
+  - 请求体上限 ≥8 MiB（Nginx 默认 1 MB）
+  - 设置 X-Forwarded-Proto: https，用真实对端地址覆盖 X-Forwarded-For
+  - 放行 GET/POST/PUT/DELETE，不记录 Authorization、Cookie 和请求体
+  - 证书须由公共 CA 签发
 EOF
 }
 
@@ -195,11 +187,7 @@ do_install() {
 m=re.search(r"--listen 127\.0\.0\.1:(\d+) .* --site (\S+)",json.load(open(sys.argv[1]))["unit"])
 print(m[1],m[2]) if m else sys.exit(1)' "$PLAN") || die "安装恢复记录无法识别，请按部署说明手动 --resume"
 		PORT=${R%% *} SITE=${R#* } EXTRA=--resume
-		echo "继续上次中断的安装：$SITE，端口 $PORT"
-	elif [ -z "$EXTRA" ] && { [ -e "$DATA" ] || [ -L "$DATA" ]; }; then
-		interactive || die "发现保留的后台数据；复用请加 --reuse-data"
-		ask "发现之前卸载时保留的数据，是否复用？[Y/n] " y
-		case $REPLY in [Yy]*) EXTRA=--reuse-data ;; *) die "已取消；数据保留在 $DATA" ;; esac
+		echo "继续上次中断的安装（$SITE，端口 $PORT）"
 	fi
 	# Every question comes before the download, so a missing option fails at once.
 	while [ -z "$SITE" ]; do
@@ -209,12 +197,12 @@ print(m[1],m[2]) if m else sys.exit(1)' "$PLAN") || die "安装恢复记录无�
 	done
 	if [ -z "$PORT" ]; then
 		PORT=9911
-		if interactive; then ask "本机监听端口 [9911]: " 9911; PORT=$REPLY; fi
+		if interactive; then ask "端口 [9911]: " 9911; PORT=$REPLY; fi
 	fi
-	[ -n "$YES" ] || interactive || die "无终端时请加 --yes 确认"
+	[ -n "$YES" ] || interactive || die "无终端时请加 --yes"
 
 	fetch
-	confirm "将安装 NodeHelm $TAG：$SITE，本机端口 $PORT。继续？"
+	confirm "安装 $TAG（$SITE，端口 $PORT）？"
 	# The installer prints the only valid password; it stays in the private
 	# download workspace, which the exit trap removes, until shown once below.
 	OUT=$WORK/install.out
@@ -223,19 +211,17 @@ print(m[1],m[2]) if m else sys.exit(1)' "$PLAN") || die "安装恢复记录无�
 		--site "$SITE" --port "$PORT" ${EXTRA:+"$EXTRA"} >"$OUT" 2>&1; then
 		cat "$OUT"; die "安装未完成，再次运行同一命令可继续"
 	fi
-	grep -v -e '^应急密码: ' -e '^（只显示这一次' "$OUT" || true
 	PASS=$(sed -n 's/^应急密码: //p' "$OUT")
+	place_command
 	echo
-	echo "==== NodeHelm 已安装 ===="
+	echo "已安装 NodeHelm $TAG"
 	echo "管理入口: $SITE/admin/"
 	if [ -n "$PASS" ]; then
-		echo "应急密码: $PASS"
-		echo "（只显示这一次，请妥善保存，勿外传；首次启动写入日志的密码已失效）"
-	elif [ "$EXTRA" = --reuse-data ]; then
-		echo "沿用原有登录方式。"
+		echo "应急密码: $PASS（仅显示一次）"
+	else
+		echo "应急密码未生成，请运行 sudo nodehelm-hub reset-password"
 	fi
-	place_command
-	echo "以后运行 sudo nodehelm-hub 可更新、查看状态和维护；遗失应急密码时运行 sudo nodehelm-hub reset-password。"
+	echo "以后运行 sudo nodehelm-hub 维护"
 	proxy_notes "$SITE" "127.0.0.1:$PORT"
 }
 
@@ -246,39 +232,27 @@ do_update() {
 	# manual install-hub.sh, since this is how they are added.
 	if [ -z "$PACKAGE" ] && [ -x "$CODE/nodehelm-hub" ] && [ -f "$TOOLS/hub-lifecycle.py" ] &&
 		TAG=$(latest_tag) && is_release "$TAG"; then
-		echo "后台已是 $TAG，无需更新。"
+		echo "已是最新 $TAG"
 		return
 	fi
 	fetch
 	if cmp -s "$PKG/monitor-hub" "$CODE/monitor-hub"; then
-		echo "后台已是 $TAG，无需更新。"
+		echo "已是最新 $TAG"
 		place_command
 		return
 	fi
-	confirm "将后台更新到 $TAG，节点与业务不受影响，失败自动回退。继续？"
+	confirm "更新到 $TAG？"
 	sh "$PKG/update-hub.sh"
 	place_command
 }
 
-do_status() {
-	need_installed
-	L=$(listen)
-	echo "服务: $(systemctl is-active "$UNIT" || true)"
-	echo "地址: $(site)/admin/（本机 $L）"
-	echo "本机检查: HTTP $(curl -s -o /dev/null -m 5 -w '%{http_code}' "http://$L/api/me" || true)"
-	if ! TAG=$(latest_tag 2>/dev/null); then
-		echo "版本: 无法访问 GitHub，未检查"
-	elif is_release "$TAG"; then
-		echo "版本: 已是最新 $TAG"
-	elif [ $? = 2 ]; then
-		echo "版本: 无法访问 GitHub，未检查"
-	else
-		echo "版本: 有新版本 $TAG，运行 sudo nodehelm-hub update 更新"
-	fi
-}
-
 do_logs() {
 	need_installed
+	S=$(systemctl is-active "$UNIT" || true)
+	if [ "$S" = active ]; then S=运行中; else S="未运行（$S）"; fi
+	H=$(curl -s -o /dev/null -m 5 -w '%{http_code}' "http://$(listen)/api/me" || true)
+	[ "$H" != 000 ] || H=无响应
+	echo "服务: $S · 本机 HTTP $H"
 	# The first start logs the emergency password; it stays out of a shared screen.
 	journalctl -u "$UNIT" -n 100 --no-pager | sed 's/Emergency password: .*/Emergency password: <已隐藏>/'
 }
@@ -286,20 +260,13 @@ do_logs() {
 do_reset() {
 	need_installed
 	# The hub keeps the database's WAL files open and owned by its own user.
-	[ "$(systemctl is-active "$UNIT" || true)" = active ] || die "请先启动后台再重置"
-	confirm "重置应急密码，所有已登录会话将退出。继续？"
-	"$CODE/monitor-hub" --db "$DATA/hub.db" --reset-password
-	echo "新密码只显示这一次，请妥善保存，勿外传。"
-}
-
-do_recover() {
-	[ -f "/etc/systemd/system/$UNIT.service" ] || [ -d "$CODE" ] || die "本机未安装 NodeHelm 后台"
-	lifecycle recover
-}
-
-do_backup() {
-	need_installed
-	lifecycle backup
+	[ "$(systemctl is-active "$UNIT" || true)" = active ] || die "后台未运行，无法重置"
+	confirm "重置应急密码？所有会话将退出"
+	# The hub's own log lines share stdout; only the password line is shown.
+	OUT=$("$CODE/monitor-hub" --db "$DATA/hub.db" --reset-password)
+	PASS=$(printf '%s\n' "$OUT" | sed -n 's/^Emergency password: //p')
+	[ -n "$PASS" ] || die "重置未返回密码"
+	echo "新应急密码: $PASS（仅显示一次）"
 }
 
 # Nodes still bound keep a component that can no longer reach this hub.
@@ -315,56 +282,49 @@ except sqlite3.Error:
 do_uninstall() {
 	need_installed
 	N=$(bound_nodes)
-	if [ -n "$KEEP" ]; then
-		[ "$N" = 0 ] || echo "还有 $N 个节点接入服务管理，用保留的数据重装后会自动重连。"
-		confirm "将卸载后台，数据保留在 $DATA，之后可用 --reuse-data 重装。继续？"
-		lifecycle uninstall --keep-data
-	else
-		if [ "$N" != 0 ]; then
-			echo "注意：还有 $N 个节点接入服务管理。请先在后台对它们「全部卸载此节点」，否则节点上的组件将无法再连接，只能在节点本机兜底清理。"
-			# Unattended runs cannot weigh that; a person at the terminal still can.
-			[ -z "$YES" ] || die "有节点仍接入时不接受 --yes，请先卸载这些节点，或在终端中交互确认"
-		fi
-		if [ -z "$YES" ]; then
-			interactive || die "无终端时请加 --yes 确认"
-			echo "将卸载后台并删除全部数据：数据库、密钥、主题、维护记录和服务器上的备份。" >/dev/tty
-			echo "如需留存，请先在后台「数据」页下载备份。" >/dev/tty
-			ask "输入 uninstall 确认: " ''
-			[ "$REPLY" = uninstall ] || die "已取消"
-		fi
-		lifecycle uninstall --purge
+	if [ "$N" != 0 ]; then
+		echo "还有 $N 个节点接入，建议先在后台「全部卸载此节点」，否则需在节点本机清理"
+		# Unattended runs cannot weigh that; a person at the terminal still can.
+		[ -z "$YES" ] || die "有节点接入时不接受 --yes"
 	fi
-	echo "反向代理配置与证书由你维护，请按需自行移除。"
+	confirm "卸载并删除全部数据（含服务器上的备份）？" n
+	lifecycle uninstall
+	echo "反向代理与证书请自行移除"
 }
 
 menu() {
 	cat >/dev/tty <<'EOF'
-NodeHelm 后台已安装：
-  1) 更新到最新版本
-  2) 运行状态与版本
-  3) 最近日志
-  4) 重置应急密码
-  5) 备份
-  6) 完成中断的更新或卸载
-  7) 卸载并删除全部数据
-  8) 卸载但保留数据（以便重装）
+NodeHelm 后台
+  1) 更新
+  2) 日志
+  3) 重置应急密码
+  4) 卸载
   0) 退出
 EOF
 	ask "请选择 [1]: " 1
 	case $REPLY in
 	1) ACTION=update ;;
-	2) ACTION=status ;;
-	3) ACTION=logs ;;
-	4) ACTION=reset-password ;;
-	5) ACTION=backup ;;
-	6) ACTION=recover ;;
-	7) ACTION=uninstall ;;
-	8) ACTION=uninstall KEEP=1 ;;
+	2) ACTION=logs ;;
+	3) ACTION=reset-password ;;
+	4) ACTION=uninstall ;;
 	0) exit 0 ;;
 	*) die "无效选择" ;;
 	esac
 }
 
+# An interrupted update, backup or removal keeps the hub from starting and
+# blocks every other change; the lifecycle tool's recover is the only way on.
+# It finishes and stops: what was asked may no longer apply, as after a removal.
+if [ -e "$JOURNAL" ]; then
+	if [ "$ACTION" = logs ]; then
+		echo "有未完成的更新或卸载，不带参数再运行即可完成"
+	else
+		[ -n "$ACTION" ] || [ -n "$YES" ] || interactive || die "上次操作中断，在终端运行或加 --yes 完成"
+		echo "完成上次中断的操作…"
+		lifecycle recover
+		exit 0
+	fi
+fi
 if [ -z "$ACTION" ]; then
 	if ! installed; then
 		ACTION=install
@@ -374,7 +334,7 @@ if [ -z "$ACTION" ]; then
 		# The install one-liner rerun unattended, as the update page offers it.
 		ACTION=update
 	else
-		ACTION=status
+		die "无终端时请加 --yes"
 	fi
 fi
 case $ACTION in
@@ -382,10 +342,7 @@ install)
 	! installed || die "后台已安装；更新请用 update"
 	do_install ;;
 update) do_update ;;
-status) do_status ;;
 logs) do_logs ;;
 reset-password) do_reset ;;
-backup) do_backup ;;
-recover) do_recover ;;
 uninstall) do_uninstall ;;
 esac

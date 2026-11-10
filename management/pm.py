@@ -766,9 +766,9 @@ class Driver:
                 writer = locks.enter_context((self.root / 'write.lock').open('a'))
                 fcntl.flock(writer, fcntl.LOCK_EX)
             if (self.root.parent / 'component-recovery.json').exists():
-                raise Rejected('组件升级或卸载尚未恢复，请先执行 install.py recover')
+                raise Rejected('有未完成的组件升级，再运行 sudo nodehelm 完成')
             if (self.root / 'recovery.json').exists():
-                raise Rejected('PM 有未完成的操作，请先执行 agent.py recover')
+                raise Rejected('PM 有未完成的操作，再运行 sudo nodehelm 完成')
             yield
 
     def disable_empty(self):
@@ -806,7 +806,7 @@ class Driver:
             if read(self.root.parent / 'component-recovery.json', {}).get('phase') == 'switching':
                 raise Rejected('组件文件正在切换，暂停 PM 维护直至升级恢复')
             if (self.root / 'recovery.json').exists():
-                print('PM 等待恢复，请执行 agent.py recover', file=sys.stderr)
+                print('PM 等待恢复，请运行 sudo nodehelm', file=sys.stderr)
                 return
             state = read(self.root / 'state.json')
             if state and state['installed']:

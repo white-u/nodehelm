@@ -116,7 +116,7 @@ class CoreLifecycleTests(unittest.TestCase):
         return {'id': f'{self.seq:032x}', 'action': action, 'payload': payload,
                 'revision': self.c.snapshot()['revision']}
 
-    def legacy(self, with_instances=False):
+    def installed(self, with_instances=False):
         atomic(self.driver.binary, self.binary['6.0.0'], 0o755)
         resources = []
         if with_instances:
@@ -128,12 +128,13 @@ class CoreLifecycleTests(unittest.TestCase):
                 atomic(config, self.driver.config(item).encode())
                 atomic(unit, self.driver.service(port).encode(), 0o644)
             self.systemd.active.add(self.driver.unit(12345))
-        state = {'installed': True, 'resources': resources}
+        core = {'version': '6.0.0', 'sha256': self.driver.asset('6.0.0')['sha256'], 'previous_version': None}
+        state = {'installed': True, 'resources': resources, 'core': core}
         write(self.c.state, state)
         return state
 
     def test_snapshot_reuses_verified_binary_but_still_checks_instance_config(self):
-        self.legacy(with_instances=True)
+        self.installed(with_instances=True)
         ctime = self.driver.binary.stat().st_ctime_ns
         with patch('core_driver.time.time_ns', return_value=ctime) as wall_clock, \
                 patch('core_driver.time.monotonic', return_value=0) as clock, \
@@ -151,7 +152,7 @@ class CoreLifecycleTests(unittest.TestCase):
             self.assertEqual(digest.call_count, 3)
 
     def test_snapshot_detects_same_size_edit_and_uninstall_rechecks_digest(self):
-        self.legacy()
+        self.installed()
         binary = self.driver.binary
         before = binary.stat()
         settled = before.st_ctime_ns + SNAPSHOT_CACHE_MIN_CTIME_AGE_NS
@@ -175,7 +176,7 @@ class CoreLifecycleTests(unittest.TestCase):
             self.assertEqual(digest.call_count, 2)
 
     def test_snapshot_rejects_unsafe_or_unstable_binary_metadata(self):
-        self.legacy()
+        self.installed()
         binary = self.driver.binary
         self.assertFalse(self.c.snapshot()['blocked'])
         binary.chmod(0o775)
@@ -196,8 +197,8 @@ class CoreLifecycleTests(unittest.TestCase):
         self.assertTrue(self.c.snapshot()['blocked'])
         self.assertIsNone(self.c.snapshot()['core']['version'])
 
-    def test_legacy_recognition_upgrade_and_rollback_preserve_running_set_and_secrets(self):
-        before = self.legacy(with_instances=True)
+    def test_upgrade_and_rollback_preserve_running_set_and_secrets(self):
+        before = self.installed(with_instances=True)
         snapshot = self.c.snapshot()
         self.assertEqual(snapshot['core']['version'], '6.0.0')
         self.assertEqual(snapshot['core']['candidates'], ['6.1.0'])
@@ -220,7 +221,7 @@ class CoreLifecycleTests(unittest.TestCase):
         self.assertFalse(list(self.root.glob('.node-manager-snell-server-*')))
 
     def test_failed_archive_and_candidate_configuration_leave_services_alone(self):
-        before = self.legacy(with_instances=True)
+        before = self.installed(with_instances=True)
         url = self.driver.asset('6.1.0')['url']
         good = self.packages[url]
         self.packages[url] = b'corrupt archive'
@@ -239,7 +240,7 @@ class CoreLifecycleTests(unittest.TestCase):
     def test_exit_during_download_preserves_observed_inactive_or_failed_state(self):
         for stopped_state in ('inactive', 'failed'):
             with self.subTest(stopped_state=stopped_state):
-                before = self.legacy(with_instances=True)
+                before = self.installed(with_instances=True)
                 self.systemd.calls.clear()
                 req = self.req('core_upgrade', version='6.1.0')
 
@@ -271,7 +272,7 @@ class CoreLifecycleTests(unittest.TestCase):
         write_journal = controller.write
         for published in (False, True):
             with self.subTest(published=published):
-                before = self.legacy(with_instances=True)
+                before = self.installed(with_instances=True)
                 self.systemd.calls.clear()
                 req = self.req('core_upgrade', version='6.1.0')
 
@@ -292,7 +293,7 @@ class CoreLifecycleTests(unittest.TestCase):
                 self.assertFalse(self.c.journal.exists())
 
     def test_pre_switch_interruption_recovery_preserves_exited_service(self):
-        self.legacy(with_instances=True)
+        self.installed(with_instances=True)
 
         def interrupt_candidate(*_args):
             self.systemd.active.clear()
@@ -307,41 +308,30 @@ class CoreLifecycleTests(unittest.TestCase):
         self.assertEqual(self.systemd.active, set())
         self.assertFalse(self.c.journal.exists())
 
-    def test_stop_interruption_restores_services_and_legacy_uncertainty_blocks(self):
-        for legacy in (False, True):
-            with self.subTest(legacy=legacy):
-                before = self.legacy(with_instances=True)
-                self.systemd.calls.clear()
+    def test_stop_interruption_restores_services(self):
+        before = self.installed(with_instances=True)
+        self.systemd.calls.clear()
 
-                def interrupt_stop(tool, action, *args, **kwargs):
-                    if action == 'stop':
-                        self.assertIs(read(self.c.journal)['backup']['mutation_started'], True)
-                        self.systemd.command(tool, action, *args, **kwargs)
-                        raise Interrupted
-                    return self.systemd.command(tool, action, *args, **kwargs)
+        def interrupt_stop(tool, action, *args, **kwargs):
+            if action == 'stop':
+                self.assertIs(read(self.c.journal)['backup']['mutation_started'], True)
+                self.systemd.command(tool, action, *args, **kwargs)
+                raise Interrupted
+            return self.systemd.command(tool, action, *args, **kwargs)
 
-                with patch('core_driver.command', side_effect=interrupt_stop):
-                    with self.assertRaises(Interrupted):
-                        self.c.execute(self.req('core_upgrade', version='6.1.0'))
-                if legacy:
-                    journal = read(self.c.journal)
-                    journal['backup'].pop('mutation_started')
-                    write(self.c.journal, journal)
-                result = Controller(self.root, self.driver, SPECS['snell']).recover()
-                active = self.driver.unit(12345)
-                if legacy:
-                    self.assertEqual(result['status'], 'recovery_failed')
-                    self.assertEqual(self.systemd.mutations(), [('stop', active)])
-                    self.assertEqual(self.systemd.active, set())
-                else:
-                    self.assertEqual(result['status'], 'rolled_back')
-                    self.assertEqual(self.systemd.mutations(), [('stop', active), ('start', active)])
-                    self.assertEqual(self.systemd.active, {active})
-                self.assertEqual(read(self.c.state), before)
-                self.assertEqual(self.driver.binary.read_bytes(), self.binary['6.0.0'])
+        with patch('core_driver.command', side_effect=interrupt_stop):
+            with self.assertRaises(Interrupted):
+                self.c.execute(self.req('core_upgrade', version='6.1.0'))
+        result = Controller(self.root, self.driver, SPECS['snell']).recover()
+        active = self.driver.unit(12345)
+        self.assertEqual(result['status'], 'rolled_back')
+        self.assertEqual(self.systemd.mutations(), [('stop', active), ('start', active)])
+        self.assertEqual(self.systemd.active, {active})
+        self.assertEqual(read(self.c.state), before)
+        self.assertEqual(self.driver.binary.read_bytes(), self.binary['6.0.0'])
 
     def test_start_failure_restores_original_bytes_and_running_set(self):
-        before = self.legacy(with_instances=True)
+        before = self.installed(with_instances=True)
         self.systemd.reject_hash = sha(self.binary['6.1.0'])
         outcome = self.c.execute(self.req('core_upgrade', version='6.1.0'))
         self.assertEqual((outcome['status'], outcome['code']), ('rolled_back', 'core_runtime'))
@@ -352,7 +342,7 @@ class CoreLifecycleTests(unittest.TestCase):
         self.assertFalse(list(self.root.glob('.node-manager-snell-server-*')))
 
     def test_prepared_recovery_restores_offline_and_committed_recovery_keeps_candidate(self):
-        self.legacy(with_instances=True)
+        self.installed(with_instances=True)
         apply = self.driver.apply_core
 
         def crash(*args):
@@ -363,9 +353,6 @@ class CoreLifecycleTests(unittest.TestCase):
             with self.assertRaises(Interrupted):
                 self.c.execute(self.req('core_upgrade', version='6.1.0'))
         self.assertEqual(self.driver.binary.read_bytes(), self.binary['6.1.0'])
-        journal = read(self.c.journal)
-        journal['backup'].pop('mutation_started')
-        write(self.c.journal, journal)
         restarted = Controller(self.root, self.driver, SPECS['snell'])
         self.opener.side_effect = AssertionError('recovery must not download')
         self.assertEqual(restarted.recover()['status'], 'rolled_back')
@@ -399,7 +386,7 @@ class CoreLifecycleTests(unittest.TestCase):
         self.assertFalse(self.c.snapshot()['installed'])
 
     def test_refuses_untrusted_binary_and_versions(self):
-        self.legacy(with_instances=True)
+        self.installed(with_instances=True)
         with self.assertRaises(Rejected) as failure:
             self.c.execute(self.req('core_uninstall'))
         self.assertEqual(failure.exception.code, 'core_in_use')
@@ -416,7 +403,7 @@ class CoreLifecycleTests(unittest.TestCase):
         self.assertEqual(self.systemd.mutations(), [])
 
     def test_fixed_temp_name_collision_during_download_preserves_external_file(self):
-        self.legacy()
+        self.installed()
         unknown = self.root / '.node-manager-snell-server.candidate'
 
         def collide(req, timeout):
@@ -429,7 +416,7 @@ class CoreLifecycleTests(unittest.TestCase):
         self.assertEqual(list(self.root.glob('.node-manager-snell-server-*')), [])
 
     def test_start_rate_limit_is_reset_only_for_the_original_active_unit(self):
-        self.legacy(with_instances=True)
+        self.installed(with_instances=True)
         active = self.driver.unit(12345)
         attempts = 0
 
@@ -451,7 +438,7 @@ class CoreLifecycleTests(unittest.TestCase):
         self.assertEqual(self.systemd.active, {active})
 
     def test_candidate_loader_failure_is_rejected_before_stopping_services(self):
-        self.legacy(with_instances=True)
+        self.installed(with_instances=True)
 
         def fail_probe(tool, action, *args, **kwargs):
             if action == '--version':
@@ -465,7 +452,7 @@ class CoreLifecycleTests(unittest.TestCase):
         self.assertEqual(self.c.snapshot()['core']['version'], '6.0.0')
 
     def test_component_switch_checks_older_core_and_rejects_losing_rollback_target(self):
-        self.legacy()
+        self.installed()
         manifest = {'core_assets.json': b'{"snell":{"6.0.0":{"fixture-arch":{"sha256":"'
                     + sha(self.binary['6.0.0']).encode() + b'"}}}}'}
         with patch.object(install, 'ROOT', self.root), patch.object(install, 'CODE', self.root):

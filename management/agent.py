@@ -248,7 +248,7 @@ def release(snapshot, replacement=None):
         # The poller may have advanced after the first check, before it stopped.
         job = unlink_check()
         if snapshot()['blocked']:
-            raise Rejected('仍有未恢复操作，禁止重新绑定；请先 recover')
+            raise Rejected('仍有未恢复操作或配置漂移，禁止重新绑定；请先运行 sudo nodehelm')
         # Terminal transport state belongs to the old binding. Preserve module
         # receipts and audit history, but never send this job to a new identity.
         if job and (job.get('status') == 'succeeded' or job.get('status') in ACTIVE):
@@ -369,7 +369,7 @@ def main():
                 if args.action != 'uninstall':
                     locks.enter_context(lock(private_directory(ROOT) / 'lifecycle.lock'))
                 if (ROOT / 'component-recovery.json').exists():
-                    raise Rejected('组件升级或卸载尚未恢复，请先执行 install.py recover')
+                    raise Rejected('有未完成的组件升级，再运行 sudo nodehelm 完成')
             if args.action == 'run':
                 locks.enter_context(lock(ROOT / 'agent.lock'))
                 if present(PURGE_JOURNAL):
@@ -496,7 +496,7 @@ def run_action(action, args=None):
         except urllib.error.URLError as error:
             print(f'HTTPS 连接失败（{type(error.reason).__name__}）；检查证书、DNS 和后台可达性。', file=sys.stderr, flush=True)
         except (OSError, ValueError, KeyError) as error:
-            print(f'本地状态或响应异常（{type(error).__name__}）；保留操作记录，请执行 status 检查。', file=sys.stderr, flush=True)
+            print(f'本地状态或响应异常（{type(error).__name__}）；保留操作记录，请运行 sudo nodehelm logs 检查。', file=sys.stderr, flush=True)
         # A finished task is reported at once with the state after it: the page
         # waits on that result. Lifecycle steps keep the interval, as a step can
         # be waiting on the Hub without doing anything.

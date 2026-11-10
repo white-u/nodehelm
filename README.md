@@ -26,7 +26,7 @@ curl -fsSL https://github.com/white-u/nodehelm/releases/latest/download/nodehelm
 
 离线安装和全部参数见 [部署文档](DEPLOY.md)。
 
-后台默认仅监听 `127.0.0.1:9911`，使用独立 `node-manager-hub` 服务及数据目录。配置自己的 HTTPS 反代后访问 `/admin/`，先以应急密码登录，再设置 GitHub 登录。安装后用 `sudo nodehelm-hub` 更新、备份、恢复和卸载；不要用原 monitor 安装器升级本后台。
+后台默认仅监听 `127.0.0.1:9911`，使用独立 `node-manager-hub` 服务及数据目录。配置自己的 HTTPS 反代后访问 `/admin/`，先以应急密码登录，再设置 GitHub 登录。安装后用 `sudo nodehelm-hub` 更新和卸载，备份与恢复在后台「数据」页；不要用原 monitor 安装器升级本后台。
 
 ## 组成
 

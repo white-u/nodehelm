@@ -13,7 +13,7 @@
 | [agent.py](agent.py) | 轮询、快照组合、模块任务分派及跨模块端口规则（PM 跟随业务端口）、回执确认、本地状态／恢复／解绑／换绑／本机卸载入口 |
 | [install.py](install.py) | 安装登记（上报本机 boot ID 供后台核对机器）、首次上报确认、组件升级回退、恢复和组件移除 |
 | [lifecycle.py](lifecycle.py) | 持久卸载计划、步骤推进、模块回执确认和独立清理执行器；本机卸载复用同一计划，不向后台上报 |
-| [menu.py](menu.py) | 节点本机菜单 `sudo nodehelm`：升级、状态、日志、换绑、卸载，`recover` 子命令；命令随组件安装和清理 |
+| [menu.py](menu.py) | 节点本机菜单 `sudo nodehelm`：升级、日志与运行状态、换绑、卸载，运行时先完成中断的操作；命令随组件安装和清理 |
 | [modules.py](modules.py) | 模块注册表：模块清单与各模块 `Spec`、请求校验入口、各模块 Controller 与核心驱动；只由入口 `agent.py`、`install.py` 导入 |
 | [controller.py](controller.py) | 与模块无关的事务：版本比对、去重回执、提交和失败恢复；模块差异来自构造时传入的驱动和 `Spec` |
 | [protocol.py](protocol.py) | 协议版本、模块声明 `Spec`、请求外层校验、配置版本摘要、错误模型及多模块共用的字段检查 |

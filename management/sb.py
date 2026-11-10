@@ -46,7 +46,7 @@ class Driver(CoreDriver):
     title = 'SB'
     binary_name = 'sing-box'
     subdirectory = SPEC.name
-    legacy_version = '1.14.4'
+    base_version = '1.14.4'
     version_arg = 'version'
 
     def complete(self, item, existing):

@@ -42,9 +42,8 @@ curl -fsSL https://github.com/white-u/nodehelm/releases/latest/download/nodehelm
 | `--yes` | 不询问，按参数和默认值执行；无终端时必须提供 |
 | `--version vX.Y.Z` | 指定版本，默认最新 |
 | `--package 文件` | 使用已下载的本地发布包（离线） |
-| `--reuse-data` | 复用之前卸载时保留的数据和主题 |
 
-首次安装中断时，再次运行同一命令会按原记录继续。发现之前卸载时保留的数据，脚本会询问是否复用。
+首次安装中断时，再次运行同一命令会按原记录继续。
 
 | 项目 | 路径或值 |
 | --- | --- |
@@ -119,7 +118,7 @@ sudo nodehelm-hub reset-password
 
 接入命令形如 `curl -fsS https://你的域名/management-files/enroll.sh | sh -s -- <登记码>`：后台生成的脚本写入本后台地址和 `install.py` 的校验值，下载后先校验再执行，校验不符即停止；登记码作为参数传入，不出现在网址和代理日志中。登记码一次性使用，10 分钟内有效，过期后在同一节点重新生成即可。登记码由页面自动填入，后台凭它确定节点；后台核对执行命令的机器与该节点监控 Agent 所在机器的开机标识（boot ID）是否一致，不一致即拒绝并说明命令所属节点，防止把 A 节点的命令误装到 B 机器；该节点监控 Agent 不在线时跳过这项核对。被拒绝后改用正确的命令直接重试即可。在终端执行时，后台更新包、监控 Agent 和组件文件的下载会显示进度。组件安装在 `/opt/node-manager`，服务名 `node-manager-agent`；节点主动通过 HTTPS 轮询后台，不开放入站端口。
 
-接入后节点上多出 `nodehelm` 命令。`sudo nodehelm` 打开节点菜单：升级、运行状态、最近日志、换绑、卸载；操作中断时运行 `sudo nodehelm recover`。
+接入后节点上多出 `nodehelm` 命令。`sudo nodehelm` 打开节点菜单：升级、日志（含管理组件与监控 Agent 运行状态）、换绑、卸载；操作中断后再运行一次 `sudo nodehelm` 会先自动完成。
 
 换绑（`sudo nodehelm rebind`）先输入后台地址。地址属于本节点当前的后台时（后台换了域名），只改地址，监控 Agent 一并改到新地址；否则再输入后台为该节点生成的接入码，接入成功后才替换原绑定。实例和配置都保留。
 
@@ -135,13 +134,9 @@ sudo nodehelm-hub reset-password
 监控 Agent 随后台发布并嵌入后台，节点从后台的 `/agent/{arch}` 下载，不访问 GitHub；后台更新后，「更新」页的 agent 一栏列出需要升级的节点。未接入服务管理的节点没有 `nodehelm` 命令，用该栏给出的升级命令。
 | 业务核心 | 服务管理 → 选择模块 → 实例列表上方「升级核心」 | 自动恢复原核心；模块维护可显式回退 |
 
-更新后台：先核对发布的校验清单，已是最新会直接退出，不下载发布包；否则先做一致性备份，再切换并检查新程序；成功后只保留这一份更新备份，较早的自动备份会被清理，`backup` 手动做的备份不受影响。还没有 `nodehelm-hub` 命令时，用安装时的同一条命令，已安装时它显示菜单。后台「更新」页提供命令的复制按钮。
+更新后台：先核对发布的校验清单，已是最新会直接退出，不下载发布包；否则先做一致性备份，再切换并检查新程序；成功后只保留这一份更新前备份，较早的会被清理。还没有 `nodehelm-hub` 命令时，用安装时的同一条命令，已安装时它显示菜单。后台「更新」页提供命令的复制按钮。
 
-更新节点：后台「更新」页的「管理组件」一栏列出组件与后台不一致的节点，在这些节点上执行 `sudo nodehelm upgrade`。更新后台后应立即升级全部节点：后台不保证兼容旧版组件的上报，旧组件可能拒绝新配置或无法上报状态。1.0.0 接入的节点还没有这个命令，第一次用下面的命令升级，之后就有了：
-
-```sh
-sudo python3 /opt/node-manager/install.py upgrade
-```
+更新节点：后台「更新」页的「管理组件」一栏列出组件与后台不一致的节点，在这些节点上执行 `sudo nodehelm upgrade`。更新后台后应立即升级全部节点：后台不保证兼容旧版组件的上报，旧组件可能拒绝新配置或无法上报状态。
 
 多台节点可在源码仓库中用 `scripts/upgrade-nodes.sh root@node1 root@node2` 逐台 SSH 执行，遇到失败即停。组件回退使用升级输出中的备份编号：
 
@@ -158,17 +153,15 @@ sudo python3 /opt/node-manager/install.py rollback --backup <备份编号>
 | 命令 | 作用 |
 | --- | --- |
 | `update` | 更新到最新版本 |
-| `status` | 服务状态、本机检查和是否有新版本 |
-| `logs` | 最近 100 行日志，应急密码会被隐藏 |
+| `logs` | 服务状态、本机 HTTP 检查和最近 100 行日志，应急密码会被隐藏 |
 | `reset-password` | 重置应急密码，所有会话退出 |
-| `backup` | 一致性备份，保存在 `/var/backups/node-manager-hub`，不会被自动清理 |
-| `recover` | 完成中断的更新或卸载，不需要联网 |
-| `uninstall` | 卸载并删除全部数据：数据库、密钥、主题、维护记录、服务器上的备份和本命令；需输入 `uninstall` 确认 |
-| `uninstall --keep-data` | 卸载但保留数据，之后可用 `--reuse-data` 重装 |
+| `uninstall` | 卸载并删除全部数据：数据库、密钥、主题、维护记录、服务器上的备份和本命令；默认不卸载，需按 `y` 确认 |
 
-日常备份建议用后台「数据」页下载，文件离开服务器才算灾备。两种备份都保留节点的服务管理绑定：恢复后节点在下一次轮询（约 5 秒）自动重连并重新上报配置，不需要重新接入；节点上的实例和 PM 规则不受后台恢复影响。网页备份不含服务管理密钥，这不影响重连。
+更新、备份或卸载中断后，再运行一次 `sudo nodehelm-hub` 会先自动完成，不要手工删除恢复记录。
 
-从服务器上的备份恢复：
+备份与恢复在后台「数据」页进行，下载的文件离开服务器才算灾备。恢复保留节点的服务管理绑定：节点在下一次轮询（约 5 秒）自动重连并重新上报配置，不需要重新接入；节点上的实例和 PM 规则不受后台恢复影响。网页备份不含服务管理密钥，这不影响重连。
+
+更新后发现数据有问题，可从服务器上的更新前备份恢复：
 
 ```sh
 sudo python3 -B /opt/node-manager-hub/tools/hub-lifecycle.py restore --backup /var/backups/node-manager-hub/<备份目录>
@@ -176,7 +169,7 @@ sudo python3 -B /opt/node-manager-hub/tools/hub-lifecycle.py restore --backup /v
 
 恢复会替换当前数据，先做一次现状备份。恢复后需要重新登录；服务管理的操作记录、PM 每小时流量历史和未使用的接入码被清除。以下节点仍需重新接入：备份之后重新接入过的节点（凭据已更换），以及备份时正处于卸载中的节点。
 
-迁移到新服务器：在旧服务器备份，新服务器用同一域名安装后台并恢复，再把域名的反向代理指向新服务器，节点会自动连上新后台。更换域名时，先在后台设置里改为新地址，再在每台节点运行 `sudo nodehelm rebind` 输入新地址。中断的更新或卸载只用 `recover` 处理，不要手工删除恢复记录。维护工具随本机安装的版本保存在 `/opt/node-manager-hub/tools`，备份、恢复和卸载都不需要访问 GitHub。
+迁移到新服务器：在旧后台「数据」页下载备份，新服务器用同一域名安装后台并恢复，再把域名的反向代理指向新服务器，节点会自动连上新后台。更换域名时，先在后台设置里改为新地址，再在每台节点运行 `sudo nodehelm rebind` 输入新地址。维护工具随本机安装的版本保存在 `/opt/node-manager-hub/tools`，恢复和卸载都不需要访问 GitHub。
 
 卸载顺序：先卸载全部节点（见下一节），再卸载后台。仍有节点接入时，`uninstall` 会提示数量，并拒绝无人值守的 `--yes`。以下内容不在卸载范围内，需要时自行处理：反向代理配置与证书、你下载到本地的网页备份、同机的原 monitor 服务。
 
@@ -214,18 +207,18 @@ sudo journalctl -u node-manager-cleanup.service -n 50 --no-pager
 
 | 现象 | 原因与处理 |
 | --- | --- |
-| 打不开 `/admin/` | 运行 `sudo nodehelm-hub status`；确认代理指向本机端口、证书有效 |
+| 打不开 `/admin/` | 运行 `sudo nodehelm-hub logs` 看服务状态和本机检查；确认代理指向本机端口、证书有效 |
 | 实时数据不刷新，节点周期性掉线 | 代理未转发 WebSocket 或超时太短，见第 3 节 |
 | 备份导入、主题上传返回 413 | 代理请求体上限不足 8 MiB |
 | 「添加节点」不可用 | 用 IP 或明文 HTTP 打开了后台；改用 HTTPS 域名访问 |
 | 节点日志提示证书无效 | 证书不是公共 CA 签发或已过期；节点不信任自签证书 |
 | 节点安装时 403 | CDN 或 WAF 拦截了 `NodeManager/1` 请求，检查安全事件与放行规则 |
-| 管理离线 | 节点上 `sudo nodehelm status` 和 `sudo nodehelm logs`，再检查 VPS 到后台的 HTTPS |
+| 管理离线 | 节点上 `sudo nodehelm logs`，再检查 VPS 到后台的 HTTPS |
 | 登记凭据过期 | 在同一节点重新生成安装命令，原待登记身份保留 |
 | 页面提示组件不兼容 | 在该节点运行 `sudo nodehelm upgrade` |
 | 卸载已暂停 | 先看日志处理原因，再点「继续卸载」 |
 | PM 提示受管表缺失 | 核实是否被 `flush ruleset`，再执行 `python3 /opt/node-manager/pm.py repair --confirm-checkpoint-loss` |
-| 后台更新中断 | `sudo nodehelm-hub recover` |
-| 节点操作中断 | 节点上 `sudo nodehelm recover` |
+| 后台更新中断 | 再运行一次 `sudo nodehelm-hub` |
+| 节点操作中断 | 节点上再运行一次 `sudo nodehelm` |
 
 不要通过关闭证书校验绕过问题。更细的恢复流程见 [部署与恢复说明](NODE_MANAGEMENT_DEPLOY.md)。

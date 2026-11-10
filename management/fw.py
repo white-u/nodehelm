@@ -29,7 +29,7 @@ class Driver(CoreDriver):
     title = 'FW'
     binary_name = 'realm'
     subdirectory = SPEC.name
-    legacy_version = '2.9.6'
+    base_version = '2.9.6'
 
     def complete(self, item, existing):
         return item

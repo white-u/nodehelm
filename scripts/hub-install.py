@@ -105,7 +105,7 @@ def check_unit(resume):
     return properties
 
 
-def prepare_install(digest, unit, resume, reuse=False, owner=0):
+def prepare_install(digest, unit, resume, owner=0):
     expected={'sha256':digest,'unit':unit}
     if PLAN.is_symlink():raise ValueError('安装恢复记录不能是符号链接')
     if resume:
@@ -140,18 +140,7 @@ def prepare_install(digest, unit, resume, reuse=False, owner=0):
         elif DATA.exists() and (not DATA.is_dir() or DATA.stat().st_mode & 0o077):
             raise ValueError('数据目录权限或归属异常')
     else:
-        if reuse:
-            marker=CODE/'.node-manager-install'
-            if CODE.is_symlink() or not CODE.is_dir() or CODE.stat().st_uid!=owner or CODE.stat().st_mode & 0o022 or set(p.name for p in CODE.iterdir())!={'.node-manager-install'}:
-                raise ValueError('复用只支持本项目正常卸载后保留的目录')
-            if marker.is_symlink() or not marker.is_file() or marker.stat().st_uid!=owner or marker.stat().st_mode & 0o022 or marker.read_bytes()!=b'node-manager-hub-v1\n':
-                raise ValueError('缺少可信卸载归属标记')
-            if DATA.is_symlink():
-                if DATA.readlink() not in (pathlib.Path('private/node-manager-hub'),pathlib.Path('/var/lib/private/node-manager-hub')):
-                    raise ValueError('数据目录不是本项目 systemd 私有目录')
-            elif DATA.exists() and (not DATA.is_dir() or DATA.stat().st_mode & 0o077):
-                raise ValueError('数据目录权限不安全')
-        for path in ((UNIT,PLAN) if reuse else (CODE,DATA,UNIT,PLAN)):
+        for path in (CODE,DATA,UNIT,PLAN):
             if path.exists() or path.is_symlink():
                 raise ValueError(f'{path} 已存在；失败安装可核实后用相同参数加 --resume，升级请用 hub-lifecycle.py')
         # Durable intent precedes the first directory or service side effect.
@@ -168,9 +157,7 @@ def main():
     p.add_argument('--site',required=True)
     p.add_argument('--port',type=int,default=9911)
     p.add_argument('--resume',action='store_true',help='仅恢复有本机持久记录且参数完全匹配的首次安装')
-    p.add_argument('--reuse-data',action='store_true',help='明确复用本项目正常卸载后保留的数据和主题')
     args=p.parse_args()
-    if args.reuse_data and args.resume:p.error('--reuse-data 与 --resume 不能同时使用')
     unit=unit_text(args.site,args.port)
     data=verify_binary(args.binary,args.sha256)
     if os.geteuid()!=0 or not pathlib.Path('/run/systemd/system').is_dir():
@@ -180,7 +167,7 @@ def main():
     try:fcntl.flock(install_lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
     except BlockingIOError:raise ValueError('已有首次安装进程正在运行') from None
     if pathlib.Path('/var/lib/node-manager-hub-lifecycle/node-manager-hub.service/recovery.json').exists():
-        raise ValueError('后台有未完成的升级或卸载，请先运行 hub-lifecycle.py recover')
+        raise ValueError('后台有未完成的升级或卸载，请先运行 sudo nodehelm-hub 完成')
     for parent in (CODE.parent,DATA.parent,UNIT.parent):
         if parent.is_symlink() or parent.stat().st_uid!=0 or parent.stat().st_mode & 0o022:
             raise ValueError('安装父目录须为 root 所有且不可由其他用户写入')
@@ -195,7 +182,7 @@ def main():
 
 def install_hub(args, unit, data):
     check_unit(args.resume)
-    prepare_install(args.sha256, unit, args.resume, args.reuse_data, owner=os.geteuid())
+    prepare_install(args.sha256, unit, args.resume, owner=os.geteuid())
     binary = CODE / 'monitor-hub'
     # An interrupted installation may already be serving from this verified inode.
     if not args.resume or not binary.exists():
@@ -218,13 +205,12 @@ def install_hub(args, unit, data):
     finally:
         os.close(directory)
     print(f'后台已启动，仅监听 127.0.0.1:{args.port}。请将 {args.site} 的 HTTPS 反代指向该地址。原 monitor 和 agent 未修改。')
-    if not args.reuse_data:
-        password = fresh_password()
-        if password:
-            print(f'应急密码: {password}')
-            print('（只显示这一次，请妥善保存；首次启动写入日志的密码已失效）')
-        else:
-            print(f'未能生成应急密码，请运行 {CODE}/monitor-hub --db {DATA}/hub.db --reset-password')
+    password = fresh_password()
+    if password:
+        print(f'应急密码: {password}')
+        print('（只显示这一次，请妥善保存；首次启动写入日志的密码已失效）')
+    else:
+        print(f'未能生成应急密码，请运行 {CODE}/monitor-hub --db {DATA}/hub.db --reset-password')
 
 
 def fresh_password():

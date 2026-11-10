@@ -52,7 +52,7 @@ class HubInstallTests(unittest.TestCase):
                     m.main()
             install.assert_not_called()
 
-    def test_private_umask_crash_resume_and_reuse(self):
+    def test_private_umask_crash_and_resume(self):
         with tempfile.TemporaryDirectory() as folder:
             root=pathlib.Path(folder);code=root/'code';data=root/'data';unit=root/'unit';plan=root/'plan'
             with patch.multiple(m,CODE=code,DATA=data,UNIT=unit,PLAN=plan):
@@ -64,9 +64,6 @@ class HubInstallTests(unittest.TestCase):
                 m.prepare_install('a'*64,'unit',True,owner=os.geteuid())
                 self.assertFalse(stale.exists())
                 with self.assertRaises(ValueError):m.prepare_install('b'*64,'unit',True,owner=os.geteuid())
-                plan.unlink()
-                data.mkdir(mode=0o700)
-                m.prepare_install('a'*64,'unit',False,reuse=True,owner=os.geteuid())
                 (code/'unknown').write_text('keep')
                 with self.assertRaises(ValueError):m.prepare_install('a'*64,'unit',True,owner=os.geteuid())
                 self.assertEqual((code/'unknown').read_text(),'keep')
@@ -85,7 +82,7 @@ class HubInstallTests(unittest.TestCase):
             payload = elf(62)
             args = types.SimpleNamespace(sha256=hashlib.sha256(payload).hexdigest(),
                                          site='https://panel.example.com', port=9911,
-                                         resume=False, reuse_data=False)
+                                         resume=False)
             unit_contents = m.unit_text(args.site, args.port)
             service = {'ActiveState': 'active', 'MainPID': '123'}
             response = MagicMock(status=200, url='http://127.0.0.1:9911/api/me')

@@ -507,7 +507,7 @@ def await_local_cleanup(timeout=120):
         if time.monotonic() >= deadline:
             raise ValueError(f'清理仍在进行，可查看 journalctl -u {UNIT}')
         time.sleep(1)
-    print('已全部卸载')
+    print('已卸载，请在后台撤销绑定并删除该节点')
 
 
 def main():

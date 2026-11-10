@@ -30,7 +30,7 @@ LIFECYCLE_LOCK = pathlib.Path('/run/node-manager-component-lifecycle.lock')
 PURGE_JOURNAL = pathlib.Path('/var/lib/.node-manager-component-purge.json')
 MODULES = ('sb', 'fw', 'pm')
 # Each core-owning module's version assumed before cores were recorded, and its file.
-CORES = {'snell': ('6.0.0', 'snell-server'), 'sb': ('1.14.4', 'sing-box'), 'fw': ('2.9.6', 'realm')}
+CORES = {'snell': 'snell-server', 'sb': 'sing-box', 'fw': 'realm'}
 PM_SERVICE = 'node-manager-pm.service'
 PM_TIMER = 'node-manager-pm.timer'
 DIGEST = re.compile(r'[0-9a-f]{64}')
@@ -63,7 +63,6 @@ WantedBy=multi-user.target
 COMMAND = pathlib.Path('/usr/local/sbin/nodehelm')
 COMMAND_MARKER = b'# NodeHelm node menu; installed and removed with the management component.'
 COMMAND_TEXT = (b'#!/bin/sh\n' + COMMAND_MARKER + b'\n'
-                b'[ -f /opt/node-manager/menu.py ] || { echo "nodehelm: this component version has no menu" >&2; exit 1; }\n'
                 b'exec /usr/bin/python3 -B /opt/node-manager/menu.py "$@"\n')
 
 
@@ -306,7 +305,7 @@ def ensure_idle():
         if present(directory):
             owned_directory(directory, True)
             if any(present(directory / name) for name in ('recovery.json', 'nft-transition.json')):
-                raise ValueError('有未恢复业务操作，请先执行 agent.py recover')
+                raise ValueError('有未完成的业务操作，再运行 sudo nodehelm 完成')
     for name in ('pending-result.json', 'enrollment.json'):
         if present(ROOT / name):
             raise ValueError('有未确认回执或登记，请先核实')
@@ -316,7 +315,7 @@ def ensure_no_journal():
     if present(PURGE_JOURNAL):
         raise ValueError('有未完成的彻底清理，请使用相同命令重试 uninstall --purge')
     if present(ROOT / JOURNAL):
-        raise ValueError('有未结束的组件切换，请先执行 install.py recover')
+        raise ValueError('有未完成的组件升级，再运行 sudo nodehelm 完成')
     job = read_json(ROOT / 'lifecycle-job.json')
     if (job and job.get('status') in ('running', 'paused', 'cleaning')) or present(pathlib.Path('/var/lib/node-manager-cleanup')):
         raise ValueError('节点卸载尚未完成，请先恢复生命周期操作')
@@ -491,20 +490,20 @@ def finish(record, binding, phase):
 
 def check_core_versions(incoming):
     """A component switch must keep understanding the installed core state."""
-    for module, (legacy, filename) in CORES.items():
+    for module, filename in CORES.items():
         directory = ROOT if module == 'snell' else ROOT / module
         state = read_json(directory / 'state.json', {})
         if not state.get('installed'):
             continue
         catalog = json.loads(incoming['core_assets.json'])
-        record = state.get('core') or {'version': legacy, 'previous_version': None}
+        record = state['core']
         current, previous = record['version'], record['previous_version']
         sha = digest(owned_file(CODE / filename).read_bytes())
         assets = catalog.get(module, {})
         machine = platform.machine()
         expected = assets.get(current, {}).get(machine, {}).get('sha256')
         compatible = sha == expected and (previous is None or machine in assets.get(previous, {}))
-        if not compatible or record.get('sha256', sha) != sha:
+        if not compatible or record['sha256'] != sha:
             raise ValueError(f'目标组件无法确认 {module} 当前核心或回退版本，请先核实核心状态')
 
 
@@ -596,10 +595,10 @@ def change(binding, before, after, incoming):
             else:
                 restore_before(record, binding)
         except Exception:
-            raise ValueError(f'组件切换失败且未完成回退，备份 {record["id"]}；请检查日志后执行 recover') from None
-        raise ValueError(f'组件切换失败，已恢复原版本；备份 {record["id"]}（{reason(error)}）') from None
+            raise ValueError(f'切换未完成，再运行 sudo nodehelm 继续；备份编号 {record["id"]}') from None
+        raise ValueError(f'切换失败，已恢复原版本（{reason(error)}）') from None
     finish(record, binding, 'ready')
-    print(f'管理组件已完成切换并在后台轮询成功，回退备份编号 {record["id"]}')
+    print(f'已完成，回退备份编号 {record["id"]}')
 
 
 def boot_id():
@@ -717,7 +716,7 @@ def install(args):
     remove(ROOT / 'enrollment.json')
     start_confirmed('管理组件已安装并保留原身份，但首次上报结果未确认；请检查后台与日志，使用原安装命令重试')
     place_command()
-    print('管理组件已安装，节点授权及后台首次上报已确认。以后在本机运行 sudo nodehelm 可升级和查看状态。')
+    print('管理组件已安装，节点授权及后台首次上报已确认。以后在本机运行 sudo nodehelm 维护。')
 
 
 def check_no_pm_table():
@@ -771,12 +770,7 @@ def purge_plan(*, lifecycle=False, preflight=False):
         state = read_json(driver.configs.parent / 'state.json', {'installed': False, 'resources': []})
         if state['resources'] and not preflight:
             raise ValueError('请先在后台删除所有受管实例')
-        if hasattr(driver, 'require_core'):
-            driver.require_core(state)
-        elif present(driver.binary) and (
-            not state['installed'] or digest(owned_file(driver.binary).read_bytes()) != driver.expected_hash()
-        ):
-            raise ValueError(f'核心 {driver.binary.name} 无法确认归属，拒绝删除')
+        driver.require_core(state)
     module_files = {'state.json', 'dedup-key.json', 'write.lock', 'last-error.json'}
     files, directories = [], []
 
@@ -1022,7 +1016,7 @@ def component_action(args):
         check_current(before)
         after, incoming = download(binding['server'])
         if before == after:
-            print('已安装当前后台提供的组件版本')
+            print('已是最新')
             return
     else:
         before = installed_manifest()
@@ -1039,5 +1033,5 @@ if __name__ == '__main__':
     try:
         main()
     except Exception as error:
-        print(f'管理组件操作未完成：{reason(error)}', file=sys.stderr)
+        print(reason(error), file=sys.stderr)
         sys.exit(1)

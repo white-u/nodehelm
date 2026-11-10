@@ -138,7 +138,8 @@ class ModuleTests(unittest.TestCase):
             d = SnellDriver()
             d.binary = pathlib.Path(root) / 'snell'
             d.binary.write_bytes(b'test core')
-            d.expected_hash = lambda: hashlib.sha256(b'test core').hexdigest()
+            d.identity = lambda state: {'version': 'test', 'sha256': hashlib.sha256(b'test core').hexdigest(),
+                                        'previous_version': None}
             d.configs = d.units = pathlib.Path(root)
             active, stopped = 12345, 12346
             state = {'installed': True, 'resources': [
@@ -195,6 +196,6 @@ class ModuleListTests(unittest.TestCase):
 
     def test_installer_core_table_matches_each_core_driver(self):
         import install, modules
-        expected = {name: (module.Driver.legacy_version, module.Driver.binary_name)
+        expected = {name: module.Driver.binary_name
                     for name, module in modules.MODULES.items() if issubclass(module.Driver, CoreDriver)}
         self.assertEqual(install.CORES, expected)

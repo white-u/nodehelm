@@ -59,8 +59,8 @@ class Controller:
             if self.journal.exists():
                 journal = read(self.journal)
                 if journal['id'] == req['id'] and hmac.compare_digest(journal['digest'], digest):
-                    return {'id': req['id'], 'status': 'recovery_failed', 'message': '有未核实操作，请在 VPS 执行 recover'}
-                raise Rejected('有未核实操作，请先在 VPS 执行 recover')
+                    return {'id': req['id'], 'status': 'recovery_failed', 'message': '有未核实操作，请在 VPS 运行 sudo nodehelm'}
+                raise Rejected('有未核实操作，请先在 VPS 运行 sudo nodehelm')
             before = read(self.state, {'installed': False, 'resources': []})
             if revision(before) != req['revision']:
                 raise Rejected('配置已变化，请刷新后重新编辑', 'revision_changed')
@@ -164,9 +164,9 @@ class Controller:
             diagnostic = str(error) if isinstance(error, Rejected) else type(error).__name__
             write(self.root / 'last-error.json', {'id': journal['id'], 'stage': 'restore', 'reason': diagnostic})
             return {'id': journal['id'], 'status': 'recovery_failed',
-                    'message': '恢复未完成，已暂停写入。请在 VPS 检查服务并执行 recover'}
+                    'message': '恢复未完成，已暂停写入。请在 VPS 检查服务后运行 sudo nodehelm'}
         message = '应用失败，已恢复原配置及服务状态'
-        if backup.get('kind') == 'core' and backup.get('mutation_started') is False:
+        if backup.get('kind') == 'core' and not backup['mutation_started']:
             message = '核心切换前已中止，保留当前配置和运行状态'
         result = {'id': journal['id'], 'status': 'rolled_back', 'message': message,
                   'revision': revision(journal['before'])}

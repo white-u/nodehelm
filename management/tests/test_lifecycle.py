@@ -332,11 +332,6 @@ class HubLifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '校验失败'):
             hub_lifecycle.verify_backup(backup)
 
-    def test_uninstall_states_what_happens_to_the_data(self):
-        for argv in (['uninstall'], ['uninstall', '--purge', '--keep-data']):
-            with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
-                hub_lifecycle.main(argv)
-
     def test_full_removal_deletes_verified_backups_and_keeps_the_rest(self):
         hub_lifecycle.replace_file(self.key, data=b'k' * 32)
         workspace = self.root / 'backups'
@@ -425,7 +420,7 @@ class HubLifecycleTests(unittest.TestCase):
                 patch.object(hub_lifecycle.os, 'fchown'), patch.object(hub, 'info', return_value={'ActiveState': 'active'}), \
                 patch.object(hub, 'prepare_guard'), patch.object(hub, 'check_stopped'), \
                 patch.object(hub, 'stop'), patch.object(hub, 'start', side_effect=start):
-            with self.assertRaisesRegex(ValueError, '已恢复停服时的版本'):
+            with self.assertRaisesRegex(ValueError, '更新失败，已回退'):
                 hub.transition(args)
         self.assertEqual(observations, [(args.candidate.read_bytes(), ('on',), b'k' * 32),
                                         (b'backup binary', None, b'k' * 32)])

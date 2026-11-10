@@ -30,7 +30,7 @@ class Driver(CoreDriver):
     title = 'Snell'
     binary_name = 'snell-server'
     subdirectory = ''
-    legacy_version = '6.0.0'
+    base_version = '6.0.0'
     archive = 'zip'
     exact_url = True
 

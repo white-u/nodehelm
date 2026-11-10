@@ -261,11 +261,12 @@ class MenuTests(unittest.TestCase):
         self.assertEqual(runs, [(NEW, ''), (NEW, json.dumps({'enrollment': 'd' * 64}))])
 
     def test_uninstall_needs_an_explicit_yes(self):
+        for answer in ('', 'n'):
+            with patch('builtins.input', return_value=answer), patch.object(menu, 'tool') as tool:
+                with self.assertRaises(SystemExit):
+                    menu.uninstall()
+            tool.assert_not_called()
         with patch('builtins.input', return_value='y'), patch.object(menu, 'tool') as tool:
-            with self.assertRaises(SystemExit):
-                menu.uninstall()
-        tool.assert_not_called()
-        with patch('builtins.input', return_value='yes'), patch.object(menu, 'tool') as tool:
             menu.uninstall()
         tool.assert_called_once_with('agent.py', 'uninstall')
 

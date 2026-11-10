@@ -1,8 +1,11 @@
+import contextlib
+import io
 import os
 import pathlib
 import sys
 import tempfile
 import unittest
+from unittest.mock import MagicMock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from install import prepare_directories, check_owned_unit, SERVICE_UNIT
 
@@ -95,6 +98,35 @@ class MenuTests(unittest.TestCase):
             with patch.object(menu, 'AGENT', binary), patch('platform.machine', return_value='riscv64'):
                 self.assertFalse(menu.agent_current('https://hub.example'))
 
+    def test_interrupted_work_is_finished_first_but_a_running_one_is_left_alone(self):
+        import fcntl, menu
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / 'pm').mkdir()
+            (root / 'pm' / 'recovery.json').write_text('{}')
+            upgrade = MagicMock()
+            with patch.object(menu, 'ROOT', root), patch('os.geteuid', return_value=0), patch('signal.signal'), \
+                    patch('os.umask'), patch.dict(menu.ACTIONS, upgrade=upgrade):
+                self.assertEqual(menu.interrupted(), (False, [root / 'pm']))
+                with (root / 'pm' / 'write.lock').open('a') as held:
+                    fcntl.flock(held, fcntl.LOCK_EX)
+                    with patch.object(menu.subprocess, 'run') as run, self.assertRaisesRegex(SystemExit, '正在进行'):
+                        menu.main(['upgrade'])
+                    run.assert_not_called()
+                done = menu.subprocess.CompletedProcess((), 0, '{"status": "rolled_back"}', '')
+                shown = io.StringIO()
+                shown.reconfigure = lambda **_: None  # main() line-buffers the real stdout.
+                with patch.object(menu.subprocess, 'run', return_value=done) as run, contextlib.redirect_stdout(shown):
+                    menu.main(['upgrade'])
+                self.assertEqual(run.call_args.args[0][-1], 'recover')
+                self.assertIn('已完成', shown.getvalue())
+                failed = menu.subprocess.CompletedProcess((), 0, '{"status": "recovery_failed", "message": "x"}', '')
+                with patch.object(menu.subprocess, 'run', return_value=failed), \
+                        contextlib.redirect_stdout(shown), self.assertRaisesRegex(SystemExit, '恢复失败：x'):
+                    menu.main(['upgrade'])
+            upgrade.assert_not_called()
+
 
 class PrivateUmaskTests(unittest.TestCase):
     """Run from a root shell, the tools still create state the way the unit's UMask=0077 does."""
@@ -106,6 +138,7 @@ class PrivateUmaskTests(unittest.TestCase):
                 patch('install.present', return_value=False), patch('install.lock'):
             agent.main()
         umask.assert_called_with(0o077)
-        with patch('os.geteuid', return_value=0), patch('signal.signal'), patch('os.umask') as umask, patch.dict(menu.ACTIONS, status=lambda: None):
-            menu.main(['status'])
+        with patch('os.geteuid', return_value=0), patch('signal.signal'), patch('os.umask') as umask, \
+                patch.object(menu, 'interrupted', return_value=(False, [])), patch.dict(menu.ACTIONS, logs=lambda: None):
+            menu.main(['logs'])
         umask.assert_called_with(0o077)

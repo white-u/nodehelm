@@ -407,7 +407,7 @@ class Hub:
             directory = snapshot(self.workspace, self.binary, self.database, self.unit)
         finally:
             self.resume_paused(active)
-        print(f'后台一致性备份已保存至 {directory}')
+        print(f'已备份至 {directory}')
 
     def transition(self, args):
         db_meta = regular(self.database)
@@ -421,7 +421,8 @@ class Hub:
         else:
             verify_backup(args.backup)
         if self.info().get('ActiveState') != 'active':
-            raise ValueError('切换前后台须运行；中断的切换请先 recover')
+            raise ValueError('后台未运行')
+        word = '更新' if args.action == 'upgrade' else '恢复'
         ensure_idle(self.database)
         self.pause(True)
         try:
@@ -464,15 +465,15 @@ class Hub:
                 try:
                     self.rollback(record)
                 except Exception:
-                    raise ValueError(f'后台切换失败且回退未完成，原备份位于 {old}，请执行 recover') from None
-                raise ValueError(f'后台切换失败，已恢复停服时的版本和数据库（{diagnostic(original)}）；备份 {old}') from None
+                    raise ValueError(f'{word}未完成，再运行 sudo nodehelm-hub 继续；{word}前备份：{old}') from None
+                raise ValueError(f'{word}失败，已回退（{diagnostic(original)}）') from None
             self.resume_paused(True)
             raise
         record['phase'] = 'ready'
         write_json(self.journal, record)
         gate(self.database, False)
         remove(self.journal)
-        print(f'后台已启动并通过回环 HTTP 检查。切换前备份 {old}')
+        print(f'已{word}，{word}前备份：{old}')
         # A restore source is the user's choice to keep, even an automatic one.
         self.prune_automatic(keep={old, getattr(args, 'backup', None)})
 
@@ -492,30 +493,27 @@ class Hub:
                 continue
         if removed:
             sync(self.workspace)
-            print(f'已清理 {removed} 份较早的自动备份，手动备份不受影响')
+            print(f'已清理 {removed} 份旧自动备份')
 
     def data_files(self):
         return [self.database, self.key, *(self.database.with_name(self.database.name + suffix)
                                           for suffix in ('-wal', '-shm', '-journal'))]
 
-    def uninstall(self, args):
+    def uninstall(self):
         marker = self.binary.parent / MARKER
         if ((self.unit, self.binary, self.database) != (UNIT, BINARY, DATABASE)
                 or regular(marker).st_uid != 0 or marker.read_bytes() != b'node-manager-hub-v1\n'):
             raise ValueError('仅可卸载独立安装器登记的后台')
         active = self.info().get('ActiveState') == 'active'
-        # Either way is stated, never assumed: one keeps the data, the other leaves
-        # nothing, and a copy to keep is the panel's backup download, taken first.
-        purge = args.purge
+        # Removal leaves nothing; a copy to keep is the panel's backup download, taken first.
         ensure_idle(self.database)
         self.pause(active)
         try:
             ensure_idle(self.database)
-            if purge:
-                for path in self.data_files():
-                    if exists(path):
-                        regular(path)
-            record = {'identity': self.identity(), 'phase': 'uninstalling', 'purge': purge,
+            for path in self.data_files():
+                if exists(path):
+                    regular(path)
+            record = {'identity': self.identity(), 'phase': 'uninstalling',
                       'unit_sha': sha256(UNITS / self.unit), 'binary_sha': sha256(self.binary)}
             write_json(self.journal, record)
         except Exception:
@@ -533,7 +531,7 @@ class Hub:
             shutil.rmtree(themes)
         # Never a blanket delete: --db may point into a directory this project does not own.
         if any(real.iterdir()):
-            print(f'数据目录仍有非本项目文件，已保留：{real}')
+            print(f'已保留非本项目文件：{real}')
             return
         real.rmdir()
         if data.is_symlink():
@@ -552,7 +550,7 @@ class Hub:
                 remove(tools / name)
                 remove(tools / (name + '.new'))
             if any(tools.iterdir()):
-                print(f'工具目录有非本项目文件，已保留：{tools}')
+                print(f'已保留非本项目文件：{tools}')
             else:
                 tools.rmdir()
 
@@ -571,7 +569,7 @@ class Hub:
             shutil.rmtree(entry)
         sync(self.workspace)
         if kept:
-            print('备份目录中有无法核实的内容，已保留：' + '，'.join(str(path) for path in kept))
+            print('已保留非本项目文件：' + '，'.join(str(path) for path in kept))
         else:
             self.workspace.rmdir()
 
@@ -585,9 +583,6 @@ class Hub:
             remove(pathlib.Path('/run/node-manager-hub-install.lock'))
 
     def finish_uninstall(self, record):
-        # An older purge record named a last backup it promised to keep.
-        purge = record.get('purge', bool(record.get('backup')))
-        legacy = 'purge' not in record
         unit_file = UNITS / self.unit
         if exists(unit_file):
             regular(unit_file)
@@ -613,27 +608,22 @@ class Hub:
             remove(self.binary)
         remove(switch_temporary(self.binary))
         self.remove_local_command()
-        if purge:
-            for path in (*self.data_files(), switch_temporary(self.database), switch_temporary(self.key)):
-                remove(path)
+        for path in (*self.data_files(), switch_temporary(self.database), switch_temporary(self.key)):
+            remove(path)
         marker = self.binary.parent / MARKER
-        # A purge interrupted after removing the marker resumes here without it.
-        if not (purge and not exists(marker)):
+        # Interrupted after removing the marker, the removal resumes here without it.
+        if exists(marker):
             if regular(marker).st_uid != 0 or marker.read_bytes() != b'node-manager-hub-v1\n':
                 raise ValueError('后台安装标识已被外部替换，请核实卸载状态')
-        if purge:
-            self.remove_data_directories()
-            if not legacy:
-                self.remove_backups()
+        self.remove_data_directories()
+        self.remove_backups()
         remove(self.blocked)
-        if purge:
-            remove(marker)
-            if self.binary.parent.exists() and not any(self.binary.parent.iterdir()):
-                self.binary.parent.rmdir()
+        remove(marker)
+        if self.binary.parent.exists() and not any(self.binary.parent.iterdir()):
+            self.binary.parent.rmdir()
         remove(self.journal)
-        if purge:
-            self.remove_run_state()
-        print('后台服务及程序已卸载。' + ('数据库、密钥、主题和备份已全部删除。' if purge else '后台数据库和密钥已保留，可用 --reuse-data 重装。'))
+        self.remove_run_state()
+        print('已卸载，数据已全部删除')
 
 
 def diagnostic(error):
@@ -646,7 +636,10 @@ def exclusive_lock(path):
         regular(path, private=True)
     fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
     with os.fdopen(fd, 'w') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError('有操作正在进行，请稍后再试') from None
         yield
 
 
@@ -654,6 +647,14 @@ def service_listen(unit):
     # An installation with a custom --port needs no extra argument for maintenance.
     match = re.search(r'--listen\s+(\S+)', ctl('show', '--property=ExecStart', unit))
     return match[1] if match else '127.0.0.1:9911'
+
+
+def default_health(unit, action):
+    journal = STATE / unit / 'recovery.json'
+    if action == 'recover' and exists(journal):
+        # An interrupted removal may already have deleted the unit the address is read from.
+        return load_json(journal)['identity']['health']
+    return f'http://{service_listen(unit)}/api/me'
 
 
 def main(argv=None):
@@ -671,10 +672,7 @@ def main(argv=None):
     restore = actions.add_parser('restore')
     restore.add_argument('--backup', type=pathlib.Path, required=True)
     actions.add_parser('recover')
-    uninstall = actions.add_parser('uninstall')
-    scope = uninstall.add_mutually_exclusive_group(required=True)
-    scope.add_argument('--purge', action='store_true', help='删除数据库、密钥、主题、维护记录和本工具的备份')
-    scope.add_argument('--keep-data', action='store_true', help='保留数据库、密钥和主题以便重装')
+    actions.add_parser('uninstall', help='删除服务、程序、数据库、密钥、主题、维护记录和本工具的备份')
     args = parser.parse_args(argv)
     if getattr(args, 'backup', None) is not None and (not args.backup.is_absolute() or args.backup.resolve() != args.backup):
         parser.error('备份必须是绝对路径且不能包含符号链接')
@@ -682,7 +680,7 @@ def main(argv=None):
         raise ValueError('请在 Linux systemd 后台主机上使用 root 执行')
     os.umask(0o077)
     if args.health is None:
-        args.health = f'http://{service_listen(args.unit)}/api/me'
+        args.health = default_health(args.unit, args.action)
     hub = Hub(args)
     if hub.workspace == hub.database.parent.resolve() or hub.database.parent.resolve() in hub.workspace.parents:
         raise ValueError('后台备份工作目录须位于活动数据目录外')
@@ -703,15 +701,15 @@ def main(argv=None):
         stack.enter_context(exclusive_lock(hub.state / 'lock'))
         if exists(hub.journal):
             if args.action != 'recover':
-                raise ValueError('存在未完成的后台切换，请先执行 recover')
+                raise ValueError('上次操作中断，再运行 sudo nodehelm-hub 完成')
             hub.recover(load_json(hub.journal))
-            print('后台恢复已完成')
+            print('已完成')
         elif args.action == 'recover':
-            print('没有待恢复的后台切换')
+            print('没有中断的操作')
         elif args.action == 'backup':
             hub.backup()
         elif args.action == 'uninstall':
-            hub.uninstall(args)
+            hub.uninstall()
         else:
             hub.transition(args)
 
@@ -720,5 +718,5 @@ if __name__ == '__main__':
     try:
         main()
     except Exception as error:
-        print(f'后台维护未完成：{diagnostic(error)}', file=sys.stderr)
+        print(str(error) if type(error) is ValueError else f'操作未完成：{type(error).__name__}', file=sys.stderr)
         sys.exit(1)

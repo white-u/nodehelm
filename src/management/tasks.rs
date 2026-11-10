@@ -514,7 +514,7 @@ pub async fn poll(State(app): State<Shared>, headers: HeaderMap, Json(input): Js
                         "核心操作未完成，已保留或恢复原配置，请检查实例运行状态"
                     }
                     ("rolled_back", _) => "应用失败，已恢复原配置",
-                    ("recovery_failed", _) => "恢复失败，请在 VPS 执行 recover",
+                    ("recovery_failed", _) => "恢复失败，请在 VPS 运行 sudo nodehelm",
                     ("expired", _) => "操作已过期，未执行",
                     _ => "请求被拒绝，请刷新配置并检查 VPS 状态",
                 };

@@ -147,7 +147,7 @@ export function ManagementDetail({ node, module, selectedName, record, defaultAd
     {enabled === false && <p className="text-sm text-muted-foreground">尚未启用管理写入。后台需要配置 HTTPS 公网地址；现有监控不受此开关控制。</p>}
     {status?.bound && status.online && !status.compatible && <p role="alert" className="text-sm text-destructive">管理组件与后台版本不一致，已暂停写入。节点服务不受影响，请升级组件后继续。</p>}
     {status?.bound && !status.online && <p className="text-sm text-muted-foreground">管理组件离线，配置只读。请检查 VPS 上的管理组件。</p>}
-    {status?.snapshot?.blocked && <p role="alert" className="text-sm text-destructive">配置漂移或有未完成恢复，已暂停写入及配置查看。请在 VPS 执行 python3 /opt/node-manager/agent.py status；有恢复记录时执行 recover，外部修改需先人工核实。</p>}
+    {status?.snapshot?.blocked && <p role="alert" className="text-sm text-destructive">配置漂移或有未完成恢复，已暂停写入及配置查看。请在 VPS 运行 sudo nodehelm；外部修改需先人工核实。</p>}
     {view?.blocked && !status?.snapshot?.blocked && <p role="alert" className="text-sm text-destructive">此模块配置需要核实，已暂停写入和配置查看。</p>}
     {status?.lifecycle && status.lifecycle.status !== "succeeded" ? <div role="status" className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-muted/50 px-3 py-2 text-sm" data-testid="lifecycle-summary"><span className={serviceFeedbackClass(status.lifecycle.status, "uninstall")}>{lifecycleLabels[status.lifecycle.status] ?? "卸载结果待确认"} · {status.lifecycle.scope === "all" ? "此节点全部受管服务" : names[status.lifecycle.scope]}</span><Button variant="ghost" onClick={event => showNodeManagement(event.currentTarget)}>查看进度</Button></div> : active && <p role="status" className="text-sm text-muted-foreground">节点有待完成操作，核实结果后可继续修改。</p>}
   </>

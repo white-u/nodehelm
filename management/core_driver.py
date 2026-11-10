@@ -114,8 +114,8 @@ class CoreDriver:
     binary_name = None
     # Where the module keeps state under the state root; '' is the root itself.
     subdirectory = None
-    # The core assumed for state confirmed before core versions were recorded.
-    legacy_version = None
+    # The core release whose assets name the architectures this module runs on.
+    base_version = None
     archive = 'tar.gz'
     # Whether the release URL must answer without a redirect.
     exact_url = False
@@ -143,16 +143,13 @@ class CoreDriver:
         return tuple(map(int, version.split('.')))
 
     def supported(self):
-        return platform.machine() in ASSETS[self.module][self.legacy_version]
+        return platform.machine() in ASSETS[self.module][self.base_version]
 
     def asset(self, version):
         try:
             return ASSETS[self.module][version][platform.machine()]
         except (KeyError, TypeError):
             raise Rejected('当前架构没有所选核心版本的可信资产', 'core_version') from None
-
-    def expected_hash(self):
-        return self.asset(self.legacy_version)['sha256']
 
     def versions(self):
         return sorted((v for v, assets in ASSETS[self.module].items() if platform.machine() in assets),
@@ -161,10 +158,7 @@ class CoreDriver:
     def identity(self, state):
         if not state['installed']:
             return None
-        if 'core' not in state:
-            return {'version': self.legacy_version, 'sha256': self.expected_hash(),
-                    'previous_version': None}
-        current = state['core']
+        current = state.get('core')
         if (not isinstance(current, dict) or set(current) != {'version', 'sha256', 'previous_version'}
                 or current['sha256'] != self.asset(current['version'])['sha256']):
             raise Rejected('本机记录的核心版本或摘要无法确认', 'core_version')
@@ -431,14 +425,11 @@ class CoreDriver:
 
     def restore_core(self, backup, before):
         self.inspect_inventory(before)
-        started = backup.get('mutation_started')
-        if started is False:
+        if not backup['mutation_started']:
             self.require_core(before)
             return
         current = binary_hash(self.binary)
         running = self.runtime_ports(before)
-        if started is None and current == backup['before_hash'] and running != backup['active']:
-            raise Rejected('旧恢复记录无法确认服务启停归属，请先核实运行状态', 'config_changed')
         if set(running) - set(backup['active']):
             raise Rejected('存在操作前未运行的活动实例，需人工核实', 'config_changed')
         if current != backup['before_hash']:
