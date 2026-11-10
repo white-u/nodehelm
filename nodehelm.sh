@@ -312,7 +312,7 @@ EOF
 	esac
 }
 
-# An interrupted update, backup or removal keeps the hub from starting and
+# An interrupted update or removal keeps the hub from starting and
 # blocks every other change; the lifecycle tool's recover is the only way on.
 # It finishes and stops: what was asked may no longer apply, as after a removal.
 if [ -e "$JOURNAL" ]; then
