@@ -18,8 +18,9 @@ export type Lifecycle = { id: string; scope: Module | "all"; status: string; und
 export const lifecycleActive = (job?: Lifecycle) => !!job && !["succeeded", "cancelled", "failed", "revoked"].includes(job.status)
 export const lifecycleLabels: Record<string, string> = { running: "正在卸载", paused: "卸载已暂停", interrupted: "节点离线，结果未确认", cleaning: "正在清理管理组件", finalizing: "正在确认清理结果", succeeded: "卸载已确认完成", revoked: "恢复备份后原卸载授权已失效" }
 export type Status = { lifecycle?: Lifecycle; compatible?: boolean; abandonable?: boolean; component_current?: boolean; bound: boolean; online?: boolean; last_seen?: number; snapshot?: RootSnapshot; operations?: { id: string; status: string; message: string; created: number; module?: string; action?: string }[] }
-export const names: Record<Module, string> = { snell: "Snell", sb: "SB", fw: "FW 转发", pm: "PM 端口统计" }
+export const names: Record<Module, string> = { snell: "Snell", sb: "singbox", fw: "realm 转发", pm: "端口流量统计" }
 export const runtimeLabels: Record<string, string> = { active: "运行中", inactive: "已停止", failed: "服务失败", activating: "启动中", deactivating: "停止中", unknown: "运行状态未知" }
+export const runtimeDots: Record<string, string> = { active: "bg-emerald-500", activating: "bg-amber-500", deactivating: "bg-amber-500", failed: "bg-destructive" }
 export const actionLabels: Record<string, string> = { install: "安装", apply: "保存应用", delete: "删除", reset: "重置用量", check: "目标 TCP 检查", core_upgrade: "升级核心", core_rollback: "回退核心", core_uninstall: "卸载模块" }
 export const labels: Record<string, string> = { checked: "目标检查完成", queued: "等待发送", delivered: "执行中／待核实", succeeded: "已应用", rolled_back: "操作未完成", rejected: "请求被拒绝", cancelled: "未发送，已取消", expired: "过期未执行" }
 export const sniChoices = ["addons.mozilla.org", "www.microsoft.com", "www.amazon.com", "swdist.apple.com", "updates.cdn-apple.com"]
@@ -119,10 +120,10 @@ export function pmSummary(rule: PmPolicy) {
 /** Why a port cannot take a managed PM rule now, or "" when it can. */
 export function pmBlocked(snapshot: RootSnapshot | undefined, port: number) {
   const pm = snapshot?.modules?.pm
-  if (!pm?.installed) return "启用 PM 后可同时添加"
-  if (pm.blocked) return "PM 状态需要核实"
-  if (port < 1024) return "PM 只统计 1024 以上的端口"
-  if (pm.resources.some(rule => rule.port === port)) return "该端口已有 PM 规则"
+  if (!pm?.installed) return "启用流量统计后可同时添加"
+  if (pm.blocked) return "流量统计状态需要核实"
+  if (port < 1024) return "只统计 1024 以上的端口"
+  if (pm.resources.some(rule => rule.port === port)) return "该端口已有流量统计规则"
   return ""
 }
 /** A second operation submitted once the first succeeds: PM after a new
@@ -133,7 +134,7 @@ export type FollowUp = {
   /** Wait for this instance to be running before submitting. */
   running?: { module: Module; port: number }
   steps: [string, string]; done: string
-  /** Kept for "添加 PM" when the PM step does not go through. */
+  /** Kept for "添加流量统计" when the PM step does not go through. */
   draft?: PmDraft
 }
 export function moduleView(status: Status | undefined, module: Module) {

@@ -1,6 +1,6 @@
 # NodeHelm
 
-基于 monitor 的独立新项目，保留监控与分时流量，新增可选节点服务管理。当前支持 Snell、SB（Reality / SS2022）和 FW（Realm TCP/UDP）实例管理、可信核心升级回退与卸载、Snell/SB 配置导出，以及受管业务端口的 PM 计量、配额、重置、到期策略、流量阈值、在线 IP 统计、告警与阻断，以及近 7 天的端口流量走势。
+基于 monitor 的独立新项目，保留监控与分时流量，新增可选节点服务管理。当前支持 Snell、singbox（Reality / SS2022）和 realm 转发（TCP/UDP）实例管理、可信核心升级回退与卸载、Snell／singbox 配置导出，以及受管业务端口的流量统计、配额、重置、到期策略、流量阈值、在线 IP 统计、告警与阻断，以及近 7 天的端口流量走势。
 
 文档：**[快速开始](QUICK_START.md)** · [部署文档](DEPLOY.md) · [完整索引](INDEX.md) · [开发与验证](DEVELOPMENT.md) · [部署与恢复说明](NODE_MANAGEMENT_DEPLOY.md)
 
@@ -34,7 +34,7 @@ curl -fsSL https://github.com/white-u/nodehelm/releases/latest/download/nodehelm
 |---|---|
 | `src/`、`web-admin/` | hub：后台、API、公开页宿主 |
 | `agent/` | Linux 监控 agent，随后台发布并嵌入后台，节点从后台下载 |
-| `management/` | 节点服务管理组件（Snell／SB／FW／PM） |
+| `management/` | 节点服务管理组件（Snell／singbox／realm 转发／端口流量统计） |
 | `web-theme/` | 内置默认主题，派生自 [monitor-theme-default](https://github.com/monitor-probe/monitor-theme-default) v1.4.2，随后台发布并嵌入后台 |
 
 ```

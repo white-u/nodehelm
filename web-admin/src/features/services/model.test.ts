@@ -50,7 +50,7 @@ const root = (rules: number[] = []): RootSnapshot => ({ ...empty, modules: { pm:
 assert.equal(pmBlocked(root(), 23456), "")
 assert.match(pmBlocked(root(), 443), /1024/)
 assert.match(pmBlocked(root([23456]), 23456), /已有/)
-assert.match(pmBlocked({ ...empty }, 23456), /启用 PM/)
+assert.match(pmBlocked({ ...empty }, 23456), /启用流量统计/)
 console.log("PM drafts, whitelist checks and eligibility passed")
 
 for (const whitelist of ["203.0.113.0/33", "2001:db8::/129", "203.0.113.0/", "203.0.113.0/24/1"]) assert.throws(() => pmPayload({ ...limitedDraft, whitelist }))

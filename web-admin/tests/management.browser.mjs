@@ -69,7 +69,9 @@ try {
   page.on('request',request=>{if(request.method()==='GET'&&/^\/api\/management(?:\/\d+)?$/.test(new URL(request.url()).pathname))reads++})
   const refresh=()=>page.getByRole('button',{name:'刷新此节点',exact:true}).click()
   async function select(module,node=id){
-    await page.getByTestId(`node-module-${node}-${module}`).click()
+    // Clicking the selected module again collapses it.
+    const entry=page.getByTestId(`node-module-${node}-${module}`)
+    if(await entry.getAttribute('aria-pressed')!=='true')await entry.click()
     await page.waitForFunction(({node,module})=>document.querySelector(`[data-testid="node-module-${node}-${module}"]`)?.getAttribute('aria-pressed')==='true',{node,module})
   }
   const decision=()=>page.getByRole('region',{name:'操作确认'})
@@ -80,7 +82,14 @@ try {
   }
   async function finish(task){await poll({id:task.request.id,status:'succeeded',message:'fixture applied'});await refresh()}
   async function fits(){assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'page has horizontal overflow')}
+  assert.equal(await detail.count(),0,'configuration starts collapsed')
+  await select('snell')
   await instances.getByRole('button',{name:'新增实例',exact:true}).waitFor()
+  assert(await page.getByTestId(`node-card-${id}`).evaluate(row=>!!row.nextElementSibling?.matches('[data-testid="node-detail"]')),'configuration expands right below its node row')
+  await page.getByLabel('搜索服务器').fill('不存在的节点');await page.getByTestId(`node-card-${id}`).waitFor()
+  assert(await detail.isVisible(),'a search must not hide the expanded node');await page.getByLabel('搜索服务器').fill('')
+  await page.getByTestId(`node-module-${id}-snell`).click();await detail.waitFor({state:'detached'})
+  await select('snell');await instances.getByRole('button',{name:'新增实例',exact:true}).waitFor()
   assert.equal(await page.getByRole('dialog').count(),0)
   await page.getByTestId(`node-manage-${id}`).click()
   await nodePanel.waitFor();assert.equal(await nodePanel.getByTestId('core-maintenance').count(),0)
@@ -91,8 +100,8 @@ try {
   const add=instances.getByRole('button',{name:'新增实例',exact:true})
   await add.click();await editor.getByLabel('监听端口',{exact:true}).fill('12345')
   assert.equal(await editor.locator('input:visible:not([type=checkbox])').count(),2,'Snell must only expose name and port; the client port stays folded')
-  assert(!await editor.getByLabel(/同时启用 PM 统计/).isChecked(),'adding PM is off by default')
-  await editor.getByLabel('监听端口',{exact:true}).fill('443');assert(await editor.getByLabel(/同时启用 PM 统计/).isDisabled());await editor.getByText('（PM 只统计 1024 以上的端口）').waitFor()
+  assert(!await editor.getByLabel(/同时启用流量统计/).isChecked(),'adding PM is off by default')
+  await editor.getByLabel('监听端口',{exact:true}).fill('443');assert(await editor.getByLabel(/同时启用流量统计/).isDisabled());await editor.getByText('（只统计 1024 以上的端口）').waitFor()
   await editor.getByLabel('监听端口',{exact:true}).fill('12345')
   assert.equal(await editor.getByText('高级配置',{exact:true}).count(),0)
   await editor.getByRole('button',{name:'取消',exact:true}).click();await decision().getByRole('button',{name:'取消操作',exact:true}).click()
@@ -142,7 +151,8 @@ try {
   task=await submit(editor.getByRole('button',{name:'保存并应用',exact:true}));assert.equal(task.request.payload.sni,'');assert.equal(task.request.payload.public_port,44568)
   snapshot.modules.sb.resources.push({...task.request.payload,psk:'AQEBAQEBAQEBAQEBAQEBAQ=='});snapshot.modules.sb.runtime['34568']='active';snapshot.modules.sb.revision='c'.repeat(64);await finish(task)
   const ssRow=instances.getByTestId('instance-34568')
-  await ssRow.getByText(/^端口 34568 · 客户端端口 44568( · 添加 PM)?$/).waitFor()
+  // Named by its port, so the port is not repeated.
+  await ssRow.getByText('34568',{exact:true}).waitFor();await ssRow.getByText(/^客户端端口 44568( · 添加流量统计)?$/).waitFor()
   await realityRow.getByRole('button',{name:'编辑',exact:true}).click();assert.equal(await editor.getByLabel('SNI 地址',{exact:true}).inputValue(),'www.microsoft.com')
   await ssRow.getByRole('button',{name:'编辑',exact:true}).click();assert.equal(await editor.getByLabel('SNI 地址',{exact:true}).count(),0)
   await ssRow.getByRole('button',{name:'收起编辑',exact:true}).click();await ssRow.getByRole('button',{name:'显示配置',exact:true}).click()
@@ -157,9 +167,9 @@ try {
   snapshot.modules.fw.resources=[task.request.payload];snapshot.modules.fw.runtime={'23456':'active'};await finish(task)
 
   snapshot.modules.pm.installed=false;await poll();await select('pm');await refresh()
-  task=await submit(instances.getByRole('button',{name:'启用 PM',exact:true}));assert.equal(task.request.action,'install')
+  task=await submit(instances.getByRole('button',{name:'启用流量统计',exact:true}));assert.equal(task.request.action,'install')
   snapshot.modules.pm.installed=true;await finish(task)
-  await instances.getByRole('button',{name:'新增 PM 规则',exact:true}).click();await pmEditor.getByLabel('业务端口',{exact:true}).selectOption('23456');assert.equal(await page.locator('[data-testid^="pm-rule-"] [data-testid="pm-policy-editor"]').count(),0,'a new rule opens under its button')
+  await instances.getByRole('button',{name:'新增流量统计规则',exact:true}).click();await pmEditor.getByLabel('业务端口',{exact:true}).selectOption('23456');assert.equal(await page.locator('[data-testid^="pm-rule-"] [data-testid="pm-policy-editor"]').count(),0,'a new rule opens under its button')
   // A new rule warns at 3, alarms at 5 and blocks from the 6th.
   const warnAt=pmEditor.getByLabel('告警阈值（IP 数，0 关闭）',{exact:true});assert.equal(await warnAt.inputValue(),'3')
   assert(await pmEditor.getByLabel('>6 阻断后续连接',{exact:true}).isChecked())
@@ -185,13 +195,13 @@ try {
   assert.deepEqual(task.request.payload.ip_limit,{max_ips:2,cooldown_min:30,whitelist:['203.0.113.9','2001:db8::9']})
   snapshot.modules.pm.resources=[task.request.payload];snapshot.modules.pm.revision='d'.repeat(64)
   snapshot.modules.pm.usage={'23456':{rx:0,tx:0,sampled_at:Math.floor(Date.now()/1000),period_start:'',alert:'normal',ip_count:4,ip_level:1,ip_alert:1,ip_list:['198.51.100.1','198.51.100.2','198.51.100.3','198.51.100.4']}}
-  await finish(task);await instances.locator('summary').filter({hasText:'规则详情'}).click();await instances.getByText(/>2 告警 · >4 报警/).waitFor()
+  await finish(task);await instances.getByRole('button',{name:'规则详情'}).click();await instances.getByText(/>2 告警 · >4 报警/).waitFor()
   const online=instances.locator('details').filter({hasText:'TCP 在线 IP 4 个 · 告警'})
   assert.match(await online.getAttribute('class'),/text-amber/)
   await online.locator('summary').click();await online.getByText('198.51.100.1、198.51.100.2、198.51.100.3、198.51.100.4',{exact:true}).waitFor()
   // The week's chart is the Hub's difference between two reports.
   snapshot.modules.pm.usage['23456']={...snapshot.modules.pm.usage['23456'],rx:3*1048576,tx:1048576};await poll();await refresh()
-  await instances.locator('summary').filter({hasText:'用量详情（近 7 天）'}).click()
+  await instances.getByRole('button',{name:'用量详情（近 7 天）'}).click()
   await instances.getByText(/^近 7 天已记录 入站 3\.00 MB · 出站 1\.00 MB/).waitFor()
   const today=new Date();await instances.getByRole('button',{name:new RegExp(`^${today.getUTCMonth()+1}/${today.getUTCDate()} 入站 3\\.00 MB`)}).click()
   await instances.getByText(/小时用量 UTC/).waitFor()
@@ -210,13 +220,13 @@ try {
   const posted=()=>page.waitForResponse(response=>response.request().method()==='POST'&&response.url().endsWith('/operations'))
   const snellRow=(port,running='active')=>({...savedSnell,name:String(port),port,public_port:port,psk:'p'.repeat(32),_running:running})
   const addSnell=row=>{const {_running,...resource}=row;snapshot.resources.push(resource);snapshot.runtime[String(row.port)]=_running;snapshot.revision=row.port.toString(16).padStart(64,'0')}
-  await add.click();await editor.getByLabel('监听端口',{exact:true}).fill('40001');await editor.getByLabel(/同时启用 PM 统计/).check()
+  await add.click();await editor.getByLabel('监听端口',{exact:true}).fill('40001');await editor.getByLabel(/同时启用流量统计/).check()
   await editor.getByLabel('配额（GiB，0 关闭）',{exact:true}).fill('100')
   await editor.getByLabel('告警阈值（IP 数，0 关闭）',{exact:true}).fill('3');await editor.getByLabel('白名单 IP / 网段（可选，最多 32 项）',{exact:true}).fill('203.0.113.0/33')
   await editor.getByRole('button',{name:'保存并应用',exact:true}).click();await editor.getByText(/203\.0\.113\.0\/33 不是有效的 IP 地址/).waitFor()
   assert.equal(await decision().count(),0,'an invalid PM field stops before anything is submitted')
   await editor.getByLabel('白名单 IP / 网段（可选，最多 32 项）',{exact:true}).fill('203.0.113.0/24')
-  await editor.getByRole('button',{name:'保存并应用',exact:true}).click();assert.match(await decision().textContent(),/实例运行后应用 PM 规则（配额 100 GiB／IP >3 告警 · >5 报警 · >6 阻断后续连接）/)
+  await editor.getByRole('button',{name:'保存并应用',exact:true}).click();assert.match(await decision().textContent(),/实例运行后应用流量统计规则（配额 100 GiB／IP >3 告警 · >5 报警 · >6 阻断后续连接）/)
   let response=posted();await accept();await response;task=(await poll()).task
   assert.equal(task.request.module,undefined);assert.equal(task.request.payload.port,40001)
   addSnell(snellRow(40001,'activating'));await poll({id:task.request.id,status:'succeeded',message:'fixture applied'})
@@ -224,38 +234,38 @@ try {
   response=posted();await page.waitForTimeout(3500);snapshot.runtime['40001']='active';await poll();await response
   task=(await poll()).task;assert.equal(task.request.module,'pm');assert.equal(task.request.intent,'create')
   assert.deepEqual(task.request.payload,{port:40001,name:'40001',quota_gb:100,quota_mode:'in_out',reset_day:0,expiry_date:'',egress_mbps:0,ip_limit:{max_ips:3,cooldown_min:30,whitelist:['203.0.113.0/24'],block:true}})
-  await progress.filter({hasText:'2/2 应用 PM 规则'}).waitFor();assert(await add.isDisabled())
+  await progress.filter({hasText:'2/2 应用流量统计规则'}).waitFor();assert(await add.isDisabled())
   snapshot.modules.pm.resources.push(task.request.payload);snapshot.modules.pm.revision='e'.repeat(64);await poll({id:task.request.id,status:'succeeded',message:'fixture applied'})
-  await progress.filter({hasText:'实例和 PM 规则已完成。'}).waitFor();assert(!await add.isDisabled())
-  await instances.getByTestId('instance-40001').getByRole('button',{name:'PM 已统计',exact:true}).click()
+  await progress.filter({hasText:'实例和流量统计规则已完成。'}).waitFor();assert(!await add.isDisabled())
+  await instances.getByTestId('instance-40001').getByRole('button',{name:'已统计流量',exact:true}).click()
   await page.getByTestId('pm-rule-40001').waitFor();assert.equal(await pmEditor.count(),0,'an existing rule is shown, not opened for editing')
 
   // A failed instance submits no PM rule.
-  await select('snell');await add.click();await editor.getByLabel('监听端口',{exact:true}).fill('40002');await editor.getByLabel(/同时启用 PM 统计/).check()
+  await select('snell');await add.click();await editor.getByLabel('监听端口',{exact:true}).fill('40002');await editor.getByLabel(/同时启用流量统计/).check()
   task=await submit(editor.getByRole('button',{name:'保存并应用',exact:true}))
   let extra=0;const countPosts=request=>{if(request.method()==='POST'&&request.url().endsWith('/operations'))extra++};page.on('request',countPosts)
-  await poll({id:task.request.id,status:'rolled_back',message:'fixture failed'});await progress.filter({hasText:'创建实例未成功，未应用 PM 规则。'}).waitFor()
+  await poll({id:task.request.id,status:'rolled_back',message:'fixture failed'});await progress.filter({hasText:'创建实例未成功，未应用流量统计规则。'}).waitFor()
   await page.waitForTimeout(3500);assert.equal(extra,0);page.off('request',countPosts)
 
-  // A rejected PM step keeps what was filled in for "添加 PM".
-  await add.click();await editor.getByLabel('监听端口',{exact:true}).fill('40003');await editor.getByLabel(/同时启用 PM 统计/).check();await editor.getByLabel('配额（GiB，0 关闭）',{exact:true}).fill('7')
+  // A rejected PM step keeps what was filled in for "添加流量统计".
+  await add.click();await editor.getByLabel('监听端口',{exact:true}).fill('40003');await editor.getByLabel(/同时启用流量统计/).check();await editor.getByLabel('配额（GiB，0 关闭）',{exact:true}).fill('7')
   task=await submit(editor.getByRole('button',{name:'保存并应用',exact:true}));addSnell(snellRow(40003))
   response=posted();await poll({id:task.request.id,status:'succeeded',message:'fixture applied'});await response;task=(await poll()).task
-  await poll({id:task.request.id,status:'rejected',message:'PM 状态需要核实'});await progress.filter({hasText:/^应用 PM 规则未成功：请求被拒绝[^。]*。可在实例行点击“添加 PM”继续，已保留填写的参数。$/}).waitFor()
-  await instances.getByTestId('instance-40003').getByRole('button',{name:'添加 PM',exact:true}).click()
-  await pmEditor.getByText('新增 PM 规则',{exact:false}).waitFor();assert.equal(await pmEditor.getByLabel('配额（GiB，0 关闭）',{exact:true}).inputValue(),'7')
+  await poll({id:task.request.id,status:'rejected',message:'流量统计状态需要核实'});await progress.filter({hasText:/^应用流量统计规则未成功：请求被拒绝[^。]*。可在实例行点击“添加流量统计”继续，已保留填写的参数。$/}).waitFor()
+  await instances.getByTestId('instance-40003').getByRole('button',{name:'添加流量统计',exact:true}).click()
+  await pmEditor.getByText('新增流量统计规则',{exact:false}).waitFor();assert.equal(await pmEditor.getByLabel('配额（GiB，0 关闭）',{exact:true}).inputValue(),'7')
   await pmEditor.getByRole('button',{name:'取消',exact:true}).click();await pmEditor.waitFor({state:'detached'})
 
   // Deleting an instance with PM removes the rule first, then the instance.
   await select('snell');await instances.getByTestId('instance-40001').getByRole('button',{name:'删除',exact:true}).click()
-  assert.match(await decision().textContent(),/将先删除该端口的 PM 规则及计数/)
+  assert.match(await decision().textContent(),/将先删除该端口的流量统计规则及计数/)
   response=posted();await accept();await response;task=(await poll()).task
   assert.equal(task.request.module,'pm');assert.equal(task.request.action,'delete');assert.equal(task.request.payload.port,40001)
   snapshot.modules.pm.resources=snapshot.modules.pm.resources.filter(rule=>rule.port!==40001);snapshot.modules.pm.revision='f'.repeat(64)
   response=posted();await poll({id:task.request.id,status:'succeeded',message:'fixture applied'});await response;task=(await poll()).task
   assert.equal(task.request.module,undefined);assert.equal(task.request.action,'delete');assert.equal(task.request.payload.port,40001)
   snapshot.resources=snapshot.resources.filter(row=>row.port!==40001);delete snapshot.runtime['40001'];snapshot.revision='9'.repeat(64)
-  await poll({id:task.request.id,status:'succeeded',message:'fixture applied'});await progress.filter({hasText:'PM 规则和实例已删除。'}).waitFor()
+  await poll({id:task.request.id,status:'succeeded',message:'fixture applied'});await progress.filter({hasText:'流量统计规则和实例已删除。'}).waitFor()
 
   await select('snell');task=await submit(instances.getByRole('button',{name:'升级核心',exact:true}));assert.equal(task.request.action,'core_upgrade')
   await poll({id:task.request.id,status:'rolled_back',message:'private binary path',code:'core_runtime'});await refresh()
@@ -263,7 +273,16 @@ try {
   const second=await api('/api/nodes',{name:'东京服务节点',public:false}),enrollment2=await api(`/api/management/${second.id}/enrollment`,{}),credential2='d'.repeat(64)
   await api('/api/management-agent/v1/enroll',{enrollment:enrollment2.enrollment,credential:credential2,boot_id:''})
   const secondPoll=await context.request.post(base+'/api/management-agent/v1/poll',{data:{snapshot,result:null},headers:{Authorization:'Bearer '+credential2,'X-Node-Manager-Protocol':'1'}});assert(secondPoll.ok())
-  await page.reload();await instances.getByTestId('instance-12345').waitFor();await page.getByTestId(`node-manage-${second.id}`).click()
+  const third=await api('/api/nodes',{name:'未接入节点',public:false})
+  await page.reload()
+  // Bound nodes by default; unbound ones under 未接入 and 全部.
+  const filterButton=name=>page.getByRole('group',{name:'按接入状态筛选'}).getByRole('button',{name:new RegExp('^'+name)})
+  await page.getByTestId(`node-card-${second.id}`).waitFor();assert.equal(await filterButton('已接入').getAttribute('aria-pressed'),'true')
+  assert.equal(await page.getByTestId(`node-card-${third.id}`).count(),0,'unbound nodes are hidden by default')
+  await filterButton('未接入').click();await page.getByTestId(`node-card-${third.id}`).waitFor();assert.equal(await page.getByTestId(`node-card-${id}`).count(),0)
+  await filterButton('全部').click();await page.getByTestId(`node-card-${id}`).waitFor();await page.getByTestId(`node-card-${third.id}`).waitFor()
+  await filterButton('已接入').click();await page.getByTestId(`node-card-${third.id}`).waitFor({state:'detached'})
+  await select('snell');await instances.getByTestId('instance-12345').waitFor();await page.getByTestId(`node-manage-${second.id}`).click()
   assert.equal(await detail.getAttribute('data-node-id'),String(id));assert.equal(await nodePanel.getByTestId('node-maintenance').getAttribute('data-node-id'),String(second.id))
   await nodePanel.locator('summary').filter({hasText:'紧急撤销授权'}).click();await nodePanel.getByRole('button',{name:'撤销管理绑定',exact:true}).click()
   assert((await decision().textContent()).includes('东京服务节点'))

@@ -2,9 +2,11 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 
-export function InlinePanel({ title, description, children, footer, onClose, busy = false, testId }: {
+/** A page panel. Forms leave out the "收起" header button, as their own 取消
+ *  closes them, and an `embedded` one sits inside its row without a frame. */
+export function InlinePanel({ title, description, children, footer, onClose, busy = false, testId, closable = true, embedded = false }: {
   title: string; description?: string; children: ReactNode; footer?: ReactNode; busy?: boolean; testId?: string
-  onClose: () => void
+  onClose: () => void; closable?: boolean; embedded?: boolean
 }) {
   const heading = useRef<HTMLHeadingElement>(null)
   const id = useId()
@@ -16,15 +18,15 @@ export function InlinePanel({ title, description, children, footer, onClose, bus
     if (busy) return
     onClose()
   }
-  return <section aria-labelledby={id} data-testid={testId} className="min-w-0 rounded-xl border bg-background" onKeyDown={event => {
+  return <section aria-labelledby={id} data-testid={testId} className={`min-w-0 ${embedded ? "border-t pt-4" : "rounded-xl border bg-background"}`} onKeyDown={event => {
     if (event.key === "Escape" && !event.defaultPrevented) { event.preventDefault(); close() }
   }}>
-    <div className="flex flex-wrap items-start justify-between gap-3 border-b p-4">
-      <div className="min-w-0"><h3 id={id} ref={heading} tabIndex={-1} className="break-words text-base font-medium outline-none">{title}</h3>{description && <p className="mt-1 text-xs text-muted-foreground">{description}</p>}</div>
-      <Button type="button" variant="ghost" className="min-h-11" disabled={busy} onClick={close}>收起</Button>
+    <div className={`flex flex-wrap items-start justify-between gap-3 ${closable ? "border-b p-4" : embedded ? "" : "px-4 pt-4"}`}>
+      <div className="min-w-0"><h3 id={id} ref={heading} tabIndex={-1} className={`break-words font-medium outline-none ${closable ? "text-base" : "text-sm"}`}>{title}</h3>{description && <p className="mt-1 text-xs text-muted-foreground">{description}</p>}</div>
+      {closable && <Button type="button" variant="ghost" className="min-h-11" disabled={busy} onClick={close}>收起</Button>}
     </div>
-    <div className="min-w-0 space-y-4 p-4">{children}</div>
-    {footer && <div className="flex flex-wrap justify-end gap-2 border-t p-4 [&_button]:min-h-11">{footer}</div>}
+    <div className={`min-w-0 space-y-4 ${embedded ? "pt-4" : "p-4"}`}>{children}</div>
+    {footer && <div className={`flex flex-wrap justify-end gap-2 [&_button]:min-h-11 ${embedded ? "pt-4" : "border-t p-4"}`}>{footer}</div>}
   </section>
 }
 

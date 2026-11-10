@@ -72,12 +72,12 @@ scripts/e2e.sh target/debug/monitor-hub agent/target/release/monitor-agent
 | --- | --- | --- |
 | 管理界面流程 | `node web-admin/tests/{management,management-lifecycle,admin}.browser.mjs target/debug/monitor-hub` | 需先构建后台；Playwright 可由 `PLAYWRIGHT_PACKAGE` 指向其 `package.json`，浏览器目录用 `PLAYWRIGHT_BROWSERS_PATH`。每次启动一个临时后台，不接触真实数据。修改服务页面或管理接口时运行 |
 | 业务模块 | 在一次性 Linux 测试机以 root 运行 `python3 management/tests/integration_{snell,modules}.py` | 使用隔离的名称、路径与单元，不安装管理组件，不影响已有服务 |
-| PM | 以 root 运行 `unshare -n python3 management/tests/integration_pm.py` | 在新的网络命名空间中创建和清理 nftables 表 |
+| 端口流量统计 | 以 root 运行 `unshare -n python3 management/tests/integration_pm.py` | 在新的网络命名空间中创建和清理 nftables 表 |
 | 核心升级回退 | `unshare -n python3 management/tests/integration_core_lifecycle.py <发布归档目录>` | 同上，需要预先下载的核心归档 |
 
 ## 修改模块与协议
 
-- **实例模板**：直接修改 `config()`／`service()`（PM 为 `unit_files()`）。组件升级时按已确认状态重写变化的文件，并只重启变化且运行中的实例，无需写迁移。新增字段用 `.get(键, 默认值)` 读取，已确认状态里不会有它。
+- **实例模板**：直接修改 `config()`／`service()`（端口流量统计为 `unit_files()`）。组件升级时按已确认状态重写变化的文件，并只重启变化且运行中的实例，无需写迁移。新增字段用 `.get(键, 默认值)` 读取，已确认状态里不会有它。
 - **状态结构**：只有重命名、拆分字段这类 `.get` 解决不了的改动才需要迁移代码。
 - **协议**：请求或快照的形状变化时，同步增加 `src/management/mod.rs` 与 `management/protocol.py` 的 `PROTOCOL`。不增加就要保证新旧两侧都能读懂对方。
 - **组件文件**：新增文件时加入 Hub 的 `include_str!` 清单，安装器按后台发布的清单工作，无需改动；`test_transport.py` 校验清单与 `management/` 一致。

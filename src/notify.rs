@@ -140,7 +140,7 @@ pub fn setting_error(key: &str, value: &str) -> Option<String> {
         "notify_management" => (!matches!(value, "on" | "off")).then_some("服务管理提醒只能是 on 或 off"),
         crate::latency::NODES => crate::latency::nodes_error(value),
         "notify_pm_thresholds" => {
-            thresholds(value).is_none().then_some("PM 流量阈值要填 1 到 100 的整数，逗号分隔，最多 5 个")
+            thresholds(value).is_none().then_some("端口流量阈值要填 1 到 100 的整数，逗号分隔，最多 5 个")
         }
         "notify_webhook_headers" => return parse_headers(value).err(),
         // Empty clears a channel's field, or restores a template's default.

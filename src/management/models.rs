@@ -115,7 +115,7 @@ fn sb(value: &Value, snapshot: bool) -> Result<()> {
                 }
             }
         }
-        _ => refuse!("SB 仅支持 Reality 或 SS2022"),
+        _ => refuse!("singbox 仅支持 Reality 或 SS2022"),
     }
     Ok(())
 }
@@ -138,7 +138,7 @@ fn pm(value: &Value, _snapshot: bool) -> Result<()> {
         || !matches!(string(value, "quota_mode"), "in_out" | "out_only")
         || value["expiry_date"].as_str().is_none_or(|d| !d.is_empty() && !pm_date(d))
     {
-        refuse!("PM 端口或策略值无效");
+        refuse!("流量统计端口或策略值无效");
     }
     if let Some(limit) = value.get("ip_limit") {
         ip_limit(limit)?;
@@ -301,7 +301,7 @@ impl ModuleSnapshot {
                     "normal" | "quota_warning" | "quota_reached" | "expired" | "maintenance_pending"
                 )
             {
-                refuse!("PM 用量快照无效");
+                refuse!("流量统计用量快照无效");
             }
         }
         for (port, state) in &self.runtime {
@@ -321,7 +321,7 @@ impl ModuleSnapshot {
 pub fn sing_box(state: &ModuleSnapshot) -> Result<String> {
     state.validate("sb")?;
     if state.blocked || state.resources.is_empty() {
-        refuse!("SB 尚无可下载配置");
+        refuse!("singbox 尚无可下载配置");
     }
     let mut outbounds = vec![];
     let mut tags = vec![];
@@ -365,7 +365,7 @@ fn uri_component(value: &str) -> String {
 pub fn share_links(state: &ModuleSnapshot) -> Result<String> {
     state.validate("sb")?;
     if state.blocked || state.resources.is_empty() {
-        refuse!("SB 尚无可下载配置");
+        refuse!("singbox 尚无可下载配置");
     }
     Ok(state
         .resources

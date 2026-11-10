@@ -346,7 +346,7 @@ fn render_configuration(value: Value, format: &str) -> Result<String> {
         refuse!("节点配置待恢复，暂停下载配置");
     }
     if matches!(format, "sing-box" | "share") {
-        let sb = snap.modules.get("sb").context(crate::Shown("SB 尚未接入".into()))?;
+        let sb = snap.modules.get("sb").context(crate::Shown("singbox 尚未接入".into()))?;
         return if format == "share" { models::share_links(sb) } else { models::sing_box(sb) };
     }
     if !matches!(format, "" | "surge") {

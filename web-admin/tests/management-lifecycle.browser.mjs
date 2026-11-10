@@ -79,7 +79,7 @@ try {
     await closePanel()
     const card=page.getByTestId(`node-card-${node.id}`),entry=card.getByTestId(`node-module-${node.id}-${module}`)
     if(await entry.count()){
-      await entry.click()
+      if(await entry.getAttribute('aria-pressed')!=='true')await entry.click()
       await page.waitForFunction(id=>document.querySelector('[data-testid="node-detail"]')?.getAttribute('data-node-id')===String(id),node.id)
     }
     if(kind==='module')await page.getByTestId('node-detail').getByRole('button',{name:'模块维护',exact:true}).click()
@@ -126,7 +126,7 @@ try {
   // Non-empty module removal uses the real lifecycle API and all four revisions.
   await select(single,'snell','module')
   assert(await moduleMaintenance.getByRole('button',{name:'卸载 Snell',exact:true}).isEnabled(),'non-empty module could not use cascade lifecycle')
-  await moduleMaintenance.getByText('卸载会先清理关联受管 PM 规则，再删除此模块的实例和核心；其他模块保留。',{exact:true}).waitFor()
+  await moduleMaintenance.getByText('卸载会先清理关联受管流量统计规则，再删除此模块的实例和核心；其他模块保留。',{exact:true}).waitFor()
   const job=await submit(moduleMaintenance.getByRole('button',{name:'卸载 Snell',exact:true}),single,'snell')
   await instances.getByRole('button',{name:'查看进度',exact:true}).click();await progress.waitFor();const actual=await api(`/api/management/${single.id}`);assert.equal(actual.lifecycle.id,job.id)
   const running={...actual,online:true,lifecycle:{...actual.lifecycle,status:'running',stage:'delete_related_pm',message:'fixture running',attempt:1}}

@@ -10,14 +10,14 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| [agent.py](agent.py) | 轮询、快照组合、模块任务分派及跨模块端口规则（PM 跟随业务端口）、回执确认、本地状态／恢复／解绑／换绑／本机卸载入口 |
+| [agent.py](agent.py) | 轮询、快照组合、模块任务分派及跨模块端口规则（流量统计跟随业务端口）、回执确认、本地状态／恢复／解绑／换绑／本机卸载入口 |
 | [install.py](install.py) | 安装登记（上报本机 boot ID 供后台核对机器）、首次上报确认、组件升级（失败回退）、恢复和组件移除 |
 | [lifecycle.py](lifecycle.py) | 持久卸载计划、步骤推进、模块回执确认和独立清理执行器；本机卸载复用同一计划，不向后台上报 |
 | [menu.py](menu.py) | 节点本机菜单 `sudo nodehelm`：升级、日志与运行状态、换绑、卸载，运行时先完成中断的操作；命令随组件安装和清理 |
 | [modules.py](modules.py) | 模块注册表：模块清单与各模块 `Spec`、请求校验入口、各模块 Controller 与核心驱动；只由入口 `agent.py`、`install.py` 导入 |
 | [controller.py](controller.py) | 与模块无关的事务：版本比对、去重回执、提交和失败恢复；模块差异来自构造时传入的驱动和 `Spec` |
 | [protocol.py](protocol.py) | 协议版本、模块声明 `Spec`、请求外层校验、配置版本摘要、错误模型及多模块共用的字段检查 |
-| [core_driver.py](core_driver.py) | Snell／SB／FW 共用的核心驱动基类：可信核心下载、校验、切换与回退，实例文件及 systemd 单元归属；系统命令与原子写入 |
+| [core_driver.py](core_driver.py) | Snell／singbox／realm 转发 共用的核心驱动基类：可信核心下载、校验、切换与回退，实例文件及 systemd 单元归属；系统命令与原子写入 |
 | [storage.py](storage.py) | 状态文件读写、原子替换与目录操作 |
 | [core_assets.json](core_assets.json) | 核心版本、架构、发行地址与摘要清单 |
 | [tests/](tests/) | 执行器、业务驱动、安装及后台维护工具的回归和集成脚本；[operations.json](tests/operations.json) 是后台与组件共用的操作校验样例 |
@@ -29,26 +29,26 @@
 | 模块 | 文件 | 内容 |
 | --- | --- | --- |
 | Snell | [snell.py](snell.py) | Snell 6 字段、配置与服务模板 |
-| SB：Reality／SS2022 | [sb.py](sb.py) | 字段、sing-box 配置、密钥生成、Reality 目标与配置校验 |
-| FW：Realm 转发 | [fw.py](fw.py) | 字段、Realm 配置、自环检查与目标连通检查 |
-| PM：端口策略 | [pm.py](pm.py) | 字段、计量、配额、重置、到期策略、限速、在线 IP 统计、告警与阻断、定时维护及 `PMController` |
+| singbox（`sb`）：Reality／SS2022 | [sb.py](sb.py) | 字段、sing-box 配置、密钥生成、Reality 目标与配置校验 |
+| realm 转发（`fw`） | [fw.py](fw.py) | 字段、Realm 配置、自环检查与目标连通检查 |
+| 端口流量统计（`pm`） | [pm.py](pm.py) | 字段、计量、配额、重置、到期策略、限速、在线 IP 统计、告警与阻断、定时维护及 `PMController` |
 
 后台对应的模型在 [models.rs](../src/management/models.rs)，页面在 [Management.tsx](../web-admin/src/features/services/Management.tsx)。
 
 新增模块需要改动：
 
 - 组件：新建模块文件并在 `modules.py` 注册；在 `install.py` 的 `MODULES`（自有状态目录时）和 `CORES`（有核心时）、`lifecycle.py` 的 `MODULES`、`menu.py` 的 `NAMES` 登记。这三个文件要能脱离模块文件单独运行，所以各自保留清单，由 `tests/test_modules.py` 的 `ModuleListTests` 核对与注册表一致。
-- 后台：[enroll.rs](../src/management/enroll.rs) 的 `FILES`、[tasks.rs](../src/management/tasks.rs) 的 `validate_request`、[models.rs](../src/management/models.rs) 的字段校验；模块有自己的后台逻辑时单独成文件，参照 PM 的 [pm.rs](../src/management/pm.rs)。页面入口见 [web-admin](../web-admin/AGENTS.md)。
+- 后台：[enroll.rs](../src/management/enroll.rs) 的 `FILES`、[tasks.rs](../src/management/tasks.rs) 的 `validate_request`、[models.rs](../src/management/models.rs) 的字段校验；模块有自己的后台逻辑时单独成文件，参照端口流量统计的 [pm.rs](../src/management/pm.rs)。页面入口见 [web-admin](../web-admin/AGENTS.md)。
 
 ## 执行与状态关系
 
 - 普通操作：`agent.py` → `Controller.execute` → 业务驱动；恢复通过 `Controller.recover`。
-- 模块卸载：`Lifecycle` 生成关联 PM 规则、实例、核心的顺序计划，每步复用 Controller。
+- 模块卸载：`Lifecycle` 生成关联流量统计规则、实例、核心的顺序计划，每步复用 Controller。
 - 全部卸载：模块清理后，`node-manager-cleanup.service` 使用独立材料完成组件清理与收尾确认。
 - 安装登记：后台的 `enroll.sh` 校验并运行 `install.py`，后台凭登记码确定节点；`install.py` 持久待登记身份，完成绑定后，由 Agent 的本次首次上报确认安装结果。后台明确拒绝时显示其原因，并清除本次新建的待登记身份。
 
-默认程序目录为 `/opt/node-manager`，状态目录为 `/var/lib/node-manager`；SB／FW／PM 的状态在各自子目录，Snell 位于状态根目录。组件文件集由后台 [management/enroll.rs](../src/management/enroll.rs) 的 `FILES` 定义并分发，`install.py` 按清单安装、替换和移除。
+默认程序目录为 `/opt/node-manager`，状态目录为 `/var/lib/node-manager`；singbox／realm 转发／端口流量统计的状态在各自子目录，Snell 位于状态根目录。组件文件集由后台 [management/enroll.rs](../src/management/enroll.rs) 的 `FILES` 定义并分发，`install.py` 按清单安装、替换和移除。
 
 `state.json` 表示模块状态，`recovery.json` 记录事务，`receipts/` 保存模块回执；`lifecycle-job.json` 保存节点卸载进度及本地确认，独立收尾材料位于 `/var/lib/node-manager-cleanup`。
 
-PM 仅管理当前受管业务端口，不读取旧脚本配置；IP 白名单支持单个地址与 IPv4／IPv6 CIDR 网段，匹配来源不计数、不阻断。
+端口流量统计仅管理当前受管业务端口，不读取旧脚本配置；IP 白名单支持单个地址与 IPv4／IPv6 CIDR 网段，匹配来源不计数、不阻断。

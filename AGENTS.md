@@ -4,7 +4,7 @@
 
 ## 项目定位
 
-NodeHelm 是基于 monitor Hub 派生的独立节点管理项目，包含监控、分时流量和 Snell／SB／FW／PM 服务管理。后台按节点组织服务模块；代理订阅功能已取消。
+NodeHelm 是基于 monitor Hub 派生的独立节点管理项目，包含监控、分时流量和 Snell／singbox／realm 转发／端口流量统计服务管理。后台按节点组织服务模块；代理订阅功能已取消。
 
 当前 Rust 包名与可执行文件名仍为 `monitor-hub`；`node-manager-*` 服务名、`/opt/node-manager` 等路径和 `X-Node-Manager-*` 请求头是已部署节点依赖的内部标识，改名时不要更动。服务端使用 Rust／axum／SQLite，管理界面与默认公开主题使用 React／TypeScript，VPS 上的可选管理执行器使用 Python。`agent/` 中的 Rust `monitor-agent` 负责监控上报，随后台发布并嵌入后台；本项目的 Python Agent 负责服务管理。
 

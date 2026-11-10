@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react"
 import { api, ApiError, type Node } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Plus, RefreshCw } from "lucide-react"
 import { PmFields, PmPanel } from "./PortPolicies"
 import { InlinePanel, useServiceConfirmation } from "./ServiceInteractions"
-import { type Module, type ApplyIntent, type Resource, type CoreAction, type Snapshot, type Status, type NodeStatus, type FollowUp, type PmDraft, type PmPolicy, names, modules, moduleView, lifecycleActive, lifecycleLabels, runtimeLabels, actionLabels, labels, sniChoices, quote, newResource, editable, instancePayload, pmBlocked, pmDraft, newPmDraft, pmPayload, pmSummary, serviceFeedbackClass } from "./model"
+import { type Module, type ApplyIntent, type Resource, type CoreAction, type Snapshot, type Status, type NodeStatus, type FollowUp, type PmDraft, type PmPolicy, names, modules, moduleView, lifecycleActive, lifecycleLabels, runtimeLabels, runtimeDots, actionLabels, labels, sniChoices, quote, newResource, editable, instancePayload, pmBlocked, pmDraft, newPmDraft, pmPayload, pmSummary, serviceFeedbackClass } from "./model"
 
 export function ManagementDetail({ node, module, selectedName, record, defaultAddress, notice, progress = "", progressStatus = "pending", progressAction, alerts = true, onSubmitted, onOpenPm, pmOpening, onDirtyChange, onNodeManagement, enabled, settingsError, reload }: {
   node: number; module: Module; selectedName: string; record?: NodeStatus; defaultAddress: string; notice?: string
@@ -34,7 +34,7 @@ export function ManagementDetail({ node, module, selectedName, record, defaultAd
   const [editing, setEditing] = useState(false)
   const [baseRevision, setBaseRevision] = useState("")
   const [initialForm, setInitialForm] = useState("")
-  // PM fields of a new instance, when "同时启用 PM 统计" is ticked.
+  // PM fields of a new instance, when "同时启用流量统计" is ticked.
   const [withPm, setWithPm] = useState<PmDraft | null>(null)
   const dirty = form !== null && (JSON.stringify(form) !== initialForm || withPm !== null)
   useLayoutEffect(() => { if (module !== "pm" || !status?.bound) onDirtyChange(module !== "pm" && dirty) }, [dirty, module, onDirtyChange, status?.bound])
@@ -73,7 +73,7 @@ export function ManagementDetail({ node, module, selectedName, record, defaultAd
     }
   }
   async function install() {
-    const question = module === "pm" ? `在 ${selectedName} 启用 PM？目标 VPS 需预装 nftables，启用会创建独立的规则表和定时任务。` : `在 ${selectedName} 安装独立的 ${names[module]} 核心？不接管旧服务、不修改防火墙。`
+    const question = module === "pm" ? `在 ${selectedName} 启用流量统计？目标 VPS 需预装 nftables，启用会创建独立的规则表和定时任务。` : `在 ${selectedName} 安装独立的 ${names[module]} 核心？不接管旧服务、不修改防火墙。`
     if (await confirm(question)) await submit("install", {})
   }
   async function showConfiguration(port: number) {
@@ -110,18 +110,18 @@ export function ManagementDetail({ node, module, selectedName, record, defaultAd
   function showNodeManagement(trigger: HTMLElement) { onNodeManagement(trigger) }
   const pmView = moduleView(status, "pm")
   const pmRule = (port: number) => (pmView?.resources as PmPolicy[] | undefined)?.find(rule => rule.port === port)
-  function pmLink(item: Resource) {
+  function pmLink(item: Resource, first = false) {
     const linked = !!pmRule(item.port)
     if (!linked && (pmBlocked(status?.snapshot, item.port) || view?.runtime?.[String(item.port)] !== "active")) return null
     const online = pmView?.usage?.[String(item.port)]?.ip_count
-    return <> · <button type="button" className="text-primary underline-offset-2 hover:underline" onClick={() => onOpenPm(item.port)}>{linked ? "PM 已统计" : "添加 PM"}</button>{linked && online != null && ` · 在线 IP ${online}`}</>
+    return <>{first ? "" : " · "}<button type="button" className="text-primary underline-offset-2 hover:underline" onClick={() => onOpenPm(item.port)}>{linked ? "已统计流量" : "添加流量统计"}</button>{linked && online != null && ` · 在线 IP ${online}`}</>
   }
   async function remove(item: Resource) {
     const rule = pmRule(item.port)
-    const question = rule ? `删除 ${selectedName} 上的 ${item.name}（${item.port}）？将先删除该端口的 PM 规则及计数，再删除实例并停止服务。` : `删除 ${selectedName} 上的 ${item.name}（${item.port}）？将停止对应服务。`
+    const question = rule ? `删除 ${selectedName} 上的 ${item.name}（${item.port}）？将先删除该端口的流量统计规则及计数，再删除实例并停止服务。` : `删除 ${selectedName} 上的 ${item.name}（${item.port}）？将停止对应服务。`
     if (!await confirm(question, { destructive: true })) return
     if (!rule) { await submit("delete", { port: item.port }); return }
-    await submit("delete", { port: item.port }, pmView?.revision, undefined, "pm", { module, action: "delete", payload: { port: item.port }, steps: ["删除 PM 规则", "删除实例"], done: "PM 规则和实例已删除。" })
+    await submit("delete", { port: item.port }, pmView?.revision, undefined, "pm", { module, action: "delete", payload: { port: item.port }, steps: ["删除流量统计规则", "删除实例"], done: "流量统计规则和实例已删除。" })
   }
   async function reloadDraft() {
     if (!view || !form || !await confirm("重新载入最新配置将替换当前草稿，是否继续？") || !mounted.current) return
@@ -151,7 +151,7 @@ export function ManagementDetail({ node, module, selectedName, record, defaultAd
     {view?.blocked && !status?.snapshot?.blocked && <p role="alert" className="text-sm text-destructive">此模块配置需要核实，已暂停写入和配置查看。</p>}
     {status?.lifecycle && status.lifecycle.status !== "succeeded" ? <div role="status" className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-muted/50 px-3 py-2 text-sm" data-testid="lifecycle-summary"><span className={serviceFeedbackClass(status.lifecycle.status, "uninstall")}>{lifecycleLabels[status.lifecycle.status] ?? "卸载结果待确认"} · {status.lifecycle.scope === "all" ? "此节点全部受管服务" : names[status.lifecycle.scope]}</span><Button variant="ghost" onClick={event => showNodeManagement(event.currentTarget)}>查看进度</Button></div> : active && <p role="status" className="text-sm text-muted-foreground">节点有待完成操作，核实结果后可继续修改。</p>}
   </>
-  const formPanel = form && <InlinePanel title={`${editing ? "编辑" : "新增"}${names[module]} · ${selectedName}`} testId="service-instance-editor" busy={busy} onClose={() => { void closeForm() }}>
+  const formPanel = form && <InlinePanel title={editing ? `编辑 · ${view?.resources.find(item => item.port === form.port)?.name ?? form.port}` : module === "fw" ? "新增转发规则" : "新增实例"} testId="service-instance-editor" busy={busy} closable={false} embedded={editing} onClose={() => { void closeForm() }}>
     {feedback}
     <form id="service-instance-form" className="space-y-4" onSubmit={event => {
       event.preventDefault()
@@ -159,8 +159,8 @@ export function ManagementDetail({ node, module, selectedName, record, defaultAd
         if (draftStale) throw new Error("配置已更新，请先重新载入最新配置。")
         const payload = instancePayload(module, form)
         const pm = !editing && withPm && !pmBlocked(status?.snapshot, form.port) ? pmPayload({ ...withPm, port: payload.port, name: payload.name }) : null
-        if (!await confirm(`应用到 ${selectedName} 的 ${form.port}？名称：${payload.name}。${editing ? "该实例将重启。" : "将创建并启动此实例。"}${pm ? `实例运行后应用 PM 规则（${pmSummary(pm)}）。` : ""}`)) return
-        const next: FollowUp | undefined = pm ? { module: "pm", action: "apply", payload: pm, intent: "create", running: { module, port: payload.port }, steps: ["创建实例", "应用 PM 规则"], done: "实例和 PM 规则已完成。", draft: pmDraft(pm) } : undefined
+        if (!await confirm(`应用到 ${selectedName} 的 ${form.port}？名称：${payload.name}。${editing ? "该实例将重启。" : "将创建并启动此实例。"}${pm ? `实例运行后应用流量统计规则（${pmSummary(pm)}）。` : ""}`)) return
+        const next: FollowUp | undefined = pm ? { module: "pm", action: "apply", payload: pm, intent: "create", running: { module, port: payload.port }, steps: ["创建实例", "应用流量统计规则"], done: "实例和流量统计规则已完成。", draft: pmDraft(pm) } : undefined
         await submit("apply", payload, baseRevision, editing ? "update" : "create", module, next)
         if (mounted.current) { setForm(null); onDirtyChange(false); requestAnimationFrame(restoreFormFocus) }
       })
@@ -168,57 +168,62 @@ export function ManagementDetail({ node, module, selectedName, record, defaultAd
       {draftStale && <div role="alert" className="space-y-2 text-sm"><p>服务器配置已更新，当前草稿已保留。请先重新载入最新配置，再修改并保存。</p><Button type="button" variant="outline" disabled={busy || !!fetchError || !view || record?.loading} onClick={() => { void reloadDraft() }}>重新载入最新配置</Button></div>}
       <fieldset disabled={busy} className="grid gap-3 sm:grid-cols-2">
         <label>{module === "fw" ? "名称／备注" : "名称（可选）"}<Input required={module === "fw"} maxLength={48} placeholder={module === "fw" ? "输入名称" : "留空使用监听端口"} value={form.name} onChange={event => setForm({ ...form, name: event.target.value })} /></label>
-        <label>监听端口<Input type="number" required min={1} max={65535} disabled={editing} value={form.port} onChange={event => changePort(Number(event.target.value))} /></label>
+        <label>监听端口<Input type="number" required min={1} max={65535} readOnly={editing} className={`block sm:max-w-48 ${editing ? "border-transparent bg-transparent px-0 shadow-none focus-visible:ring-0" : ""}`} value={form.port} onChange={event => { if (!editing) changePort(Number(event.target.value)) }} /></label>
         {module === "sb" && <><label>协议<select aria-label="协议" className="block w-full rounded border bg-background p-2" disabled={editing} value={form.protocol} onChange={event => setForm({ ...form, protocol: event.target.value, sni: "", psk: "" })}><option value="reality">VLESS Reality</option><option value="ss2022">Shadowsocks 2022</option></select></label>{form.protocol === "reality" && <label>SNI 地址<Input list="reality-targets" required autoComplete="off" placeholder="例如：www.microsoft.com" value={form.sni ?? ""} onChange={event => setForm({ ...form, sni: event.target.value })} /><datalist id="reality-targets">{sniChoices.map(sni => <option key={sni} value={sni} />)}</datalist></label>}</>}
-        {module === "fw" && <><label>目标 IPv4 地址<Input required value={form.target_host ?? ""} onChange={event => setForm({ ...form, target_host: event.target.value })} /></label><label>目标端口<Input type="number" required min={1} max={65535} value={form.target_port} onChange={event => setForm({ ...form, target_port: Number(event.target.value) })} /></label></>}
+        {module === "fw" && <><label>目标 IPv4 地址<Input required value={form.target_host ?? ""} onChange={event => setForm({ ...form, target_host: event.target.value })} /></label><label>目标端口<Input className="block sm:max-w-48" type="number" required min={1} max={65535} value={form.target_port} onChange={event => setForm({ ...form, target_port: Number(event.target.value) })} /></label></>}
       </fieldset>
-      {module !== "fw" && <details className="text-sm" open={form.public_port !== form.port}><summary className="cursor-pointer text-muted-foreground">客户端端口（NAT 端口映射时修改）</summary><div className="mt-3 space-y-1 sm:max-w-[calc(50%-0.375rem)]"><label className="block">客户端访问端口<Input type="number" required min={1} max={65535} disabled={busy} aria-describedby="client-port-hint" value={form.public_port} onChange={event => setForm({ ...form, public_port: Number(event.target.value) })} /></label><p id="client-port-hint" className="text-xs text-muted-foreground">默认与监听端口相同；写入客户端配置和分享链接。</p></div></details>}
+      {module !== "fw" && <details className="text-sm" open={form.public_port !== form.port}><summary className="cursor-pointer text-muted-foreground">客户端端口（NAT 端口映射时修改）</summary><div className="mt-3 space-y-1 sm:max-w-[calc(50%-0.375rem)]"><label className="block">客户端访问端口<Input className="block sm:max-w-48" type="number" required min={1} max={65535} disabled={busy} aria-describedby="client-port-hint" value={form.public_port} onChange={event => setForm({ ...form, public_port: Number(event.target.value) })} /></label><p id="client-port-hint" className="break-all text-xs text-muted-foreground">{form.host && form.public_port !== form.port ? `${form.host.includes(":") ? `[${form.host}]` : form.host}:${form.public_port || "?"} → 监听 ${form.port || "?"}` : "默认与监听端口相同；写入客户端配置和分享链接。"}</p></div></details>}
       {!editing && <PmOption port={form.port} blocked={pmBlocked(status?.snapshot, form.port)} draft={withPm} busy={busy} onChange={setWithPm} name={form.name} alerts={alerts} />}
       {module !== "fw" && !form.host && <p role="alert" className="text-sm text-destructive">此节点尚无可用的客户端访问地址，请先在节点信息中设置公网地址，再重新打开表单。</p>}
-      <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-muted-foreground">{module === "fw" ? "请确认目标认证与入口限制。" : `名称留空使用 ${form.port || "监听端口"}。凭据自动生成，编辑时保留。`}</p><div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={busy} onClick={() => { void closeForm() }}>取消</Button><Button type="submit" disabled={!writable || draftStale || (module !== "fw" && !form.host)}>保存并应用</Button></div></div>
+      <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-xs text-muted-foreground">{module === "fw" ? "请确认目标认证与入口限制。" : "凭据自动生成，编辑时保留。"}</p><div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={busy} onClick={() => { void closeForm() }}>取消</Button><Button type="submit" disabled={!writable || draftStale || (module !== "fw" && !form.host)}>保存并应用</Button></div></div>
     </form>
     {confirmation}
   </InlinePanel>
+  const panelTools = <>{record?.updatedAt && <span className={`text-xs tabular-nums ${record.refreshed ? serviceFeedbackClass("succeeded", "refresh") : "text-muted-foreground"}`}>{record.refreshed ? "已刷新于 " : "读取于 "}{new Date(record.updatedAt).toLocaleTimeString()}</span>}<Button variant="ghost" className="min-h-11" aria-label="刷新此节点" disabled={busy || record?.loading} onClick={() => { void reload(true) }}><RefreshCw aria-hidden="true" />{record?.loading ? "正在刷新…" : "刷新"}</Button></>
   return <div className="space-y-4" data-testid={`management-selection-${node}-${module}`}>
     {configError && <p role="alert" className="text-sm text-destructive">{configError}</p>}
-    <div className="overflow-hidden rounded-xl border" data-testid="service-card">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b p-4"><h2 className="min-w-0 break-words font-medium">{selectedName ? `${selectedName} · ${names[module]}` : "管理设置"}</h2><Button variant="ghost" className="min-h-11" aria-label="刷新此节点" disabled={busy || record?.loading} onClick={() => { void reload(true) }}><RefreshCw aria-hidden="true" />{record?.loading ? "正在刷新…" : "刷新"}</Button></div>
-      <div className="space-y-4 p-4" data-testid="instance-config">
-        {!form && !(module === "pm" && status?.bound && view?.installed) && feedback}{availability}{!form && confirmation}
-        {form && (!status?.bound || !view?.installed) && formPanel}
-        {!status && !fetchError && <p role="status" className="text-sm text-muted-foreground">正在读取配置…</p>}
-        {status && !status.bound && <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-muted/40 p-4"><p className="text-sm text-muted-foreground">节点尚未接入管理。</p><Button onClick={event => showNodeManagement(event.currentTarget)}>接入管理</Button></div>}
-        {status?.bound && !status.snapshot && <p className="text-sm text-muted-foreground">等待管理组件首次上报配置，请稍后手动刷新配置。</p>}
-        {status?.bound && status.snapshot && !view && <p className="text-sm text-muted-foreground">此管理组件尚未支持 {names[module]}，请升级组件。</p>}
-        {status?.bound && view && !view.installed && <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg bg-muted/40 p-4"><div><h3 className="text-sm font-medium">{module === "pm" ? "尚未启用" : "尚未安装"}</h3><p className="mt-1 text-xs text-muted-foreground">{module === "pm" ? "启用后可配置端口计量、配额和到期策略。" : `安装后即可新增${module === "fw" ? "转发规则" : "实例"}。`}</p></div><Button className="min-h-11" disabled={!writable} onClick={() => { void run(install) }}>{module === "pm" ? "启用 PM" : `安装 ${names[module]}`}</Button></div>}
-        {status?.bound && view?.installed && <>
-          <div data-testid="module-maintenance"><CorePanel node={selectedName} module={module} view={view} writable={Boolean(writable)} expanded={maintenanceOpen} toggle={() => setMaintenanceOpen(value => !value)} run={run} submit={submit} uninstall={() => { void run(uninstall) }} /></div>
-          {module === "pm" ? <PmPanel key={`${node}/${status.lifecycle?.id ?? ""}/${pmOpening?.seq ?? ""}`} node={selectedName} nodeId={node} snapshot={status.snapshot} view={view} writable={Boolean(writable)} busy={busy} feedback={feedback} refreshing={Boolean(record?.loading)} onDirtyChange={reportPmDirty} run={run} submit={submit} opening={pmOpening} alerts={alerts} /> : <div className="space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-xs text-muted-foreground">{module === "fw" ? "转发规则" : "实例"} · {view.resources.length}</span><Button className="min-h-11" disabled={!writable} aria-expanded={!!form && !editing} onClick={event => { void edit(undefined, event.currentTarget) }}><Plus aria-hidden="true" />{form && !editing ? "收起新增" : `新增${module === "fw" ? "转发规则" : "实例"}`}</Button></div>
-            {form && (!editing || !view.resources.some(item => item.port === form.port)) && formPanel}
-            {view.resources.map(item => <div key={item.port} data-testid={`instance-${item.port}`} className="space-y-3 rounded border p-3">
-              <div className="flex flex-wrap items-center justify-between gap-3"><div><strong className="font-medium">{item.name}</strong><span className="ml-2 text-xs text-muted-foreground">{status.online ? runtimeLabels[view.runtime?.[String(item.port)] ?? "unknown"] : "运行状态待确认"}</span><p className="mt-1 break-all text-xs text-muted-foreground">{module === "fw" ? `${item.port} → ${item.target_host}:${item.target_port} · TCP/UDP` : `端口 ${item.port}${item.public_port && item.public_port !== item.port ? ` · 客户端端口 ${item.public_port}` : ""}`}{pmLink(item)}</p></div><div className="flex flex-wrap gap-2">
-                {(module === "snell" || module === "sb") && <Button variant="outline" disabled={busy || configLoading !== null || !!active || !!fetchError || !!settingsError || status.snapshot?.blocked || view.blocked} aria-expanded={configurationAvailable && clientConfig?.port === item.port} aria-busy={configLoading === item.port} onClick={() => { void showConfiguration(item.port) }}>{configLoading === item.port ? "正在读取…" : configurationAvailable && clientConfig?.port === item.port ? "收起配置" : "显示配置"}</Button>}
-                {module === "fw" && <Button variant="outline" disabled={!writable} onClick={() => { void run(async () => { await submit("check", { port: item.port }) }) }}>测试目标 TCP</Button>}
-                <Button variant="outline" disabled={!writable} aria-expanded={editing && form?.port === item.port} onClick={event => { void edit(item, event.currentTarget) }}>{editing && form?.port === item.port ? "收起编辑" : "编辑"}</Button>
-                <Button variant="outline" disabled={!writable} onClick={() => { void run(() => remove(item)) }}>删除</Button>
-              </div></div>
-              {editing && form?.port === item.port && formPanel}
-              {clientConfig?.port === item.port && configurationAvailable && <ClientConfiguration text={clientConfig.text} />}
-            </div>)}
-            {!view.resources.length && <p className="text-sm text-muted-foreground">暂无配置，可从右上方新增。</p>}
-          </div>}
-        </>}
-      </div>
-      <OperationHistory status={status} />
+    <div className="space-y-4" data-testid="instance-config">
+      {status?.bound && view?.installed ? <div data-testid="module-maintenance"><CorePanel node={selectedName} module={module} view={view} writable={Boolean(writable)} expanded={maintenanceOpen} toggle={() => setMaintenanceOpen(value => !value)} run={run} submit={submit} uninstall={() => { void run(uninstall) }} tools={panelTools} /></div>
+        : <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="font-medium">{names[module]}</h2><div className="flex flex-wrap items-center gap-2">{panelTools}</div></div>}
+      {!form && !(module === "pm" && status?.bound && view?.installed) && feedback}{availability}{!form && confirmation}
+      {form && (!status?.bound || !view?.installed) && formPanel}
+      {!status && !fetchError && <p role="status" className="text-sm text-muted-foreground">正在读取配置…</p>}
+      {status && !status.bound && <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-muted/40 p-4"><p className="text-sm text-muted-foreground">节点尚未接入管理。</p><Button onClick={event => showNodeManagement(event.currentTarget)}>接入管理</Button></div>}
+      {status?.bound && !status.snapshot && <p className="text-sm text-muted-foreground">等待管理组件首次上报配置，请稍后手动刷新配置。</p>}
+      {status?.bound && status.snapshot && !view && <p className="text-sm text-muted-foreground">此管理组件尚未支持 {names[module]}，请升级组件。</p>}
+      {status?.bound && view && !view.installed && <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg bg-muted/40 p-4"><div><h3 className="text-sm font-medium">{module === "pm" ? "尚未启用" : "尚未安装"}</h3><p className="mt-1 text-xs text-muted-foreground">{module === "pm" ? "启用后可配置端口计量、配额和到期策略。" : `安装后即可新增${module === "fw" ? "转发规则" : "实例"}。`}</p></div><Button className="min-h-11" disabled={!writable} onClick={() => { void run(install) }}>{module === "pm" ? "启用流量统计" : `安装 ${names[module]}`}</Button></div>}
+      {status?.bound && view?.installed && <>
+        {module === "pm" ? <PmPanel key={`${node}/${status.lifecycle?.id ?? ""}/${pmOpening?.seq ?? ""}`} node={selectedName} nodeId={node} snapshot={status.snapshot} view={view} writable={Boolean(writable)} busy={busy} feedback={feedback} refreshing={Boolean(record?.loading)} onDirtyChange={reportPmDirty} run={run} submit={submit} opening={pmOpening} alerts={alerts} /> : <div className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-xs text-muted-foreground">{module === "fw" ? "转发规则" : "实例"} · {view.resources.length}</span><Button className="min-h-11" disabled={!writable} aria-expanded={!!form && !editing} onClick={event => { void edit(undefined, event.currentTarget) }}><Plus aria-hidden="true" />{`新增${module === "fw" ? "转发规则" : "实例"}`}</Button></div>
+          {form && (!editing || !view.resources.some(item => item.port === form.port)) && formPanel}
+          {view.resources.map(item => <div key={item.port} data-testid={`instance-${item.port}`} className="space-y-3 rounded-lg border bg-background p-3">
+            <div className="flex flex-wrap items-center justify-between gap-3"><div className="min-w-0">{(() => {
+              const state = status.online ? view.runtime?.[String(item.port)] ?? "unknown" : ""
+              const details = (module === "fw" ? [`${item.port} → ${item.target_host}:${item.target_port} · TCP/UDP`]
+                : [item.name !== String(item.port) && `端口 ${item.port}`, item.public_port && item.public_port !== item.port && `客户端端口 ${item.public_port}`]).filter(Boolean).join(" · ")
+              const link = pmLink(item, !details)
+              return <><div className="flex items-center gap-2"><strong className="break-all font-medium">{item.name}</strong><span aria-hidden="true" className={`size-2 shrink-0 rounded-full ${runtimeDots[state] ?? "bg-muted-foreground/40"}`} /><span className="text-xs text-muted-foreground">{state ? runtimeLabels[state] ?? runtimeLabels.unknown : "运行状态待确认"}</span></div>{(details || link) && <p className="mt-1 break-all text-xs text-muted-foreground">{details}{link}</p>}</>
+            })()}</div><div className="flex flex-wrap gap-2">
+              {(module === "snell" || module === "sb") && <Button variant="outline" disabled={busy || configLoading !== null || !!active || !!fetchError || !!settingsError || status.snapshot?.blocked || view.blocked} aria-expanded={configurationAvailable && clientConfig?.port === item.port} aria-busy={configLoading === item.port} onClick={() => { void showConfiguration(item.port) }}>{configLoading === item.port ? "正在读取…" : configurationAvailable && clientConfig?.port === item.port ? "收起配置" : "显示配置"}</Button>}
+              {module === "fw" && <Button variant="outline" disabled={!writable} onClick={() => { void run(async () => { await submit("check", { port: item.port }) }) }}>测试目标 TCP</Button>}
+              <Button variant="outline" disabled={!writable} aria-expanded={editing && form?.port === item.port} onClick={event => { void edit(item, event.currentTarget) }}>{editing && form?.port === item.port ? "收起编辑" : "编辑"}</Button>
+              <Button variant="ghost" className="text-muted-foreground hover:text-destructive" disabled={!writable} onClick={() => { void run(() => remove(item)) }}>删除</Button>
+            </div></div>
+            {editing && form?.port === item.port && formPanel}
+            {clientConfig?.port === item.port && configurationAvailable && <ClientConfiguration text={clientConfig.text} />}
+          </div>)}
+          {!view.resources.length && <p className="text-sm text-muted-foreground">暂无配置，可从右上方新增。</p>}
+        </div>}
+      </>}
     </div>
+    <OperationHistory status={status} />
   </div>
 }
 
 async function requestUninstall(node: number, name: string, status: Status | undefined, scope: Module | "all", resume: boolean, onSubmitted: (operation: string) => void, reload: () => Promise<void>, confirm: ReturnType<typeof useServiceConfirmation>["confirm"]) {
   if (!status?.bound || !status.online || !status.compatible) throw new Error("节点离线或组件版本不一致，请上线并升级组件后重试。")
   if (resume && (!status.lifecycle || status.lifecycle.scope !== scope)) throw new Error("卸载进度已更新，请刷新后重试。")
-  const target = scope === "all" ? "全部受管业务、配置和管理组件" : `${names[scope]} 全部实例、关联受管 PM 规则及核心`
+  const target = scope === "all" ? "全部受管业务、配置和管理组件" : `${names[scope]} 全部实例、关联受管流量统计规则及核心`
   if (!await confirm(`${resume ? "继续" : "确认"}卸载「${name}」的${target}？已删除内容不会自动恢复。原 monitor 和其他节点不受影响。`, { destructive: true })) return
   const id = resume ? status.lifecycle!.id : crypto.randomUUID().replaceAll("-", "")
   const revisions = Object.fromEntries(modules.map(module => [module, moduleView(status, module)?.revision ?? ""]))
@@ -245,7 +250,7 @@ function LifecycleProgress({ status, busy, fetchError, resume }: { status?: Stat
 function OperationHistory({ status }: { status?: Status }) {
   const count = (status?.operations?.length ?? 0) + (status?.lifecycle ? 1 : 0)
   if (!count) return null
-  return <details className="mx-4 space-y-2 border-t py-3" data-testid="operation-history"><summary className="cursor-pointer text-xs text-muted-foreground">节点操作记录 · {count} 条</summary>
+  return <details className="space-y-2 border-t pt-3" data-testid="operation-history"><summary className="cursor-pointer text-xs text-muted-foreground">节点操作记录 · {count} 条</summary>
     {status?.lifecycle && <div className="space-y-1 border-b py-2 text-sm" data-testid="lifecycle-history"><p className={serviceFeedbackClass(status.lifecycle.status, "uninstall")}>{lifecycleLabels[status.lifecycle.status] ?? "卸载结果待确认"} · {status.lifecycle.scope === "all" ? "此节点全部受管服务" : names[status.lifecycle.scope]}</p><p className="text-xs text-muted-foreground">{status.lifecycle.message}</p></div>}
     {status?.operations?.map(operation => <OperationRow key={operation.id} operation={operation} />)}
   </details>
@@ -334,8 +339,11 @@ function OperationRow({ operation: o }: { operation: NonNullable<Status["operati
   return <div className="rounded border p-3 text-sm"><span className={serviceFeedbackClass(o.status, o.action)}>{o.module ? names[o.module as Module] ?? o.module : "历史任务"}{o.action ? ` · ${actionLabels[o.action] ?? o.action}` : ""} · {labels[o.status] ?? o.status}</span><p className={serviceFeedbackClass(o.status, o.action)}>{o.message || "请等待管理组件核实，勿重复执行。"}</p><p className="break-all text-xs text-muted-foreground">{new Date(o.created * 1000).toLocaleString()} · {o.id}</p></div>
 }
 
-function CorePanel({ node, module, view, writable, expanded, toggle, run, submit, uninstall }: {
+/** The panel's header row: module, core version and its maintenance, with the
+ *  read time and refresh passed in as `tools`. */
+function CorePanel({ node, module, view, writable, expanded, toggle, run, submit, uninstall, tools }: {
   node: string
+  tools: ReactNode
   module: Module
   view: Snapshot
   writable: boolean
@@ -348,54 +356,50 @@ function CorePanel({ node, module, view, writable, expanded, toggle, run, submit
   const { confirm, confirmation } = useServiceConfirmation()
   const [selectedVersion, setSelectedVersion] = useState("")
   const core = view.core
-  if (!core) return <p className="text-sm text-muted-foreground">升级管理组件后可查看和维护此模块的核心。</p>
 
-  const version = core.candidates.includes(selectedVersion) ? selectedVersion : core.candidates[0]
-  const previous = core.previous_version
+  const version = core?.candidates.includes(selectedVersion) ? selectedVersion : core?.candidates[0]
+  const previous = core?.previous_version
   const title = names[module]
   function maintain(action: CoreAction, target?: string) {
     void run(async () => {
       const detail = target
         ? `${core?.version} → ${target}。本模块运行中的全部实例将重启，连接会短暂中断。`
-        : "将删除本后台安装的核心或规则运行环境。请先清理所有实例、规则及相关 PM 策略。"
+        : "将删除本后台安装的核心或规则运行环境。请先清理所有实例、转发规则及相关流量统计规则。"
       if (!await confirm(`在 ${node} 对 ${title} 执行「${actionLabels[action]}」？${detail}`)) return
       await submit(action, target ? { version: target } : {})
     })
   }
 
-  return <div className="space-y-3 rounded-lg bg-muted/40 p-3" data-testid="core-maintenance">
+  const summary = module === "pm" ? "" : !core ? "升级管理组件后可查看和维护此模块的核心。"
+    : `核心 ${core.version ?? "未知"} · ${version ? `可升级到 ${version}` : core.version ? "已是最新" : "请在 VPS 核实核心文件及版本"}`
+  return <div className="space-y-3" data-testid="core-maintenance">
     <div className="flex flex-wrap items-center justify-between gap-3">
-      <div><h3 className="text-sm font-medium">{module === "pm" ? "PM 模块维护" : `${title} 核心`}</h3>{module !== "pm" && <p className="mt-1 text-xs text-muted-foreground">当前版本 {core.version ?? "未知"}</p>}</div>
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1"><h2 className="font-medium">{title}</h2>{summary && <span className="text-xs text-muted-foreground">{summary}</span>}</div>
       <div className="flex flex-wrap items-center gap-2">
-      {module !== "pm" && (version ? <>
-        <label>可信升级版本 <select
-          aria-label="可信升级版本"
-          className="rounded border bg-background p-2"
-          value={version}
-          disabled={!writable}
-          onChange={e => setSelectedVersion(e.target.value)}
-        >{core.candidates.map(v => <option key={v} value={v}>{v}</option>)}</select></label>
-        <Button className="min-h-11" disabled={!writable} onClick={() => maintain("core_upgrade", version)}>升级核心</Button>
-      </> : <span className="text-xs text-muted-foreground">{core.version ? "暂无更高的可信版本。" : "请在 VPS 核实核心文件及版本。"}</span>)}
-      <Button variant="ghost" className="min-h-11" aria-expanded={expanded} onClick={toggle}>{expanded ? "收起维护" : "模块维护"}</Button>
+        {tools}
+        {module !== "pm" && version && <>
+          {core!.candidates.length > 1 && <select aria-label="可信升级版本" className="rounded border bg-background p-2 text-sm" value={version} disabled={!writable} onChange={e => setSelectedVersion(e.target.value)}>{core!.candidates.map(v => <option key={v} value={v}>{v}</option>)}</select>}
+          <Button className="min-h-11" disabled={!writable} onClick={() => maintain("core_upgrade", version)}>升级核心</Button>
+        </>}
+        {core && <Button variant="ghost" className="min-h-11" aria-expanded={expanded} onClick={toggle}>{expanded ? "收起维护" : "模块维护"}</Button>}
       </div>
     </div>
     {confirmation}
-    {expanded && <div className="space-y-3 border-t pt-3"><div className="flex flex-wrap gap-2">
+    {expanded && <div className="space-y-3 rounded-lg border bg-background p-3"><div className="flex flex-wrap gap-2">
       {previous && <Button variant="outline" disabled={!writable} onClick={() => maintain("core_rollback", previous)}>回退至 {previous}</Button>}
       <Button variant="outline" disabled={!writable} onClick={uninstall}>卸载 {title}</Button>
     </div>
-    {view.resources.length > 0 && <p className="text-sm text-muted-foreground">卸载会先清理关联受管 PM 规则，再删除此模块的实例和核心；其他模块保留。</p>}
+    {view.resources.length > 0 && <p className="text-sm text-muted-foreground">卸载会先清理关联受管流量统计规则，再删除此模块的实例和核心；其他模块保留。</p>}
     </div>}
   </div>
 }
 
-/** "同时启用 PM 统计" in the new-instance form. The rule takes the instance's
+/** "同时启用流量统计" in the new-instance form. The rule takes the instance's
  *  port and name, and is applied once the instance runs. */
 function PmOption({ port, name, blocked, draft, busy, alerts, onChange }: { port: number; name: string; blocked: string; draft: PmDraft | null; busy: boolean; alerts: boolean; onChange: (draft: PmDraft | null) => void }) {
   const on = !!draft && !blocked
   return <div className="space-y-3 text-sm">
-    <label className="flex items-center gap-2"><input type="checkbox" className="size-4" disabled={busy || !!blocked} checked={on} onChange={event => onChange(event.target.checked ? newPmDraft(port, name) : null)} />同时启用 PM 统计{blocked && <span className="text-xs text-muted-foreground">（{blocked}）</span>}</label>
+    <label className="flex items-center gap-2"><input type="checkbox" className="size-4" disabled={busy || !!blocked} checked={on} onChange={event => onChange(event.target.checked ? newPmDraft(port, name) : null)} />同时启用流量统计{blocked && <span className="text-xs text-muted-foreground">（{blocked}）</span>}</label>
     {on && <><PmFields form={draft} setForm={onChange} busy={busy} alerts={alerts} /><p className="text-xs text-muted-foreground">实例运行后自动应用。</p></>}
   </div>
 }

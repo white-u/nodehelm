@@ -83,7 +83,7 @@ pub(super) fn events(old: &Value, new: &Value, thresholds: &[u64]) -> (Vec<Strin
             _ => None,
         };
         if let Some(what) = what.filter(|_| before["alert"].as_str() != Some(alert)) {
-            events.push(format!("PM 端口 {port}：{what}"));
+            events.push(format!("端口 {port}：{what}"));
         }
         let step = threshold(state, &rule, thresholds);
         let was = if before["period_start"] == state["period_start"] {
@@ -93,9 +93,9 @@ pub(super) fn events(old: &Value, new: &Value, thresholds: &[u64]) -> (Vec<Strin
         };
         if step > was {
             events.push(if step >= 100 {
-                format!("PM 端口 {port}：已达配额，匹配流量已被丢弃")
+                format!("端口 {port}：已达配额，匹配流量已被丢弃")
             } else {
-                format!("PM 端口 {port}：用量已达配额 {step}%")
+                format!("端口 {port}：用量已达配额 {step}%")
             });
         }
         let level = state["ip_level"].as_u64().unwrap_or(0);

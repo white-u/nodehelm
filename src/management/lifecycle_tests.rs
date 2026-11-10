@@ -356,7 +356,7 @@ fn quota_thresholds_sound_once_per_period_and_merge_with_the_quota() {
     assert!(events(&state(0, 0, "normal", p, "in_out"), &state(2 * gib, 2 * gib, "normal", p, "in_out"))
         .is_empty());
     let half = events(&state(0, 0, "normal", p, "in_out"), &state(3 * gib, 2 * gib, "normal", p, "in_out"));
-    assert_eq!(half, ["PM 端口 12345：用量已达配额 50%"]);
+    assert_eq!(half, ["端口 12345：用量已达配额 50%"]);
     // Inbound traffic does not count against an outbound-only quota.
     assert!(
         events(&state(0, 0, "normal", p, "out_only"), &state(9 * gib, 0, "normal", p, "out_only")).is_empty()
@@ -364,17 +364,17 @@ fn quota_thresholds_sound_once_per_period_and_merge_with_the_quota() {
     // A jump past several steps reports the highest, once.
     let jump =
         events(&state(0, 0, "normal", p, "in_out"), &state(5 * gib, 4 * gib, "quota_warning", p, "in_out"));
-    assert_eq!(jump, ["PM 端口 12345：用量已达配额 80%"]);
+    assert_eq!(jump, ["端口 12345：用量已达配额 80%"]);
     let same = state(5 * gib, 4 * gib, "quota_warning", p, "in_out");
     assert!(events(&same, &same).is_empty());
     // The quota itself is one message whether the counters or the node report it first.
     let full = events(&same, &state(5 * gib, 4 * gib, "quota_reached", p, "in_out"));
-    assert_eq!(full, ["PM 端口 12345：已达配额，匹配流量已被丢弃"]);
+    assert_eq!(full, ["端口 12345：已达配额，匹配流量已被丢弃"]);
     let reached = state(5 * gib, 5 * gib, "quota_reached", p, "in_out");
     assert!(events(&reached, &reached).is_empty());
     // A new period starts counting again.
     let next = events(&reached, &state(3 * gib, 3 * gib, "normal", "2026-12-01", "in_out"));
-    assert_eq!(next, ["PM 端口 12345：用量已达配额 50%"]);
+    assert_eq!(next, ["端口 12345：用量已达配额 50%"]);
     assert!(!jump.concat().contains("secret-value"));
 }
 #[test]
