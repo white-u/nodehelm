@@ -16,7 +16,7 @@ class InstallTests(unittest.TestCase):
         self.code = pathlib.Path(self.tmp.name) / 'code'
     def test_unlinked_owned_service_allows_rebinding(self):
         unit = pathlib.Path(self.tmp.name) / 'agent.service'
-        unit.write_text(SERVICE_UNIT)
+        unit.write_text(SERVICE_UNIT); unit.chmod(0o644)
         check_owned_unit(unit)
     def test_modified_service_is_rejected_even_when_bound(self):
         unit = pathlib.Path(self.tmp.name) / 'agent.service'
