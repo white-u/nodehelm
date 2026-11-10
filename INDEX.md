@@ -37,6 +37,7 @@
 | 节点卡片单行模块、页内表单与确认、客户端配置、独立节点管理及顶部核心维护、卸载进度与历史 | [服务管理页面定位](web-admin/AGENTS.md#服务管理页面定位) |
 | 服务管理后端接口、模型与生命周期 | [management/](src/management/) |
 | 后台安装维护、组件维护与发行打包 | [部署工具索引](scripts/AGENTS.md)、[组件安装维护](management/install.py) |
+| 本机菜单：后台 `nodehelm-hub`、节点 `nodehelm` | [nodehelm.sh](nodehelm.sh)、[menu.py](management/menu.py) |
 
 ## 相关项目
 
