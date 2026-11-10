@@ -48,7 +48,7 @@ systemctl status node-manager-hub --no-pager
 journalctl -u node-manager-hub -n 100 --no-pager
 ```
 
-安装与更新是同一条命令。已安装时它下载并校验最新发布包，相同版本直接退出，否则创建一致性备份并检查新程序；失败会回退，成功后只保留最新一份自动备份：
+安装与更新是同一条命令。已安装时它下载并校验最新发布包，相同版本直接退出，否则先做更新前备份并检查新程序；失败会回退，完成后删除这份备份：
 
 ```sh
 curl -fsSL https://github.com/white-u/nodehelm/releases/latest/download/nodehelm.sh | sudo sh
@@ -100,7 +100,7 @@ sudo /opt/node-manager-hub/monitor-hub --db /var/lib/node-manager-hub/hub.db --r
 
 新密码只在当前终端显示；所有旧登录会话失效。不要将终端输出分享给他人。自定义部署须使用对应程序和数据库路径。
 
-后台主机上 `sudo nodehelm-hub`（安装前为 `nodehelm.sh`）的 `update`、`logs`、`reset-password`、`uninstall` 覆盖日常维护，无参数在终端运行时显示菜单，无终端时需加 `--yes`（更新）；备份与恢复使用后台「数据」页；节点上 `sudo nodehelm` 负责升级、状态、日志、换绑与卸载，`recover` 处理中断；`logs` 先显示服务状态与本机检查，并隐藏应急密码。中断的更新、备份或卸载在下次运行时自动完成。卸载删除全部数据（数据库、密钥、主题、维护记录和服务器上的备份）。维护工具保存在 `/opt/node-manager-hub/tools`，恢复与卸载不需要联网。管理组件、原监控 Agent、受管业务实例各有独立生命周期，不能通过删除整个 `/opt` 目录处理。`install-hub.sh` 不支持原安装器的 `--reset-password` 或 `--uninstall` 参数。
+后台主机上 `sudo nodehelm-hub`（安装前为 `nodehelm.sh`）的 `update`、`logs`、`reset-password`、`uninstall` 覆盖日常维护，无参数在终端运行时显示菜单，无终端时需加 `--yes`（更新）；备份与恢复使用后台「数据」页；节点上 `sudo nodehelm` 负责升级、状态、日志、换绑与卸载，`recover` 处理中断；`logs` 先显示服务状态与本机检查，并隐藏应急密码。中断的更新或卸载在下次运行时自动完成。卸载删除全部数据（数据库、密钥、主题、维护记录和服务器上的备份）。维护工具保存在 `/opt/node-manager-hub/tools`，恢复与卸载不需要联网。管理组件、原监控 Agent、受管业务实例各有独立生命周期，不能通过删除整个 `/opt` 目录处理。`install-hub.sh` 不支持原安装器的 `--reset-password` 或 `--uninstall` 参数。
 
 ## 故障定位
 

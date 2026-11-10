@@ -227,7 +227,6 @@ struct Args {
     site: String,
     themes: PathBuf,
     reset_password: bool,
-    prepare_restore: bool,
 }
 
 /// The default listen address. A v6 wildcard also accepts IPv4 through
@@ -251,7 +250,6 @@ fn parse_args() -> Result<Args> {
     let mut site = String::new();
     let mut themes = None;
     let mut reset_password = false;
-    let mut prepare_restore = false;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = || it.next().unwrap_or_default();
@@ -261,7 +259,6 @@ fn parse_args() -> Result<Args> {
             "--site" => site = value(),
             "--themes" => themes = Some(PathBuf::from(value())),
             "--reset-password" => reset_password = true,
-            "--prepare-restore" => prepare_restore = true,
             "--lifecycle-protocol" => {
                 println!("node-manager-hub-lifecycle-v1");
                 std::process::exit(0);
@@ -270,8 +267,7 @@ fn parse_args() -> Result<Args> {
                 println!(
                     "monitor-hub {}\n\n\
                      Usage: monitor-hub [--listen [::]:28080] [--db monitor.db] [--themes themes] [--site https://hub.example.com]\n       \
-                     monitor-hub --db monitor.db --reset-password\n       \
-                     monitor-hub --db /absolute/staged.db --prepare-restore\n\n\
+                     monitor-hub --db monitor.db --reset-password\n\n\
                      --listen defaults to [::]:28080, one socket serving IPv6 and IPv4\n\
                      both; where the kernel has no dual-stack sockets it is 0.0.0.0:28080.\n\
                      --themes defaults to a themes/ directory beside the database.\n\
@@ -287,8 +283,7 @@ fn parse_args() -> Result<Args> {
                      since it then sets the session cookie's Secure flag. A value that is\n\
                      not an https:// domain disables adding nodes.\n\
                      --reset-password replaces the emergency password, signs every session\n\
-                     out, prints the new password and exits. The database must exist.\n\
-                     --prepare-restore validates and revokes access in a private staging backup and exits.",
+                     out, prints the new password and exits. The database must exist.",
                     env!("CARGO_PKG_VERSION")
                 );
                 std::process::exit(0);
@@ -308,7 +303,6 @@ fn parse_args() -> Result<Args> {
         site: site.trim_end_matches('/').to_owned(),
         themes,
         reset_password,
-        prepare_restore,
     })
 }
 
@@ -357,22 +351,6 @@ async fn main() -> Result<()> {
         .init();
 
     let args = parse_args()?;
-    if args.prepare_restore {
-        #[cfg(unix)]
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let path = std::path::Path::new(&args.database);
-        let meta = std::fs::symlink_metadata(path)?;
-        #[cfg(unix)]
-        anyhow::ensure!(
-            meta.permissions().mode() & 0o077 == 0 && meta.nlink() == 1,
-            "restore staging file must be private and have one link"
-        );
-        anyhow::ensure!(
-            !args.reset_password && path.is_absolute() && meta.file_type().is_file(),
-            "--prepare-restore requires an absolute path to a private staging backup"
-        );
-        return Db::prepare_offline_restore(&args.database);
-    }
     // Delivered on the terminal rather than through the service log, which some
     // hosts do not keep. A running hub reads the hash and its sessions from the
     // database on every request, so the change applies without a restart.
@@ -384,7 +362,7 @@ async fn main() -> Result<()> {
         println!("Emergency password: {}", new_password(&Db::open(&args.database)?)?);
         return Ok(());
     }
-    // After the two arguments that print and exit, so their output stays theirs.
+    // After --reset-password, which prints and exits, so its output stays its own.
     raise_open_files();
     std::fs::create_dir_all(&args.themes)?;
     if let Err(e) = db::temp_files_beside(&args.database) {

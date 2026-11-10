@@ -9,7 +9,7 @@
 | 文件 | 职责 |
 | --- | --- |
 | [hub-install.py](hub-install.py) | 后台首次安装、安装进度与续装 |
-| [hub-lifecycle.py](hub-lifecycle.py) | 后台备份、恢复、升级、失败回退、自动备份保留及卸载 |
+| [hub-lifecycle.py](hub-lifecycle.py) | 后台升级、失败回退、中断恢复及卸载 |
 | [upgrade-nodes.sh](upgrade-nodes.sh) | 从操作机经 SSH 依次升级多台节点的管理组件，首个失败即停止 |
 | [hub_health.py](hub_health.py) | 后台实际进程、监听与 HTTP 健康状态辅助 |
 | [package-release.py](package-release.py) | 将后台二进制、安装维护工具、说明与内部摘要打为离线包 |

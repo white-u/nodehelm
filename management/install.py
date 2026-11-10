@@ -416,35 +416,48 @@ def record_versions(before, after, incoming, record):
     return backup
 
 
-def discard_incomplete_backup(record):
-    backup_id = record['id']
-    if not BACKUP_ID.fullmatch(backup_id):
-        raise ValueError('备份编号无效')
+def remove_backup(directory):
+    """Removes one version backup, file by file, refusing anything it did not write."""
+    if not present(directory):
+        return
     backups = ROOT / 'component-backups'
-    staged = backups / ('.creating-' + backup_id)
-    if present(staged):
-        owned_directory(backups, True)
-        owned_directory(staged, True)
-        files, directories = [], []
-        for path in staged.iterdir():
-            if path.name in ('before', 'after'):
-                owned_directory(path, True)
-                for item in path.iterdir():
-                    if not COMPONENT_FILE.fullmatch(item.name) and not re.fullmatch(r'\.node-manager-[a-z0-9_]{8}', item.name):
-                        raise ValueError('未完成的组件备份含未知文件，请保留现场')
-                    files.append(owned_file(item, private=True))
-                directories.append(path)
-            elif path.name == 'versions.json' or re.fullmatch(r'\.node-manager-[a-z0-9_]{8}', path.name):
-                files.append(owned_file(path, private=True))
-            else:
-                raise ValueError('未完成的组件备份含未知文件，请保留现场')
-        for path in files:
-            remove(path)
-        for path in directories:
-            path.rmdir()
-        staged.rmdir()
-        sync(backups)
+    owned_directory(backups, True)
+    owned_directory(directory, True)
+    files, directories = [], []
+    for path in directory.iterdir():
+        if path.name in ('before', 'after'):
+            owned_directory(path, True)
+            for item in path.iterdir():
+                if not COMPONENT_FILE.fullmatch(item.name) and not re.fullmatch(r'\.node-manager-[a-z0-9_]{8}', item.name):
+                    raise ValueError('组件备份含未知文件，请保留现场')
+                files.append(owned_file(item, private=True))
+            directories.append(path)
+        elif path.name == 'versions.json' or re.fullmatch(r'\.node-manager-[a-z0-9_]{8}', path.name):
+            files.append(owned_file(path, private=True))
+        else:
+            raise ValueError('组件备份含未知文件，请保留现场')
+    for path in files:
+        remove(path)
+    for path in directories:
+        path.rmdir()
+    directory.rmdir()
+    sync(backups)
+
+
+def discard_incomplete_backup(record):
+    if not BACKUP_ID.fullmatch(record['id']):
+        raise ValueError('备份编号无效')
+    remove_backup(ROOT / 'component-backups' / ('.creating-' + record['id']))
     remove(ROOT / JOURNAL)
+
+
+def close_switch(record):
+    # The version backup lives only as long as its record: once that is gone
+    # nothing reads it, and a crash between the two leaves what removal still finds.
+    remove(ROOT / JOURNAL)
+    if not BACKUP_ID.fullmatch(record['id']):
+        raise ValueError('备份编号无效')
+    remove_backup(ROOT / 'component-backups' / record['id'])
 
 
 def write_version(expected, data):
@@ -485,7 +498,7 @@ def finish(record, binding, phase):
     record['phase'] = phase
     write_json(ROOT / JOURNAL, record)
     maintenance(binding, 'end', record['token'])
-    remove(ROOT / JOURNAL)
+    close_switch(record)
 
 
 def check_core_versions(incoming):
@@ -530,7 +543,7 @@ def restore_before(record, binding):
     refresh_instances()
     if binding is None:
         start_pm(record)
-        remove(ROOT / JOURNAL)
+        close_switch(record)
     else:
         start_runtimes(record, binding)
         finish(record, binding, 'restored')
@@ -542,7 +555,7 @@ def resume_unswitched(record, binding):
     if binding is None:
         ctl('disable', '--now', SERVICE)
         start_pm(record)
-        remove(ROOT / JOURNAL)
+        close_switch(record)
     else:
         maintenance(binding, 'begin', record['token'])
         start_runtimes(record, binding)
@@ -557,8 +570,6 @@ def change(binding, before, after, incoming):
     check_core_versions(incoming)
     check_unmodified()
     pm_units, pm_timer = pm_info(before)
-    if pm_units and 'pm.py' not in after:
-        raise ValueError('PM 服务仍依赖当前组件，无法回退至无 PM 运行时的版本')
     record = {'id': secrets.token_hex(16), 'token': secrets.token_hex(32), 'phase': 'backing_up',
               'pm_units': pm_units, 'pm_timer': pm_timer}
     write_json(ROOT / JOURNAL, record)
@@ -571,7 +582,7 @@ def change(binding, before, after, incoming):
         # A timed-out request can already have acquired the lease. Keep its
         # token for recover unless we can confirm that no lease remains.
         if not maintenance(binding, 'status', record['token'])['owned']:
-            remove(ROOT / JOURNAL)
+            close_switch(record)
         raise
     record['phase'] = 'paused'
     write_json(ROOT / JOURNAL, record)
@@ -595,10 +606,10 @@ def change(binding, before, after, incoming):
             else:
                 restore_before(record, binding)
         except Exception:
-            raise ValueError(f'切换未完成，再运行 sudo nodehelm 继续；备份编号 {record["id"]}') from None
-        raise ValueError(f'切换失败，已恢复原版本（{reason(error)}）') from None
+            raise ValueError('升级未完成，再运行 sudo nodehelm 继续') from None
+        raise ValueError(f'升级失败，已恢复原版本（{reason(error)}）') from None
     finish(record, binding, 'ready')
-    print(f'已完成，回退备份编号 {record["id"]}')
+    print('已升级')
 
 
 def boot_id():
@@ -948,8 +959,6 @@ def main(argv=None):
     fresh = commands.add_parser('install')
     fresh.add_argument('--server', required=True)
     commands.add_parser('upgrade')
-    rollback = commands.add_parser('rollback')
-    rollback.add_argument('--backup', required=True)
     recover = commands.add_parser('recover')
     recover.add_argument('--offline', action='store_true')
     uninstall_command = commands.add_parser('uninstall')
@@ -999,7 +1008,7 @@ def component_action(args):
                 ctl('disable', '--now', SERVICE)
             elif maintenance(binding, 'status', record['token'])['owned']:
                 maintenance(binding, 'end', record['token'])
-            remove(ROOT / JOURNAL)
+            close_switch(record)
             print('已结束组件维护' + ('；轮询已停用' if args.offline else ''))
         elif record['phase'] in ('switching', 'starting'):
             restore_before(record, None if args.offline else binding)
@@ -1011,21 +1020,12 @@ def component_action(args):
         raise ValueError('组件尚未绑定')
     ensure_no_journal()
     ensure_idle()
-    if args.action == 'upgrade':
-        before = installed_manifest()
-        check_current(before)
-        after, incoming = download(binding['server'])
-        if before == after:
-            print('已是最新')
-            return
-    else:
-        before = installed_manifest()
-        backup = backup_path(args.backup)
-        versions = read_json(backup / 'versions.json')
-        if before != manifest(versions['after']):
-            raise ValueError('该备份与当前安装版本不匹配')
-        after = manifest(versions['before'])
-        incoming = read_version(backup / 'before', after)
+    before = installed_manifest()
+    check_current(before)
+    after, incoming = download(binding['server'])
+    if before == after:
+        print('已是最新')
+        return
     change(binding, before, after, incoming)
 
 

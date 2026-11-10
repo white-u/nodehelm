@@ -187,42 +187,6 @@ fn a_closed_database_leaves_no_wal_behind() {
     assert!(!std::path::Path::new(&format!("{}-wal", scratch.0)).exists());
 }
 
-#[test]
-fn offline_restore_keeps_bindings_and_drops_sessions_without_changing_live_db() {
-    let live = Scratch::new();
-    let staging = Scratch::new();
-    let db = Db::open(&live.0).unwrap();
-    let id = node(&db, 1);
-    db.set("origin_cdn_only", "on").unwrap();
-    {
-        let conn = db.conn();
-        crate::management::ensure(&conn).unwrap();
-        conn.execute("INSERT INTO session VALUES('old-login', 99999999)", []).unwrap();
-        conn.execute("INSERT INTO managed_node(node,credential) VALUES(?1,'old-binding')", [id]).unwrap();
-        conn.execute(
-            "INSERT INTO managed_operation(id,node,request_hash,payload,status,created,expires)
-             VALUES('old-operation',?1,'old-hash','','queued',1,2)",
-            [id],
-        )
-        .unwrap();
-    }
-    db.backup_into(&staging.0).unwrap();
-    Db::prepare_offline_restore(&staging.0).unwrap();
-    let candidate = Db::open(&staging.0).unwrap();
-    assert_eq!(candidate.get("origin_cdn_only").as_deref(), Some("off"));
-    assert_eq!(db.get("origin_cdn_only").as_deref(), Some("on"));
-    for table in ["session", "managed_operation"] {
-        let sql = format!("SELECT count(*) FROM {table}");
-        assert_eq!(candidate.conn().query_row(&sql, [], |row| row.get::<_, i64>(0)).unwrap(), 0);
-        assert_eq!(db.conn().query_row(&sql, [], |row| row.get::<_, i64>(0)).unwrap(), 1);
-    }
-    // The binding survives, so the node reconnects without enrolling again.
-    let binding: String =
-        candidate.conn().query_row("SELECT credential FROM managed_node", [], |row| row.get(0)).unwrap();
-    assert_eq!(binding, "old-binding");
-    assert!(candidate.node(id).unwrap().is_some());
-}
-
 /// Backup and restore are the two operations that can lose every row in the
 /// database, so this exercises the whole path: take a copy, modify the live
 /// database, restore the copy, and confirm the change is gone.

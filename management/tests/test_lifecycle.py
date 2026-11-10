@@ -65,7 +65,7 @@ class ComponentLifecycleTests(unittest.TestCase):
                 install.change(self.binding, self.before_manifest, self.after_manifest, self.after)
         stop.assert_not_called()
 
-    def test_failed_start_restores_legacy_release_and_retains_backup(self):
+    def test_failed_start_restores_previous_release_and_drops_its_backup(self):
         phases = []
 
         def start(_record, _binding):
@@ -84,9 +84,20 @@ class ComponentLifecycleTests(unittest.TestCase):
                 install.change(self.binding, self.before_manifest, self.after_manifest, self.after)
         self.assertEqual(phases, ['starting', 'starting'])
         self.assertFalse((self.root / install.JOURNAL).exists())
-        backup = next((self.root / 'component-backups').iterdir())
-        self.assertEqual(install.read_version(backup / 'before', self.before_manifest), self.before)
+        self.assertEqual(list((self.root / 'component-backups').iterdir()), [])
         self.assertEqual(install.read_json(self.root / install.MANIFEST), self.before_manifest)
+
+    def test_successful_upgrade_keeps_no_backup(self):
+        with patch.object(install, 'check_agent_unit', return_value={'ActiveState': 'active'}), \
+                patch.object(install, 'pm_info', return_value=({}, False)), \
+                patch.object(install, 'maintenance', return_value={'owned': True}), \
+                patch.object(install, 'stop_runtimes'), patch.object(install, 'start_runtimes'), \
+                contextlib.redirect_stdout(io.StringIO()) as shown:
+            install.change(self.binding, self.before_manifest, self.after_manifest, self.after)
+        self.assertIn('已升级', shown.getvalue())
+        self.assertFalse((self.root / install.JOURNAL).exists())
+        self.assertEqual(list((self.root / 'component-backups').iterdir()), [])
+        self.assertEqual(install.read_json(self.root / install.MANIFEST), self.after_manifest)
 
     def test_failed_instance_refresh_restores_previous_release(self):
         refreshed = []
@@ -356,24 +367,6 @@ class HubLifecycleTests(unittest.TestCase):
         self.assertIn('notes.txt', shown.getvalue())
         self.assertFalse(any(path.exists() for path in backups))
 
-    def test_only_the_newest_automatic_backup_survives_a_switch(self):
-        hub_lifecycle.replace_file(self.key, data=b'k' * 32)
-        workspace = self.root / 'backups'
-        workspace.mkdir(mode=0o700)
-        take = lambda unit='node-manager-test.service', automatic=True: hub_lifecycle.snapshot(
-            workspace, self.binary, self.database, unit, automatic)
-        older, source, newest = take(), take(), take()
-        manual, foreign = take(automatic=False), take('node-manager-other.service')
-        tampered = take()
-        (tampered / 'hub.db').write_bytes(b'changed')
-        hub = object.__new__(hub_lifecycle.Hub)
-        hub.workspace, hub.unit = workspace, 'node-manager-test.service'
-        with contextlib.redirect_stdout(io.StringIO()) as shown:
-            hub.prune_automatic({newest, source})
-        self.assertFalse(older.exists())
-        self.assertTrue(all(path.exists() for path in (source, newest, manual, foreign, tampered)))
-        self.assertIn('1 份', shown.getvalue())
-
     def test_snapshot_rejects_missing_key_when_encrypted_data_exists(self):
         with self.assertRaisesRegex(ValueError, '配套密钥'):
             hub_lifecycle.snapshot(self.root, self.binary, self.database, 'node-manager-test.service')
@@ -421,10 +414,12 @@ class HubLifecycleTests(unittest.TestCase):
                 patch.object(hub, 'prepare_guard'), patch.object(hub, 'check_stopped'), \
                 patch.object(hub, 'stop'), patch.object(hub, 'start', side_effect=start):
             with self.assertRaisesRegex(ValueError, '更新失败，已回退'):
-                hub.transition(args)
+                hub.upgrade(args)
         self.assertEqual(observations, [(args.candidate.read_bytes(), ('on',), b'k' * 32),
                                         (b'backup binary', None, b'k' * 32)])
         self.assertFalse(hub.journal.exists())
+        # Rolled back, the pre-update copy has nothing left to restore.
+        self.assertEqual(list(self.root.glob('backup-*')), [])
 
     def test_interrupted_rollback_recovery_preserves_new_live_writes(self):
         args = types.SimpleNamespace(unit='node-manager-test.service', binary=self.binary,
@@ -464,6 +459,7 @@ class HubLifecycleTests(unittest.TestCase):
         start.assert_called_once()
         install.assert_not_called()
         self.assertFalse(hub.journal.exists())
+        self.assertFalse(backup.exists())
         with contextlib.closing(hub_lifecycle.read_only(self.database)) as db:
             self.assertEqual(db.execute("SELECT value FROM setting WHERE key='post-rollback'").fetchone(), ('keep',))
 

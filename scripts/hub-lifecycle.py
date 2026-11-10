@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local backup, restore, upgrade and removal for a systemd Node Manager hub."""
+"""Local upgrade, recovery and removal for a systemd Node Manager hub."""
 import argparse
 import contextlib
 import fcntl
@@ -194,7 +194,7 @@ def gate(database, enabled):
             db.execute('DELETE FROM setting WHERE key=?', (GATE,))
 
 
-def snapshot(workspace, binary, database, unit, automatic=False):
+def snapshot(workspace, binary, database, unit):
     directory = pathlib.Path(tempfile.mkdtemp(prefix='backup-', dir=workspace))
     copy_db(database, directory / 'hub.db')
     key = database.with_name(database.name + '.management.key')
@@ -203,8 +203,7 @@ def snapshot(workspace, binary, database, unit, automatic=False):
         replace_file(directory / 'hub.db.management.key', source=key)
     replace_file(directory / 'monitor-hub', source=binary, mode=0o700)
     names = {file.name: sha256(file) for file in directory.iterdir()}
-    # Marks the copy an update or restore takes for itself, the only kind ever pruned.
-    write_json(directory / 'manifest.json', {'unit': unit, 'files': names, **({'automatic': True} if automatic else {})})
+    write_json(directory / 'manifest.json', {'unit': unit, 'files': names})
     sync(workspace)
     return directory
 
@@ -351,10 +350,13 @@ class Hub:
             replace_file(self.binary, source=directory / 'monitor-hub', mode=record['binary_mode'],
                          owner=record['binary_owner'], temporary=switch_temporary(self.binary))
 
-    def rollback(self, record):
+    def pre_update_copy(self, record):
         if not re.fullmatch(r'backup-[a-z0-9_]+', record['backup']):
             raise ValueError('切换恢复记录中的备份路径无效')
-        old = self.workspace / record['backup']
+        return self.workspace / record['backup']
+
+    def rollback(self, record):
+        old = self.pre_update_copy(record)
         verify_backup(old)
         regular(self.binary)
         if sha256(self.binary) not in (record['before_binary'], record['after_binary']):
@@ -367,6 +369,16 @@ class Hub:
         record['phase'] = 'rolled_back'
         write_json(self.journal, record)
         self.resume_paused(True)
+        self.discard(record)
+
+    def discard(self, record):
+        # The pre-update copy lives only as long as its record: once that is
+        # gone nothing reads it, and a crash between the two leaves a directory
+        # removal still finds.
+        old = self.pre_update_copy(record)
+        if exists(old):
+            shutil.rmtree(old)
+            sync(self.workspace)
 
     def pause(self, active):
         write_json(self.journal, {'identity': self.identity(), 'phase': 'paused', 'active': active})
@@ -389,75 +401,57 @@ class Hub:
             self.start()
             gate(self.database, False)
             remove(self.journal)
+            self.discard(record)
         elif phase == 'paused':
             self.resume_paused(record['active'])
         elif phase == 'switching':
             self.rollback(record)
         elif phase == 'rolled_back':
             self.resume_paused(True)
+            self.discard(record)
         elif phase == 'uninstalling':
             self.finish_uninstall(record)
         else:
             raise ValueError('发现未知后台恢复阶段，请保留现场')
 
-    def backup(self):
-        active = self.info().get('ActiveState') == 'active'
-        self.pause(active)
-        try:
-            directory = snapshot(self.workspace, self.binary, self.database, self.unit)
-        finally:
-            self.resume_paused(active)
-        print(f'已备份至 {directory}')
-
-    def transition(self, args):
+    def upgrade(self, args):
         db_meta = regular(self.database)
         bin_meta = regular(self.binary)
         if bin_meta.st_uid != 0:
             raise ValueError('后台程序须归 root 所有')
-        if args.action == 'upgrade':
-            regular(args.candidate)
-            if not HEX.fullmatch(args.sha256) or sha256(args.candidate) != args.sha256:
-                raise ValueError('候选后台程序摘要校验失败')
-        else:
-            verify_backup(args.backup)
+        regular(args.candidate)
+        if not HEX.fullmatch(args.sha256) or sha256(args.candidate) != args.sha256:
+            raise ValueError('候选后台程序摘要校验失败')
         if self.info().get('ActiveState') != 'active':
             raise ValueError('后台未运行')
-        word = '更新' if args.action == 'upgrade' else '恢复'
         ensure_idle(self.database)
         self.pause(True)
         try:
             ensure_idle(self.database)
-            old = snapshot(self.workspace, self.binary, self.database, self.unit, automatic=True)
+            old = snapshot(self.workspace, self.binary, self.database, self.unit)
             record = {'identity': self.identity(), 'backup': old.name, 'phase': 'switching',
                       'db_owner': [db_meta.st_uid, db_meta.st_gid],
                       'binary_owner': [bin_meta.st_uid, bin_meta.st_gid],
                       'binary_mode': stat.S_IMODE(bin_meta.st_mode),
                       'before_binary': sha256(old / 'monitor-hub'),
-                      'after_binary': args.sha256 if args.action == 'upgrade' else sha256(old / 'monitor-hub')}
+                      'after_binary': args.sha256}
             with tempfile.TemporaryDirectory(prefix='candidate-', dir=self.workspace) as name:
                 stage = pathlib.Path(name)
-                source = old if args.action == 'upgrade' else args.backup
-                copy_db(source / 'hub.db', stage / 'hub.db')
-                if exists(source / 'hub.db.management.key'):
-                    replace_file(stage / 'hub.db.management.key', source=source / 'hub.db.management.key')
-                if args.action == 'upgrade':
-                    replace_file(stage / 'monitor-hub', source=args.candidate, mode=0o700)
-                    if sha256(stage / 'monitor-hub') != args.sha256:
-                        raise ValueError('候选后台程序在准备期间发生变化')
-                    protocol = subprocess.run((str(stage / 'monitor-hub'), '--lifecycle-protocol'),
-                                              capture_output=True, stdin=subprocess.DEVNULL, timeout=15)
-                    if protocol.returncode or protocol.stdout.strip() != b'node-manager-hub-lifecycle-v1':
-                        raise ValueError('候选后台程序不支持维护切换协议')
-                else:
-                    outcome = subprocess.run((str(self.binary), '--db', str(stage / 'hub.db'), '--prepare-restore'),
-                                             capture_output=True, stdin=subprocess.DEVNULL, timeout=300)
-                    if outcome.returncode:
-                        raise ValueError('候选数据库未通过后台恢复校验')
+                copy_db(old / 'hub.db', stage / 'hub.db')
+                if exists(old / 'hub.db.management.key'):
+                    replace_file(stage / 'hub.db.management.key', source=old / 'hub.db.management.key')
+                replace_file(stage / 'monitor-hub', source=args.candidate, mode=0o700)
+                if sha256(stage / 'monitor-hub') != args.sha256:
+                    raise ValueError('候选后台程序在准备期间发生变化')
+                protocol = subprocess.run((str(stage / 'monitor-hub'), '--lifecycle-protocol'),
+                                          capture_output=True, stdin=subprocess.DEVNULL, timeout=15)
+                if protocol.returncode or protocol.stdout.strip() != b'node-manager-hub-lifecycle-v1':
+                    raise ValueError('候选后台程序不支持维护切换协议')
                 gate(stage / 'hub.db', True)
                 sync(stage / 'hub.db')
                 write_json(self.journal, record)
                 self.check_stopped()
-                self.install(stage, args.action == 'upgrade', record)
+                self.install(stage, True, record)
                 remove(self.blocked)
                 self.start()
         except Exception as original:
@@ -465,35 +459,16 @@ class Hub:
                 try:
                     self.rollback(record)
                 except Exception:
-                    raise ValueError(f'{word}未完成，再运行 sudo nodehelm-hub 继续；{word}前备份：{old}') from None
-                raise ValueError(f'{word}失败，已回退（{diagnostic(original)}）') from None
+                    raise ValueError(f'更新未完成，再运行 sudo nodehelm-hub 继续；更新前备份：{old}') from None
+                raise ValueError(f'更新失败，已回退（{diagnostic(original)}）') from None
             self.resume_paused(True)
             raise
         record['phase'] = 'ready'
         write_json(self.journal, record)
         gate(self.database, False)
         remove(self.journal)
-        print(f'已{word}，{word}前备份：{old}')
-        # A restore source is the user's choice to keep, even an automatic one.
-        self.prune_automatic(keep={old, getattr(args, 'backup', None)})
-
-    def prune_automatic(self, keep):
-        # The switch has succeeded; a failure here only leaves an extra copy behind.
-        removed = 0
-        for entry in sorted(self.workspace.iterdir()):
-            try:
-                if entry in keep or not entry.name.startswith('backup-'):
-                    continue
-                info = verify_backup(entry)
-                if info['unit'] != self.unit or info.get('automatic') is not True:
-                    continue
-                shutil.rmtree(entry)
-                removed += 1
-            except (ValueError, OSError, KeyError, TypeError):
-                continue
-        if removed:
-            sync(self.workspace)
-            print(f'已清理 {removed} 份旧自动备份')
+        self.discard(record)
+        print('已更新')
 
     def data_files(self):
         return [self.database, self.key, *(self.database.with_name(self.database.name + suffix)
@@ -665,17 +640,12 @@ def main(argv=None):
     parser.add_argument('--health', help='默认按服务实际的 --listen 地址')
     parser.add_argument('--backups', type=pathlib.Path, default=pathlib.Path('/var/backups/node-manager-hub'))
     actions = parser.add_subparsers(dest='action', required=True)
-    actions.add_parser('backup')
     upgrade = actions.add_parser('upgrade')
     upgrade.add_argument('--candidate', type=pathlib.Path, required=True)
     upgrade.add_argument('--sha256', required=True)
-    restore = actions.add_parser('restore')
-    restore.add_argument('--backup', type=pathlib.Path, required=True)
     actions.add_parser('recover')
     actions.add_parser('uninstall', help='删除服务、程序、数据库、密钥、主题、维护记录和本工具的备份')
     args = parser.parse_args(argv)
-    if getattr(args, 'backup', None) is not None and (not args.backup.is_absolute() or args.backup.resolve() != args.backup):
-        parser.error('备份必须是绝对路径且不能包含符号链接')
     if os.geteuid() != 0 or not pathlib.Path('/run/systemd/system').is_dir():
         raise ValueError('请在 Linux systemd 后台主机上使用 root 执行')
     os.umask(0o077)
@@ -685,8 +655,6 @@ def main(argv=None):
     if hub.workspace == hub.database.parent.resolve() or hub.database.parent.resolve() in hub.workspace.parents:
         raise ValueError('后台备份工作目录须位于活动数据目录外')
     trusted_parents(hub.workspace)
-    if getattr(args, 'backup', None) is not None:
-        trusted_parents(args.backup)
     hub.workspace.mkdir(mode=0o700, exist_ok=True)
     private_dir(hub.workspace)
     STATE.mkdir(mode=0o700, exist_ok=True)
@@ -706,12 +674,10 @@ def main(argv=None):
             print('已完成')
         elif args.action == 'recover':
             print('没有中断的操作')
-        elif args.action == 'backup':
-            hub.backup()
         elif args.action == 'uninstall':
             hub.uninstall()
         else:
-            hub.transition(args)
+            hub.upgrade(args)
 
 
 if __name__ == '__main__':

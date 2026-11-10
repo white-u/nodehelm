@@ -214,17 +214,11 @@ impl Db {
     /// deletes it in either case.
     pub fn check_backup(&self, src: &str) -> Result<()> {
         let page_size = self.conn().query_row("PRAGMA page_size", [], |r| r.get(0))?;
-        Self::check_backup_candidate(src, Some(page_size))?;
+        Self::check_backup_candidate(src, page_size)?;
         Ok(())
     }
 
-    /// Validates and sanitizes a private, offline staging copy before installation.
-    pub fn prepare_offline_restore(src: &str) -> Result<()> {
-        let candidate = Self::check_backup_candidate(src, None)?;
-        put_setting(&candidate, "origin_cdn_only", "off")
-    }
-
-    fn check_backup_candidate(src: &str, page_size: Option<i64>) -> Result<Connection> {
+    fn check_backup_candidate(src: &str, ours: i64) -> Result<Connection> {
         const NOT_A_BACKUP: &str = "这不是 hub 导出的备份文件";
         // Read-write rather than read-only: a plain copy of a running hub's
         // database is in WAL mode, and SQLite cannot open such a file read-only
@@ -267,11 +261,9 @@ impl Db {
         }
         // The online backup API refuses a page size change while the destination
         // is in WAL mode; an explicit message is clearer than SQLITE_READONLY.
-        if let Some(ours) = page_size {
-            let theirs: i64 = candidate.query_row("PRAGMA page_size", [], |r| r.get(0))?;
-            if theirs != ours {
-                refuse!("备份的页大小是 {theirs} 字节，这台 hub 是 {ours} 字节，无法恢复");
-            }
+        let theirs: i64 = candidate.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+        if theirs != ours {
+            refuse!("备份的页大小是 {theirs} 字节，这台 hub 是 {ours} 字节，无法恢复");
         }
         // Brought up to this build's schema here, on the upload. Run after the
         // copy instead, a failed migration would leave the hub on a database it

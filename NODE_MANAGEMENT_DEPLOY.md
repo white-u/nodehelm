@@ -155,7 +155,7 @@ VPS 已销毁或重装时，节点持续离线超过 10 分钟后，可在后台
 
 旧后台永久失联时可直接本地 unlink，存在未恢复事务或未完成节点卸载时会拒绝。先核实并恢复所属操作。解绑保留 Snell/SB/FW 实例、密钥及原监控，之后可在新后台生成命令重新接入同一 VPS。 已完成模块卸载的本机记录，须先收到并保存后台对同一任务和尝试编号的确认，才允许解绑；未确认时恢复连接后再试。如果后台已明确撤销原绑定，组件只通过只读维护状态核实专用撤权响应后允许清理本地终态记录；网络或普通认证错误不能代替该核实，也不会将撤权记为卸载确认。正常解绑只清理旧绑定的已确认生命周期传输记录，后台及模块审计保留，重新接入不会携带旧节点回执。
 
-## 管理组件升级、回退与卸载
+## 管理组件升级与卸载
 
 先升级后台，再升级各 VPS 的管理组件。两侧用一个协议号判断能否协作：后台升级后，协议不同的组件仍上报在线，但不交换快照和任务，页面提示升级，节点上的业务继续运行。协议号相同则组件版本差异不影响使用，页面只提示有新版本。
 
@@ -169,14 +169,13 @@ sudo python3 /opt/node-manager/install.py upgrade
 
 新版本修改了实例配置或服务模板时，升级会按本机已确认状态重写受影响的文件，只重启内容变化且原本运行中的实例；模板没变则业务进程不受影响。SB 配置先过核心校验，任一实例失败则整体恢复原版本和原文件。升级前若发现手工改过实例文件，会直接拒绝并提示核实，不覆盖现场。
 
-切换前后的固定文件集保存在 VPS 的 `/var/lib/node-manager/component-backups/`。升级暂停轮询及本项目的 PM 定时器，核对后台收到新进程的成功轮询后才释放租约。Snell、SB 和 FW 实例服务继续运行，原 PM 保持由原工具维护。命令失败会尝试恢复原版本，并核实旧组件轮询。显式回退使用上一步输出的备份编号：
+升级前的文件集临时保存在 VPS 的 `/var/lib/node-manager/component-backups/`，升级完成或回退后即删除。升级暂停轮询及本项目的 PM 定时器，核对后台收到新进程的成功轮询后才释放租约。Snell、SB 和 FW 实例服务继续运行，原 PM 保持由原工具维护。命令失败会恢复原版本，并核实旧组件轮询。中断时再运行 `sudo nodehelm` 完成，对应底层命令：
 
 ```sh
-sudo python3 /opt/node-manager/install.py rollback --backup BACKUP_ID
 sudo python3 /opt/node-manager/install.py recover
 ```
 
-回退要求当前文件集与该备份的升级结果一致。仍使用 PM 独立运行时的 VPS 不能回退到没有该运行时的旧组件。回退到早期版本后，保留之前校验的独立安装脚本用于后续维护。若中断恰好发生在组件文件切换期间，可用该独立脚本执行 `recover`；旧后台不可达或身份已撤销时，用 `recover --offline` 恢复文件并保持轮询停用。确认后台身份和本地状态后再重新启用或解绑重绑。两台机器的操作不需要开放 SSH 给后台。
+旧后台不可达或身份已撤销时，用 `recover --offline` 恢复文件并保持轮询停用。确认后台身份和本地状态后再重新启用或解绑重绑。两台机器的操作不需要开放 SSH 给后台。
 
 以下本地运维入口与页面节点统一卸载分别使用。希望保留业务、仅移除轮询服务时，先按上节撤销绑定并执行本地 `unlink`。默认卸载只移除轮询服务，保留业务服务、核心、私有状态、PM 定时器和它依赖的组件文件：
 
@@ -184,27 +183,23 @@ sudo python3 /opt/node-manager/install.py recover
 sudo python3 /opt/node-manager/install.py uninstall
 ```
 
-只有确认不再需要业务和历史时才使用 `uninstall --purge`。先在后台删除全部 Snell、SB、FW 实例和受管 PM 规则，再在 VPS 执行 `sudo python3 /opt/node-manager/pm.py disable-empty` 移除空的 PM 运行时，最后解绑。请将私有状态和版本备份保存到清理范围之外。彻底清理会核对本项目的实例单元、固定核心摘要、文件清单和状态文件，遇到未知内容会拒绝；它不清理原 PM、监控和外部服务。
+只有确认不再需要业务和历史时才使用 `uninstall --purge`。先在后台删除全部 Snell、SB、FW 实例和受管 PM 规则，再在 VPS 执行 `sudo python3 /opt/node-manager/pm.py disable-empty` 移除空的 PM 运行时，最后解绑。请将需要保留的私有状态保存到清理范围之外。彻底清理会核对本项目的实例单元、固定核心摘要、文件清单和状态文件，遇到未知内容会拒绝；它不清理原 PM、监控和外部服务。
 
 执行手工彻底清理前，将已校验的安装脚本复制到组件目录之外。若此命令中断，用该副本再次执行 `uninstall --purge`，按本地记录继续清理。存在未完成节点统一卸载时，使用其后台继续入口或独立收尾执行器恢复。
 
-## 后台备份、恢复、升级与卸载
+## 后台升级与卸载
 
 本地工具使用 Python 3.10+、SQLite 和 Linux systemd。保留发行包目录结构，`scripts/hub-install.py`、`scripts/hub-lifecycle.py` 与 `scripts/hub_health.py` 必须在同一目录，不能只复制一个脚本；用 `nodehelm.sh` 安装或更新后，`hub-lifecycle.py` 与 `hub_health.py` 也保存在 `/opt/node-manager-hub/tools`，常用操作可直接用 `sudo nodehelm-hub`。以下命令针对独立安装器的默认路径和端口；定制部署需在子命令前指定 `--unit`、`--binary`、`--db`、`--health` 及必要的 `--backups`。后台服务的 `ExecStart` 须显式配置实际数据库和回环监听路径。工具核实实际加载的 systemd 单元，拒绝覆盖配置或原 `monitor-hub` 服务。
 
 ```sh
 # 更新到本发布包的程序
 sudo sh update-hub.sh
-sudo python3 scripts/hub-lifecycle.py backup
 sudo python3 scripts/hub-lifecycle.py upgrade --candidate /absolute/path/monitor-hub --sha256 RELEASE_SHA256
-sudo python3 scripts/hub-lifecycle.py restore --backup /var/backups/node-manager-hub/backup-EXAMPLE
 sudo python3 scripts/hub-lifecycle.py recover
 ```
 
-- `backup` 暂停后台并用 SQLite 生成一致性数据库副本，同时保存后台二进制、配套 `.management.key` 和校验清单。默认备份目录为 `/var/backups/node-manager-hub`，仅 root 可读。单独保存 systemd 配置、反代及磁盘主题。后台网页的数据库下载不含密钥，可继续用于网页恢复。
-- `upgrade` 使用校验过的本地发行二进制。升级前拒绝未完成的管理任务、节点统一卸载和正在进行的组件维护，保存停服快照，并验证新进程实际监听回环地址且 `/api/me` 正常。失败会尝试恢复原程序、数据库与密钥。切换期间请暂停后台配置变更。持久启动保护记录位于 `/var/lib/node-manager-hub-lifecycle`，切换中断时使用相同路径参数执行 `recover`。
-- `restore` 使用备份中的数据库和密钥，保留当前后台程序。候选数据库先通过后台自身的完整性和迁移检查。恢复保留节点的服务管理绑定，节点在下一次轮询自动重连并重新上报配置；清除后台登录会话、普通管理任务、维护租约、PM 每小时流量历史、未使用的接入码和备份时的配置快照，保留卸载审计并撤销旧收尾授权。备份时正处于卸载中的节点同时失去绑定，备份之后重新接入过的节点凭据已更换，两者都在 VPS 运行 `sudo nodehelm rebind` 重新接入。未完成节点卸载时拒绝恢复后台备份。恢复后重新登录，按节点重新上报的快照核实配置。历史订阅链接不再提供服务，客户端已经保存的业务凭据仍可使用。
-- `uninstall` 仅适用于此项目独立安装器登记的后台，移除后台服务与程序、数据库、密钥、磁盘主题、安装标识、运行状态、本机维护命令，以及备份目录中能校验且属于本后台的备份；数据目录或备份目录中不属于本项目、无法校验的文件保留并提示路径。需要留存时先在网页下载数据库备份，它不含服务管理密钥，恢复后节点仍可凭原绑定自动重连。若卸载中断，用 `recover` 完成记录中的卸载，健康检查地址按记录使用。
+- `upgrade` 使用校验过的本地发行二进制。升级前拒绝未完成的管理任务、节点统一卸载和正在进行的组件维护，在 `/var/backups/node-manager-hub` 保存停服快照（仅 root 可读），并验证新进程实际监听回环地址且 `/api/me` 正常。失败会恢复原程序、数据库与密钥；完成或回退后删除快照。切换期间请暂停后台配置变更。持久启动保护记录位于 `/var/lib/node-manager-hub-lifecycle`，切换中断时使用相同路径参数执行 `recover`。
+- `uninstall` 仅适用于此项目独立安装器登记的后台，移除后台服务与程序、数据库、密钥、磁盘主题、安装标识、运行状态、本机维护命令，以及中断后遗留的更新前快照；数据目录或快照目录中不属于本项目、无法校验的文件保留并提示路径。需要留存时先在网页下载数据库备份，它不含服务管理密钥，恢复后节点仍可凭原绑定自动重连。若卸载中断，用 `recover` 完成记录中的卸载，健康检查地址按记录使用。
 
 ## 版本说明
 
