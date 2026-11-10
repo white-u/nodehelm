@@ -561,7 +561,24 @@ pub async fn poll(State(app): State<Shared>, headers: HeaderMap, Json(input): Js
                 // A failed recovery is reported again on every poll until it is resolved.
                 if matches!(result.status.as_str(), "rolled_back" | "recovery_failed") && reported != message
                 {
-                    let module = if module.is_empty() { "snell" } else { module.as_str() };
+                    // The admin page's names for the module and action.
+                    let module = match module.as_str() {
+                        "sb" => "singbox",
+                        "fw" => "realm 转发",
+                        "pm" => "端口流量统计",
+                        _ => "Snell",
+                    };
+                    let action = match action.as_str() {
+                        "install" => "安装",
+                        "apply" => "保存应用",
+                        "delete" => "删除",
+                        "reset" => "重置用量",
+                        "check" => "目标 TCP 检查",
+                        "core_upgrade" => "升级核心",
+                        "core_rollback" => "回退核心",
+                        "core_uninstall" => "卸载模块",
+                        other => other,
+                    };
                     notes.push(format!("{module} {action}：{message}"));
                 }
                 tx.execute("UPDATE managed_operation SET status=?1,message=?2,payload=CASE WHEN ?1='delivered' THEN payload ELSE '' END WHERE id=?3",params![terminal,message,result.id])?;
