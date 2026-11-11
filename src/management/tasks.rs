@@ -509,6 +509,7 @@ pub async fn poll(State(app): State<Shared>, headers: HeaderMap, Json(input): Js
                     ("succeeded", "core_upgrade") => "已升级核心，公网连通性需另行验证",
                     ("succeeded", "core_rollback") => "已回退核心，公网连通性需另行验证",
                     ("succeeded", "core_uninstall") => "已卸载模块",
+                    ("succeeded", "install") if module == "pm" => "已启用",
                     ("succeeded", "install") => "已安装",
                     ("succeeded", "delete") => "已删除",
                     ("succeeded", "reset") => "已重置用量",
