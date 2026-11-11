@@ -65,7 +65,8 @@ export function ManagementDetail({ node, module, selectedName, record, defaultAd
   async function submit(action: string, payload: object, revision = view?.revision, intent?: ApplyIntent, target: Module = module, next?: FollowUp) {
     if (!writable || !revision) throw new Error("当前配置不可写，请刷新并核实节点状态")
     const id = crypto.randomUUID().replaceAll("-", "")
-    await api(`/management/${node}/operations`, { method: "POST", body: JSON.stringify({ id, action, payload, revision, intent, ...(target !== "snell" ? { module: target } : {}) }) })
+    const then = next && { module: next.module, action: next.action, payload: next.payload, intent: next.intent }
+    await api(`/management/${node}/operations`, { method: "POST", body: JSON.stringify({ id, action, payload, revision, intent, then, ...(target !== "snell" ? { module: target } : {}) }) })
     onSubmitted(id, next)
     if (mounted.current) { setSubmittedOperation(id); setMessage("操作已提交，正在确认结果。") }
   }
@@ -166,7 +167,7 @@ export function ManagementDetail({ node, module, selectedName, record, defaultAd
         const payload = instancePayload(module, form)
         const pm = !editing && withPm && !pmBlocked(status?.snapshot, form.port) ? pmPayload({ ...withPm, port: payload.port, name: payload.name }) : null
         if (!await confirm(`应用到 ${selectedName} 的 ${form.port}？名称：${payload.name}。${editing ? "该实例将重启。" : "将创建并启动此实例。"}${pm ? `实例运行后应用流量统计规则（${pmSummary(pm)}）。` : ""}`)) return
-        const next: FollowUp | undefined = pm ? { module: "pm", action: "apply", payload: pm, intent: "create", running: { module, port: payload.port }, steps: ["创建实例", "应用流量统计规则"], done: "实例和流量统计规则已完成。", draft: pmDraft(pm) } : undefined
+        const next: FollowUp | undefined = pm ? { module: "pm", action: "apply", payload: pm, intent: "create", steps: ["创建实例", "应用流量统计规则"], done: "实例和流量统计规则已完成。", draft: pmDraft(pm) } : undefined
         await submit("apply", payload, baseRevision, editing ? "update" : "create", module, next)
         if (mounted.current) { setForm(null); onDirtyChange(false); requestAnimationFrame(restoreFormFocus) }
       })

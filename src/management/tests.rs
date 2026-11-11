@@ -60,6 +60,7 @@ fn operation_rejects_unknown_actions_and_parameters() {
         intent: None,
         revision: "b".repeat(64),
         payload: json!({}),
+        then: None,
     };
     assert!(validate_request(&op).is_ok());
     op.payload = json!({"url":"https://evil.example"});
@@ -99,6 +100,7 @@ fn hub_agrees_with_the_agent_on_every_operation() {
             intent: None,
             revision: "b".repeat(64),
             payload: case["payload"].clone(),
+            then: None,
         };
         assert_eq!(validate_request(&op).is_ok(), case["valid"].as_bool().unwrap(), "{case}");
     }

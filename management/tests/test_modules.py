@@ -190,7 +190,7 @@ class ModuleListTests(unittest.TestCase):
     def test_every_module_list_matches_the_registry(self):
         import install, lifecycle, menu, modules
         self.assertEqual(set(lifecycle.MODULES), set(modules.MODULES))
-        self.assertEqual(set(menu.NAMES), set(modules.MODULES))
+        self.assertEqual(set(menu.MODULES), set(modules.MODULES))
         # Snell keeps its state in the root, every other module in its own directory.
         self.assertEqual(set(install.MODULES), set(modules.MODULES) - {'snell'})
 

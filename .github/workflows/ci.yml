@@ -20,8 +20,8 @@ jobs:
   check:
     runs-on: ubuntu-latest
     # A hanging test would otherwise consume the six-hour default; a cold build
-    # plus the suite takes a few minutes.
-    timeout-minutes: 20
+    # plus the suite, browser flows included, takes several minutes.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -69,6 +69,16 @@ jobs:
       # between the two, and what the public view withholds.
       - run: cargo build
       - run: python3 management/tests/integration_http.py target/debug/monitor-hub
+      # The panel's flows against this hub, each on a throwaway database. The
+      # tests load Playwright through PLAYWRIGHT_PACKAGE, outside the panel's
+      # own dependencies.
+      - run: |
+          mkdir "$RUNNER_TEMP/playwright" && cd "$RUNNER_TEMP/playwright"
+          npm init -y >/dev/null && npm i --no-audit --no-fund playwright@1.65.0
+          npx playwright install --with-deps chromium
+      - run: for t in management management-lifecycle admin; do node "web-admin/tests/$t.browser.mjs" target/debug/monitor-hub; done
+        env:
+          PLAYWRIGHT_PACKAGE: ${{ runner.temp }}/playwright/package.json
       - run: cargo build --release --locked
         working-directory: agent
       - run: scripts/e2e.sh target/debug/monitor-hub agent/target/release/monitor-agent

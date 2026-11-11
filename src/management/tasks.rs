@@ -40,8 +40,8 @@ pub async fn status(_: Admin, State(app): State<Shared>, Path(node): Path<i64>) 
             }
         }
         let c = app.db.conn();
-        let mut stmt=c.prepare("SELECT id,status,message,created,module,action FROM managed_operation WHERE node=?1 ORDER BY created DESC,rowid DESC LIMIT 30")?;
-        let rows=stmt.query_map([node],|r|Ok(json!({"id":r.get::<_,String>(0)?,"status":r.get::<_,String>(1)?,"message":r.get::<_,String>(2)?,"created":r.get::<_,i64>(3)?,"module":r.get::<_,String>(4)?,"action":r.get::<_,String>(5)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+        let mut stmt=c.prepare("SELECT id,status,message,created,module,action,after FROM managed_operation WHERE node=?1 ORDER BY created DESC,rowid DESC LIMIT 30")?;
+        let rows=stmt.query_map([node],|r|Ok(json!({"id":r.get::<_,String>(0)?,"status":r.get::<_,String>(1)?,"message":r.get::<_,String>(2)?,"created":r.get::<_,i64>(3)?,"module":r.get::<_,String>(4)?,"action":r.get::<_,String>(5)?,"after":r.get::<_,String>(6)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
         let abandonable =
             seen <= now() - ABANDON_AFTER && (!credential.is_empty() || lifecycle::active(&c, node)?);
         Ok(
@@ -51,7 +51,7 @@ pub async fn status(_: Admin, State(app): State<Shared>, Path(node): Path<i64>) 
         )
     })())
 }
-#[derive(Clone, Copy, Deserialize, Serialize)]
+#[derive(Clone, Copy, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum ApplyIntent {
     Create,
@@ -68,11 +68,88 @@ pub struct Operation {
     pub(super) intent: Option<ApplyIntent>,
     pub(super) revision: String,
     pub(super) payload: Value,
+    /// A step the hub queues itself once this one succeeds, so a change spanning
+    /// two modules completes without the page staying open. Never sent to the node.
+    #[serde(default, skip_serializing)]
+    pub(super) then: Option<FollowUp>,
+}
+/// The second step of a two-module change. Its revision is the one the node
+/// reports with the first step's receipt.
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct FollowUp {
+    pub(super) module: String,
+    pub(super) action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) intent: Option<ApplyIntent>,
+    pub(super) payload: Value,
 }
 fn core_lifecycle(action: &str) -> bool {
     matches!(action, "core_upgrade" | "core_rollback" | "core_uninstall")
 }
 
+/// The only two-step changes: a new instance with its port's traffic rule, and
+/// removing that rule before the instance it follows.
+fn validate_follow_up(op: &Operation, then: &FollowUp) -> Result<()> {
+    let business = |module: &str| matches!(module, "snell" | "sb" | "fw");
+    let same_port = op.payload["port"].is_u64() && then.payload["port"] == op.payload["port"];
+    let create = business(&op.module)
+        && op.action == "apply"
+        && op.intent == Some(ApplyIntent::Create)
+        && then.module == "pm"
+        && then.action == "apply"
+        && then.intent == Some(ApplyIntent::Create);
+    let delete = op.module == "pm"
+        && op.action == "delete"
+        && business(&then.module)
+        && then.action == "delete"
+        && then.intent.is_none();
+    if !same_port || !(create || delete) {
+        refuse!("不支持的后续操作");
+    }
+    validate_request(&Operation {
+        module: then.module.clone(),
+        id: op.id.clone(),
+        action: then.action.clone(),
+        intent: then.intent,
+        revision: op.revision.clone(),
+        payload: then.payload.clone(),
+        then: None,
+    })
+}
+fn request_hash(key: &[u8], value: &Value) -> Result<String> {
+    Ok(hex::encode(
+        ring::hmac::sign(&ring::hmac::Key::new(ring::hmac::HMAC_SHA256, key), &serde_json::to_vec(value)?)
+            .as_ref(),
+    ))
+}
+/// Queues the follow-up of `first`, which just succeeded, at the revision `state`
+/// reports for its module. Returns why it could not be queued.
+fn queue_follow_up(
+    tx: &rusqlite::Transaction,
+    bytes: &[u8; 32],
+    node: i64,
+    first: &str,
+    then: FollowUp,
+    state: &Value,
+) -> Result<Option<&'static str>> {
+    let Some(revision) = module_state(state, &then.module)["revision"].as_str() else {
+        return Ok(Some("模块状态不可用"));
+    };
+    let op = Operation {
+        module: then.module,
+        id: hex::encode(rand::random::<[u8; 16]>()),
+        action: then.action,
+        intent: then.intent,
+        revision: revision.to_owned(),
+        payload: then.payload,
+        then: None,
+    };
+    let value = serde_json::to_value(&op)?;
+    tx.execute("INSERT INTO managed_operation(id,node,request_hash,payload,status,created,expires,module,action,after) VALUES(?1,?2,?3,?4,'queued',?5,?6,?7,?8,?9)",
+        params![op.id, node, request_hash(bytes, &value)?, seal(bytes, node, &value)?, now(), now() + 300, op.module, op.action, first])?;
+    Ok(None)
+}
 pub(super) fn validate_request(op: &Operation) -> Result<()> {
     if !valid_hex(&op.id, 32) || !valid_hex(&op.revision, 64) {
         refuse!("操作编号或配置版本无效");
@@ -121,16 +198,22 @@ pub async fn submit(
     response((|| {
         enabled(&app.db)?;
         validate_request(&op)?;
+        if let Some(then) = &op.then {
+            validate_follow_up(&op, then)?;
+        }
         let bytes = key(&app.db)?;
         let value = serde_json::to_value(&op)?;
-        let hash = hex::encode(
-            ring::hmac::sign(
-                &ring::hmac::Key::new(ring::hmac::HMAC_SHA256, &bytes),
-                &serde_json::to_vec(&value)?,
-            )
-            .as_ref(),
-        );
+        // A repeated submission must repeat its follow-up as well.
+        let mut hashed = value.clone();
+        if let Some(then) = &op.then {
+            hashed["then"] = serde_json::to_value(then)?;
+        }
+        let hash = request_hash(&bytes, &hashed)?;
         let encrypted = seal(&bytes, node, &value)?;
+        let follow = match &op.then {
+            Some(then) => seal(&bytes, node, &serde_json::to_value(then)?)?,
+            None => String::new(),
+        };
         let mut c = app.db.conn();
         let tx = c.transaction()?;
         let hub_maintenance: bool = tx.query_row(
@@ -181,7 +264,7 @@ pub async fn submit(
         if state["blocked"] == true {
             refuse!("VPS 有未恢复操作，请先处理");
         }
-        let selected = if op.module == "snell" { &state } else { &state["modules"][&op.module] };
+        let selected = module_state(&state, &op.module);
         if selected.is_null() {
             refuse!("此管理组件尚未支持所选模块，请升级组件后再操作");
         }
@@ -238,7 +321,7 @@ pub async fn submit(
         if active > 0 {
             refuse!("该 VPS 有操作正在执行或待核实");
         }
-        tx.execute("INSERT INTO managed_operation(id,node,request_hash,payload,status,created,expires,module,action) VALUES(?1,?2,?3,?4,'queued',?5,?6,?7,?8)",params![op.id,node,hash,encrypted,now(),now()+300,op.module,op.action])?;
+        tx.execute("INSERT INTO managed_operation(id,node,request_hash,payload,status,created,expires,module,action,follow) VALUES(?1,?2,?3,?4,'queued',?5,?6,?7,?8,?9)",params![op.id,node,hash,encrypted,now(),now()+300,op.module,op.action,follow])?;
         tx.commit()?;
         Ok(json!({"id":op.id}))
     })())
@@ -494,14 +577,14 @@ pub async fn poll(State(app): State<Shared>, headers: HeaderMap, Json(input): Js
             {
                 refuse!("操作结果无效");
             }
-            let delivered: Option<(String, String, String, String)> = tx
+            let delivered: Option<(String, String, String, String, String)> = tx
                 .query_row(
-                    "SELECT action,payload,message,module FROM managed_operation WHERE id=?1 AND node=?2 AND status='delivered'",
+                    "SELECT action,payload,message,module,follow FROM managed_operation WHERE id=?1 AND node=?2 AND status='delivered'",
                     params![result.id, node],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
                 )
                 .optional()?;
-            if let Some((action, payload, reported, module)) = delivered {
+            if let Some((action, payload, reported, module, follow)) = delivered {
                 // Keep uncertain operations delivered, preventing subsequent writes or unbinding.
                 let terminal = if result.status == "recovery_failed" { "delivered" } else { &result.status };
                 let message = match (result.status.as_str(), action.as_str()) {
@@ -562,6 +645,12 @@ pub async fn poll(State(app): State<Shared>, headers: HeaderMap, Json(input): Js
                         message.push_str(&format!("（目标版本 {version}）"));
                     }
                 }
+                if result.status == "succeeded" && !follow.is_empty() {
+                    let then = serde_json::from_value(open(&bytes, node, &follow)?)?;
+                    if let Some(reason) = queue_follow_up(&tx, &bytes, node, &result.id, then, &plain)? {
+                        message.push_str(&format!("；{reason}，未执行后续步骤"));
+                    }
+                }
                 // A failed recovery is reported again on every poll until it is resolved.
                 if matches!(result.status.as_str(), "rolled_back" | "recovery_failed") && reported != message
                 {
@@ -585,7 +674,7 @@ pub async fn poll(State(app): State<Shared>, headers: HeaderMap, Json(input): Js
                     };
                     notes.push(format!("{module} {action}：{message}"));
                 }
-                tx.execute("UPDATE managed_operation SET status=?1,message=?2,payload=CASE WHEN ?1='delivered' THEN payload ELSE '' END WHERE id=?3",params![terminal,message,result.id])?;
+                tx.execute("UPDATE managed_operation SET status=?1,message=?2,payload=CASE WHEN ?1='delivered' THEN payload ELSE '' END,follow=CASE WHEN ?1='delivered' THEN follow ELSE '' END WHERE id=?3",params![terminal,message,result.id])?;
             }
             let _ = (&result.message, &result.revision); // untrusted details are not logged or displayed
         }

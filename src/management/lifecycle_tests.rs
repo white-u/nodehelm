@@ -268,6 +268,7 @@ async fn maintenance_lease_is_owned_expiring_and_blocks_new_work() {
         intent: None,
         revision: snapshot().revision,
         payload: json!({}),
+        then: None,
     };
     assert_ne!(submit(Admin, f.state(), Path(f.node), Json(op)).await.status(), StatusCode::OK);
     body(maintenance(f.state(), f.headers(&cred), request("end", &token)).await).await;
@@ -304,6 +305,7 @@ async fn dead_node_with_unconfirmed_work_can_be_abandoned() {
         intent: None,
         revision: "b".repeat(64),
         payload: json!({}),
+        then: None,
     };
     body(submit(Admin, f.state(), Path(f.node), Json(op)).await).await;
     body(poll_once().await).await;
@@ -506,6 +508,7 @@ async fn binding_delivery_receipt_export_and_revocation() {
         intent: None,
         revision: "b".repeat(64),
         payload: json!({}),
+        then: None,
     };
     body(submit(Admin, f.state(), Path(f.node), Json(op())).await).await;
     body(submit(Admin, f.state(), Path(f.node), Json(op())).await).await;
@@ -552,7 +555,8 @@ async fn binding_delivery_receipt_export_and_revocation() {
     let cipher: String =
         f.app.db.conn().query_row("SELECT snapshot FROM managed_node", [], |r| r.get(0)).unwrap();
     assert!(!cipher.contains(&"s".repeat(32)));
-    let response = export_configuration(Admin, f.state(), Path(f.node), Query(ExportFormat::default())).await;
+    let instance = ExportFormat { format: "surge".into(), port: 12345 };
+    let response = export_configuration(Admin, f.state(), Path(f.node), Query(instance)).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
     let text = String::from_utf8(to_bytes(response.into_body(), 65536).await.unwrap().to_vec()).unwrap();
@@ -595,6 +599,7 @@ async fn pm_traffic_follows_reports_and_ends_with_the_rule() {
         intent: None,
         revision: "a".repeat(64),
         payload: json!({"port":12345}),
+        then: None,
     };
     body(submit(Admin, f.state(), Path(f.node), Json(op)).await).await;
     let task = body(send(report(150, 30), None).await).await;
@@ -650,6 +655,7 @@ async fn another_protocol_reports_presence_but_exchanges_no_work() {
         intent: None,
         revision: snap().revision,
         payload: json!({"name":"Demo","host":"example.com","port":12345,"public_port":12345,"mode":"default"}),
+        then: None,
     };
     body(submit(Admin, f.state(), Path(f.node), Json(op("a"))).await).await;
 
@@ -695,11 +701,137 @@ async fn disabling_does_not_hide_results_but_rejects_new_writes() {
                 action: "install".into(),
                 intent: None,
                 revision: "b".repeat(64),
-                payload: json!({})
+                payload: json!({}),
+                then: None,
             })
         )
         .await
         .status(),
         StatusCode::BAD_REQUEST
     );
+}
+#[tokio::test]
+async fn two_module_changes_queue_their_second_step_on_the_hub() {
+    let f = Fixture::new();
+    let credential = f.bind().await;
+    let reported = |pm_revision: &str| -> Snapshot {
+        let pm = json!({"installed":true,"resources":[],"revision":pm_revision,"blocked":false});
+        let mut state = serde_json::to_value(snapshot()).unwrap();
+        state["installed"] = json!(true);
+        state["modules"] = json!({"pm": pm});
+        serde_json::from_value(state).unwrap()
+    };
+    let poll_with = |state: Snapshot, result: Option<(&str, &str)>| {
+        let result = result.map(|(id, status)| Receipt {
+            code: None,
+            id: id.repeat(32),
+            status: status.into(),
+            message: String::new(),
+            revision: String::new(),
+        });
+        poll(
+            f.state(),
+            f.headers(&credential),
+            Json(Poll { snapshot: state, result, lifecycle_result: None }),
+        )
+    };
+    body(poll_with(reported(&"1".repeat(64)), None).await).await;
+    let instance = json!({"name":"40001","host":"example.com","port":40001,"public_port":40001,"psk":"","mode":"default"});
+    let rule = json!({"port":40001,"name":"40001","quota_gb":0,"quota_mode":"in_out","reset_day":0,"expiry_date":"","egress_mbps":0});
+    let create = |id: &str, then: FollowUp| Operation {
+        module: "snell".into(),
+        id: id.repeat(32),
+        action: "apply".into(),
+        intent: Some(ApplyIntent::Create),
+        revision: "b".repeat(64),
+        payload: instance.clone(),
+        then: Some(then),
+    };
+    let pm_rule = |payload: Value| FollowUp {
+        module: "pm".into(),
+        action: "apply".into(),
+        intent: Some(ApplyIntent::Create),
+        payload,
+    };
+    // Only the two known pairings, on the same port.
+    let mut other_port = rule.clone();
+    other_port["port"] = json!(40002);
+    for then in [
+        pm_rule(other_port),
+        FollowUp {
+            module: "fw".into(),
+            action: "delete".into(),
+            intent: None,
+            payload: json!({"port":40001}),
+        },
+    ] {
+        assert_eq!(
+            submit(Admin, f.state(), Path(f.node), Json(create("a", then))).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    body(submit(Admin, f.state(), Path(f.node), Json(create("a", pm_rule(rule.clone())))).await).await;
+    // Repeating the submission is harmless; changing its follow-up is not.
+    body(submit(Admin, f.state(), Path(f.node), Json(create("a", pm_rule(rule.clone())))).await).await;
+    let mut named = rule.clone();
+    named["name"] = json!("other");
+    assert_eq!(
+        submit(Admin, f.state(), Path(f.node), Json(create("a", pm_rule(named)))).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+    let first = body(poll_with(reported(&"1".repeat(64)), None).await).await;
+    assert_eq!(first["task"]["request"]["id"], "a".repeat(32));
+    assert!(first["task"]["request"].get("then").is_none(), "the node never sees the follow-up");
+    // The first receipt queues the rule at the revision reported with it, and the same poll delivers it.
+    let second = body(poll_with(reported(&"2".repeat(64)), Some(("a", "succeeded"))).await).await;
+    let request = &second["task"]["request"];
+    assert_eq!((request["module"].as_str(), request["action"].as_str()), (Some("pm"), Some("apply")));
+    assert_eq!(
+        (request["intent"].as_str(), request["revision"].as_str()),
+        (Some("create"), Some(&*"2".repeat(64)))
+    );
+    assert_eq!(request["payload"], rule);
+    let state = body(status(Admin, f.state(), Path(f.node)).await).await;
+    let follow = state["operations"].as_array().unwrap().iter().find(|o| o["id"] == request["id"]).unwrap();
+    assert_eq!(follow["after"], "a".repeat(32));
+    assert_eq!(follow["status"], "delivered");
+    let id = request["id"].as_str().unwrap().to_owned();
+    let receipt = Receipt {
+        code: None,
+        id: id.clone(),
+        status: "succeeded".into(),
+        message: String::new(),
+        revision: String::new(),
+    };
+    body(
+        poll(
+            f.state(),
+            f.headers(&credential),
+            Json(Poll { snapshot: reported(&"3".repeat(64)), result: Some(receipt), lifecycle_result: None }),
+        )
+        .await,
+    )
+    .await;
+
+    // Deleting: rule first, then the instance; a failed first step queues nothing.
+    let delete = |id: &str| Operation {
+        module: "pm".into(),
+        id: id.repeat(32),
+        action: "delete".into(),
+        intent: None,
+        revision: "3".repeat(64),
+        payload: json!({"port":40001}),
+        then: Some(FollowUp {
+            module: "snell".into(),
+            action: "delete".into(),
+            intent: None,
+            payload: json!({"port":40001}),
+        }),
+    };
+    body(submit(Admin, f.state(), Path(f.node), Json(delete("c"))).await).await;
+    body(poll_with(reported(&"3".repeat(64)), None).await).await;
+    let failed = body(poll_with(reported(&"3".repeat(64)), Some(("c", "rejected"))).await).await;
+    assert!(failed["task"].is_null());
+    let state = body(status(Admin, f.state(), Path(f.node)).await).await;
+    assert!(state["operations"].as_array().unwrap().iter().all(|o| o["after"] != "c".repeat(32)));
 }

@@ -14,7 +14,7 @@ cargo build --locked
 
 默认主题源码在 [web-theme/](web-theme/README.md)，与后台同仓库维护、随后台发布。Rust 的 `rust-embed` 读取 `web-admin/dist/` 和 `web-theme/dist/`，`theme.json` 与 `preview.png` 直接从 `web-theme/` 嵌入。只运行 `cargo build` 不会构建这两个前端，缺少 dist 时构建不完整；不要通过空目录绕过错误。
 
-构建会访问依赖仓库。网络或包下载失败时先保留失败证据，不能把缺少资源造成的失败当成功。以上命令描述构建流程，不代表当前环境已经通过构建验证。
+构建会访问依赖仓库，网络或包下载失败造成的构建失败不能当作成功。
 
 ## 本地运行与前端联调
 
@@ -31,7 +31,7 @@ cd web-admin
 npm run dev
 ```
 
-打开 Vite 输出地址下的 `/admin/`；[vite.config.ts](web-admin/vite.config.ts) 将 `/api`（含 WebSocket）和图标代理到 `127.0.0.1:9911`。也可直接访问 hub 的 `/admin/` 查看已嵌入的构建版本。默认主题同样在 `web-theme/` 下 `npm run dev`，代理方式见 [web-theme/README.md](web-theme/README.md)。纯 HTTP 本地入口可做界面和已有数据联调，但添加/安装节点要求 HTTPS 域名入口；真实 agent 联调应按 [部署说明](OPERATIONS.md) 配置可访问的域名。
+打开 Vite 输出地址下的 `/admin/`；[vite.config.ts](web-admin/vite.config.ts) 将 `/api`（含 WebSocket）和图标代理到 `127.0.0.1:9911`。也可直接访问 hub 的 `/admin/` 查看已嵌入的构建版本。默认主题同样在 `web-theme/` 下 `npm run dev`，代理方式见 [web-theme/README.md](web-theme/README.md)。纯 HTTP 本地入口可做界面和已有数据联调，但添加/安装节点要求 HTTPS 域名入口；真实 agent 联调应按 [部署文档](DEPLOY.md) 配置可访问的域名。
 
 ## 检查与测试
 
@@ -48,11 +48,12 @@ cargo test
 shellcheck -S warning install.sh install-hub.sh update-hub.sh nodehelm.sh scripts/*.sh
 cargo build
 python3 management/tests/integration_http.py target/debug/monitor-hub
+for t in management management-lifecycle admin; do node web-admin/tests/$t.browser.mjs target/debug/monitor-hub; done
 (cd agent && cargo build --release --locked)
 scripts/e2e.sh target/debug/monitor-hub agent/target/release/monitor-agent
 ```
 
-`integration_http.py` 用真实后台和管理组件走一遍登录、绑定、上报与回执；`e2e.sh` 用后台与监控 agent 在回环上核对节点上报和公开字段。
+`integration_http.py` 用真实后台和管理组件走一遍登录、绑定、上报与回执；三个 `*.browser.mjs` 用 Playwright 在临时后台上走管理界面流程（Playwright 由 `PLAYWRIGHT_PACKAGE` 指向其 `package.json`，CI 在临时目录安装，不进入 `web-admin` 依赖；修改服务页面或管理接口时必跑）；`e2e.sh` 用后台与监控 agent 在回环上核对节点上报和公开字段。
 
 `web-admin` 的 `npm test` 使用 Node 直接运行 `api.test.ts` 和服务表单 `model.test.ts`，`web-theme` 的运行格式化与实时指标测试，应使用 CI 同代的 Node（22.18 以下不能直接运行 `.ts`）。它验证请求和辅助数据逻辑，并非浏览器端到端覆盖。Rust 用例主要放在各模块内，分时流量数据库测试通过 `db/mod.rs` 引入 `src/testdata/traffic-period.rs`。
 
@@ -70,7 +71,6 @@ scripts/e2e.sh target/debug/monitor-hub agent/target/release/monitor-agent
 
 | 范围 | 运行方式 | 说明 |
 | --- | --- | --- |
-| 管理界面流程 | `node web-admin/tests/{management,management-lifecycle,admin}.browser.mjs target/debug/monitor-hub` | 需先构建后台；Playwright 可由 `PLAYWRIGHT_PACKAGE` 指向其 `package.json`，浏览器目录用 `PLAYWRIGHT_BROWSERS_PATH`。每次启动一个临时后台，不接触真实数据。修改服务页面或管理接口时运行 |
 | 业务模块 | 在一次性 Linux 测试机以 root 运行 `python3 management/tests/integration_{snell,modules}.py` | 使用隔离的名称、路径与单元，不安装管理组件，不影响已有服务 |
 | 端口流量统计 | 以 root 运行 `unshare -n python3 management/tests/integration_pm.py` | 在新的网络命名空间中创建和清理 nftables 表 |
 | 核心升级回退 | `unshare -n python3 management/tests/integration_core_lifecycle.py <发布归档目录>` | 同上，需要预先下载的核心归档 |
@@ -103,6 +103,6 @@ CI 在 Linux 上将当前 hub 与同一提交的 agent 配对；macOS 不能直�
 
 ## 发行与供应链
 
-[release.yml](.github/workflows/release.yml) 先构建两个架构的 agent，再构建嵌入它们的 x86_64 / aarch64 musl 后台二进制，`v*` 标签必须匹配 Cargo 版本；发布二进制、hub 安装器与 `sha256sums.txt`，再将同一批二进制打入容器镜像。在普通分支上手动触发只构建；发布步骤以标签 ref 为条件，手动选择标签运行也可能进入发布流程。
+[release.yml](.github/workflows/release.yml) 先构建两个架构的 agent，再构建嵌入它们的 x86_64 / aarch64 musl 后台二进制，`v*` 标签必须匹配 Cargo 版本；发布二进制、各架构离线包 `node-manager-*.tar.gz`、入口脚本 `nodehelm.sh` 与 `sha256sums.txt`，再将同一批二进制打入容器镜像。在普通分支上手动触发只构建；发布步骤以标签 ref 为条件，手动选择标签运行也可能进入发布流程。
 
 [audit.yml](.github/workflows/audit.yml) 检查依赖漏洞，并在定时/手动运行时核对最新发行版。修改默认主题时升高 `web-theme/theme.json` 的版本，CI 核对它与 `package.json`、`package-lock.json` 一致；默认主题只调用其 README 列出的主题契约接口。文档修改只需回读、检查本地链接与差异，无需为此下载所有依赖或发布版本。

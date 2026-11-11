@@ -15,7 +15,7 @@ import sys
 CODE = pathlib.Path(__file__).resolve().parent
 ROOT = pathlib.Path('/var/lib/node-manager')
 AGENT = pathlib.Path('/opt/monitor/monitor-agent')
-NAMES = {'snell': 'Snell', 'sb': 'SB', 'fw': 'FW', 'pm': 'PM'}
+MODULES = ('snell', 'sb', 'fw', 'pm')
 ENV = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LC_ALL': 'C.UTF-8', 'PYTHONDONTWRITEBYTECODE': '1'}
 # What an interrupted component switch and an interrupted module operation leave behind.
 COMPONENT_JOURNAL = 'component-recovery.json'
@@ -93,7 +93,7 @@ def logs():
 
 def interrupted():
     """The component switch and module directories an interrupted operation left a record in."""
-    modules = [ROOT if name == 'snell' else ROOT / name for name in NAMES]
+    modules = [ROOT if name == 'snell' else ROOT / name for name in MODULES]
     return ((ROOT / COMPONENT_JOURNAL).exists(),
             [directory for directory in modules if any((directory / name).exists() for name in MODULE_JOURNALS)])
 

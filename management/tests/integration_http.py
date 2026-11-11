@@ -113,11 +113,11 @@ def main():
                 _,state=call(f'/api/management/{node}')
                 assert state['operations'][0]['status']=='succeeded'
                 assert state['snapshot']['installed']
-                _,snell_export=call(f'/api/management/{node}/export?format=surge')
-                assert snell_export.startswith('[Proxy]\n') and 'psk='+snell['psk'] in snell_export
+                _,snell_export=call(f'/api/management/{node}/export?format=surge&port=23456')
+                assert snell_export.startswith('Snell-23456 = snell,') and 'psk='+snell['psk'] in snell_export
                 if validator:=os.environ.get('SNELL_VALIDATOR'):
                     profile=pathlib.Path(directory)/'snell.conf'
-                    profile.write_text('[General]\n\n'+snell_export+'\n[Rule]\nFINAL,DIRECT\n')
+                    profile.write_text('[General]\n\n[Proxy]\n'+snell_export+'\n\n[Rule]\nFINAL,DIRECT\n')
                     subprocess.run([validator,'--check',str(profile)],check=True,timeout=10)
                     print('PASS: Surge parsed the downloaded Snell configuration')
                 # Module-specific revisions and export must use only the bound node's state.
@@ -126,12 +126,11 @@ def main():
                 call('/api/management-agent/v1/poll',{'snapshot':snapshot,'result':None},credential=credential,anonymous=True)
                 _,state=call(f'/api/management/{node}')
                 assert 'psk' not in state['snapshot']['modules']['sb']['resources'][0]
-                exported,export=call(f'/api/management/{node}/export?format=sing-box')
+                exported,export=call(f'/api/management/{node}/export?format=share&port=12345')
                 assert exported.headers['Cache-Control']=='no-store'
-                try: call(f'/api/management/{node}/export?format=sing-box',anonymous=True);raise AssertionError('anonymous export accepted')
+                try: call(f'/api/management/{node}/export?format=share&port=12345',anonymous=True);raise AssertionError('anonymous export accepted')
                 except urllib.error.HTTPError as e: assert e.code==401
-                client=json.loads(export)
-                assert client['outbounds'][1]['password']==ss['psk'] and 'private_key' not in export
+                assert export.startswith('ss://2022-blake3-aes-128-gcm:'+urllib.parse.quote(ss['psk'],safe='')+'@node.example.com:12345#') and 'private_key' not in export
                 op={'id':uuid.uuid4().hex,'module':'sb','action':'apply','revision':'d'*64,'payload':{**ss,'psk':''}}
                 call(f'/api/management/{node}/operations',op)
                 _,reply=call('/api/management-agent/v1/poll',{'snapshot':snapshot,'result':None},credential=credential,anonymous=True)

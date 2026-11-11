@@ -173,7 +173,7 @@ fn ready(
         refuse!("节点有未恢复操作，请先核实");
     }
     for module in MODULES {
-        let selected = if module == "snell" { &state } else { &state["modules"][module] };
+        let selected = module_state(&state, module);
         if selected.is_null()
             || (!recovering && selected["blocked"] == true)
             || selected["revision"] != revisions[module]
@@ -284,7 +284,7 @@ pub(super) struct Progress {
 }
 
 fn empty_module(state: &Value, module: &str) -> bool {
-    let selected = if module == "snell" { state } else { &state["modules"][module] };
+    let selected = module_state(state, module);
     selected["installed"] == false
         && selected["blocked"] == false
         && selected["resources"].as_array().is_some_and(Vec::is_empty)
@@ -664,6 +664,7 @@ mod tests {
             intent: None,
             revision: "b".repeat(64),
             payload: json!({}),
+            then: None,
         };
         assert_eq!(
             submit(Admin, f.state(), Path(f.node), Json(op("b"))).await.status(),

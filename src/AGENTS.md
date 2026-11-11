@@ -8,17 +8,17 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| [main.rs](main.rs) | 启动参数、共享 `App`、路由组合、定时维护与进程生命周期 |
+| [main.rs](main.rs) | 启动参数、共享 `App`、路由组合、内嵌监控 Agent 的分发（`/agent/{arch}`、`/install.sh`）、定时维护与进程生命周期 |
 | [auth.rs](auth.rs) | 密码、GitHub OAuth、Cookie 会话、登录节流和来源解析 |
 | [api/](api/mod.rs) | 面板与公开页 HTTP 接口：`mod.rs` 管理员校验、同源写保护与错误响应；`nodes.rs` 节点读写与自动注册；`metrics.rs` 指标、分时流量、实时推送与探测任务；`themes.rs` 主题安装、更新与 GitHub 发布读取；`system.rs` 数据库维护、版本信息、会话与设置；`tests.rs` 测试 |
-| [agent_ws.rs](agent_ws.rs) | 外部监控 Agent 的 WebSocket／JSON-RPC、连接和读数处理 |
+| [agent_ws.rs](agent_ws.rs) | 监控 Agent（[agent/](../agent/README.md)）的 WebSocket／JSON-RPC、连接和读数处理 |
 | [db/](db/mod.rs) | SQLite：`mod.rs` 结构、连接、锁、设置与会话；`migrate.rs` 迁移；`nodes.rs` 节点；`metrics.rs` 流量累计、指标及小时层、探测记录；`backup.rs` 数据库文件、备份、压缩与恢复；`tests.rs` 测试 |
 | [traffic_period.rs](traffic_period.rs) | 四时段归类、扩展表、历史读取与裁剪 |
-| [management/mod.rs](management/mod.rs) | 管理开关、加密与身份、设置、端口流量与配置导出、路由组合 |
+| [management/mod.rs](management/mod.rs) | 管理开关、加密与身份、设置、端口流量与单实例配置导出、各模块快照位置（`module_state`）、路由组合 |
 | [management/enroll.rs](management/enroll.rs) | 登记绑定（核对执行机器与监控 Agent 的 boot ID）、解绑与放弃、组件文件分发 `FILES` 及生成的一行接入脚本 `enroll.sh` |
-| [management/tasks.rs](management/tasks.rs) | 状态读取、面板提交的普通任务、组件轮询与回执、快照事件组合（模块事件由各模块提供）、组件静默与操作记录清理 |
+| [management/tasks.rs](management/tasks.rs) | 状态读取、面板提交的普通任务（含两步操作中由后台排入的第二步）、组件轮询与回执、快照事件组合（模块事件由各模块提供）、组件静默与操作记录清理 |
 | [management/lifecycle.rs](management/lifecycle.rs) | 节点模块／全部卸载任务、进度、继续操作及最终确认 |
-| [management/models.rs](management/models.rs) | singbox／realm 转发／端口流量统计字段校验（每个模块一个函数）、核心元数据、业务快照模型、singbox 分享链接及 sing-box 客户端配置生成 |
+| [management/models.rs](management/models.rs) | singbox／realm 转发／端口流量统计字段校验（每个模块一个函数）、核心元数据、业务快照模型、singbox 分享链接生成 |
 | [management/pm.rs](management/pm.rs) | 后台的端口流量统计逻辑：受管端口小时流量（由相邻两次上报算出增量，保留 7 天，删除规则时清除），以及上报引起的到期、配额阈值和 IP 告警事件 |
 | [notify.rs](notify.rs) | 通知模板、队列及 Telegram／Webhook 发送 |
 | [latency.rs](latency.rs) | 延迟通知：按所选节点的探测对比自身基线（近 7 天中位数与同时段取高），持续高延迟或丢包过半时提醒并配对恢复 |

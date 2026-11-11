@@ -37,7 +37,7 @@
 
 新增模块需要改动：
 
-- 组件：新建模块文件并在 `modules.py` 注册；在 `install.py` 的 `MODULES`（自有状态目录时）和 `CORES`（有核心时）、`lifecycle.py` 的 `MODULES`、`menu.py` 的 `NAMES` 登记。这三个文件要能脱离模块文件单独运行，所以各自保留清单，由 `tests/test_modules.py` 的 `ModuleListTests` 核对与注册表一致。
+- 组件：新建模块文件并在 `modules.py` 注册；在 `install.py` 的 `MODULES`（自有状态目录时）和 `CORES`（有核心时）、`lifecycle.py` 的 `MODULES`、`menu.py` 的 `MODULES` 登记。这三个文件要能脱离模块文件单独运行，所以各自保留清单，由 `tests/test_modules.py` 的 `ModuleListTests` 核对与注册表一致。
 - 后台：[enroll.rs](../src/management/enroll.rs) 的 `FILES`、[tasks.rs](../src/management/tasks.rs) 的 `validate_request`、[models.rs](../src/management/models.rs) 的字段校验；模块有自己的后台逻辑时单独成文件，参照端口流量统计的 [pm.rs](../src/management/pm.rs)。页面入口见 [web-admin](../web-admin/AGENTS.md)。
 
 ## 执行与状态关系

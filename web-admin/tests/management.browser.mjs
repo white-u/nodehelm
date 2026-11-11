@@ -225,11 +225,12 @@ try {
   await page.setViewportSize({width:1280,height:900})
   await instances.getByRole('button',{name:'返回近 7 天',exact:true}).click()
 
-  // A new instance with PM: the rule waits for the instance to run, and writes stay locked in between.
+  // A new instance with PM: the hub queues the rule once the instance succeeds, and writes stay locked in between.
   await select('snell');const progress=page.getByTestId('chain-progress')
   const posted=()=>page.waitForResponse(response=>response.request().method()==='POST'&&response.url().endsWith('/operations'))
-  const snellRow=(port,running='active')=>({...savedSnell,name:String(port),port,public_port:port,psk:'p'.repeat(32),_running:running})
-  const addSnell=row=>{const {_running,...resource}=row;snapshot.resources.push(resource);snapshot.runtime[String(row.port)]=_running;snapshot.revision=row.port.toString(16).padStart(64,'0')}
+  const snellRow=port=>({...savedSnell,name:String(port),port,public_port:port,psk:'p'.repeat(32)})
+  const addSnell=row=>{snapshot.resources.push(row);snapshot.runtime[String(row.port)]='active';snapshot.revision=row.port.toString(16).padStart(64,'0')}
+  let posts=0;const countPosts=request=>{if(request.method()==='POST'&&request.url().endsWith('/operations'))posts++};page.on('request',countPosts)
   await add.click();await editor.getByLabel('监听端口',{exact:true}).fill('40001');await editor.getByLabel(/同时启用流量统计/).check()
   await editor.getByLabel('配额（GiB，0 关闭）',{exact:true}).fill('100')
   await editor.getByLabel('告警阈值（IP 数，0 关闭）',{exact:true}).fill('3');await editor.getByLabel('白名单 IP / 网段（可选，最多 32 项）',{exact:true}).fill('203.0.113.0/33')
@@ -238,29 +239,28 @@ try {
   await editor.getByLabel('白名单 IP / 网段（可选，最多 32 项）',{exact:true}).fill('203.0.113.0/24')
   await editor.getByRole('button',{name:'保存并应用',exact:true}).click();assert.match(await decision().textContent(),/实例运行后应用流量统计规则（配额 100 GiB／IP >3 告警 · >5 报警 · >6 阻断后续连接）/)
   let response=posted();await accept();await response;task=(await poll()).task
-  assert.equal(task.request.module,undefined);assert.equal(task.request.payload.port,40001)
-  addSnell(snellRow(40001,'activating'));await poll({id:task.request.id,status:'succeeded',message:'fixture applied'})
+  assert.equal(task.request.module,undefined);assert.equal(task.request.payload.port,40001);assert.equal(task.request.then,undefined,'the node never sees the follow-up')
   await progress.filter({hasText:'1/2 创建实例'}).waitFor();assert(await add.isDisabled(),'writes stay locked between the two steps')
-  response=posted();await page.waitForTimeout(3500);snapshot.runtime['40001']='active';await poll();await response
-  task=(await poll()).task;assert.equal(task.request.module,'pm');assert.equal(task.request.intent,'create')
+  addSnell(snellRow(40001));task=(await poll({id:task.request.id,status:'succeeded',message:'fixture applied'})).task
+  assert.equal(task.request.module,'pm');assert.equal(task.request.intent,'create');assert.equal(task.request.revision,snapshot.modules.pm.revision)
   assert.deepEqual(task.request.payload,{port:40001,name:'40001',quota_gb:100,quota_mode:'in_out',reset_day:0,expiry_date:'',egress_mbps:0,ip_limit:{max_ips:3,cooldown_min:30,whitelist:['203.0.113.0/24'],block:true}})
   await progress.filter({hasText:'2/2 应用流量统计规则'}).waitFor();assert(await add.isDisabled())
   snapshot.modules.pm.resources.push(task.request.payload);snapshot.modules.pm.revision='e'.repeat(64);await poll({id:task.request.id,status:'succeeded',message:'fixture applied'})
   await progress.filter({hasText:'实例和流量统计规则已完成。'}).waitFor();assert(!await add.isDisabled())
+  assert.equal(posts,1,'the page submits only the first step')
   await instances.getByTestId('instance-40001').getByRole('button',{name:'已统计流量',exact:true}).click()
   await page.getByTestId('pm-rule-40001').waitFor();assert.equal(await pmEditor.count(),0,'an existing rule is shown, not opened for editing')
 
-  // A failed instance submits no PM rule.
+  // A failed instance queues no PM rule.
   await select('snell');await add.click();await editor.getByLabel('监听端口',{exact:true}).fill('40002');await editor.getByLabel(/同时启用流量统计/).check()
   task=await submit(editor.getByRole('button',{name:'保存并应用',exact:true}))
-  let extra=0;const countPosts=request=>{if(request.method()==='POST'&&request.url().endsWith('/operations'))extra++};page.on('request',countPosts)
-  await poll({id:task.request.id,status:'rolled_back',message:'fixture failed'});await progress.filter({hasText:'创建实例未成功，未应用流量统计规则。'}).waitFor()
-  await page.waitForTimeout(3500);assert.equal(extra,0);page.off('request',countPosts)
+  assert.equal((await poll({id:task.request.id,status:'rolled_back',message:'fixture failed'})).task,null)
+  await progress.filter({hasText:'创建实例未成功，未应用流量统计规则。'}).waitFor()
 
   // A rejected PM step keeps what was filled in for "添加流量统计".
   await add.click();await editor.getByLabel('监听端口',{exact:true}).fill('40003');await editor.getByLabel(/同时启用流量统计/).check();await editor.getByLabel('配额（GiB，0 关闭）',{exact:true}).fill('7')
   task=await submit(editor.getByRole('button',{name:'保存并应用',exact:true}));addSnell(snellRow(40003))
-  response=posted();await poll({id:task.request.id,status:'succeeded',message:'fixture applied'});await response;task=(await poll()).task
+  task=(await poll({id:task.request.id,status:'succeeded',message:'fixture applied'})).task;assert.equal(task.request.module,'pm')
   await poll({id:task.request.id,status:'rejected',message:'流量统计状态需要核实'});await progress.filter({hasText:/^应用流量统计规则未成功：请求被拒绝[^。]*。可在实例行点击“添加流量统计”继续，已保留填写的参数。$/}).waitFor()
   await instances.getByTestId('instance-40003').getByRole('button',{name:'添加流量统计',exact:true}).click()
   await pmEditor.getByText('新增流量统计规则',{exact:false}).waitFor();assert.equal(await pmEditor.getByLabel('配额（GiB，0 关闭）',{exact:true}).inputValue(),'7')
@@ -269,13 +269,14 @@ try {
   // Deleting an instance with PM removes the rule first, then the instance.
   await select('snell');await instances.getByTestId('instance-40001').getByRole('button',{name:'删除',exact:true}).click()
   assert.match(await decision().textContent(),/将先删除该端口的流量统计规则及计数/)
-  response=posted();await accept();await response;task=(await poll()).task
+  posts=0;response=posted();await accept();await response;task=(await poll()).task
   assert.equal(task.request.module,'pm');assert.equal(task.request.action,'delete');assert.equal(task.request.payload.port,40001)
   snapshot.modules.pm.resources=snapshot.modules.pm.resources.filter(rule=>rule.port!==40001);snapshot.modules.pm.revision='f'.repeat(64)
-  response=posted();await poll({id:task.request.id,status:'succeeded',message:'fixture applied'});await response;task=(await poll()).task
+  task=(await poll({id:task.request.id,status:'succeeded',message:'fixture applied'})).task
   assert.equal(task.request.module,undefined);assert.equal(task.request.action,'delete');assert.equal(task.request.payload.port,40001)
   snapshot.resources=snapshot.resources.filter(row=>row.port!==40001);delete snapshot.runtime['40001'];snapshot.revision='9'.repeat(64)
   await poll({id:task.request.id,status:'succeeded',message:'fixture applied'});await progress.filter({hasText:'流量统计规则和实例已删除。'}).waitFor()
+  assert.equal(posts,1);page.off('request',countPosts)
 
   await select('snell');task=await submit(instances.getByRole('button',{name:'升级核心',exact:true}));assert.equal(task.request.action,'core_upgrade')
   await poll({id:task.request.id,status:'rolled_back',message:'private binary path',code:'core_runtime'});await refresh()

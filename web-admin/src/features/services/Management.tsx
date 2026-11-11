@@ -35,9 +35,9 @@ export function Management({ nodes }: { nodes: Node[] }) {
   const stopped = useRef(new Set<number>())
   const refreshRef = useRef<(id: number) => Promise<void>>(async () => {})
   const [notices, setNotices] = useState<Record<number, string>>({})
-  // Two-step changes by node: the step after the watched operation, waiting for
-  // its result (`next`), or the second step itself, submitted (`final`).
-  const chains = useRef(new Map<number, { next?: FollowUp; final?: FollowUp; waitUntil?: number }>())
+  // Two-step changes by node: the step the hub queues after the watched operation
+  // (`next`), or that step itself once queued (`final`). The hub runs it either way.
+  const chains = useRef(new Map<number, { next?: FollowUp; final?: FollowUp }>())
   // What the page shows of a chain; "1/2" or "2/2" while it runs, which keeps writes locked.
   const [progress, setProgress] = useState<Record<number, { text: string; status: string; action?: string }>>({})
   // PM drafts whose step did not go through, by "node:port", for "添加流量统计".
@@ -65,7 +65,7 @@ export function Management({ nodes }: { nodes: Node[] }) {
     if (suspend) stopped.current.add(id)
     if (suspend && chains.current.has(id)) {
       const { next, final } = chains.current.get(id)!
-      endChain(id, next ? `已停止自动确认，未${next.steps[1]}。` : `${final?.steps[1]}结果尚未确认，请手动刷新查看。`)
+      endChain(id, next ? `已停止自动确认；${next.steps[0]}成功后后台会继续${next.steps[1]}，请稍后手动刷新查看。` : `${final?.steps[1]}结果尚未确认，请手动刷新查看。`, false, "pending")
     }
     setNotices(previous => ({ ...previous, [id]: notice }))
   }, [endChain])
@@ -84,44 +84,28 @@ export function Management({ nodes }: { nodes: Node[] }) {
     stopped.current.delete(id)
     chains.current.delete(id)
     if (next) chains.current.set(id, { next })
-    setProgress(previous => ({ ...previous, [id]: { text: next ? `1/2 ${next.steps[0]}… 请保持此页面打开直到完成。` : "", status: "pending" } }))
+    setProgress(previous => ({ ...previous, [id]: { text: next ? `1/2 ${next.steps[0]}…` : "", status: "pending" } }))
     watches.current.set(id, { deadline: Date.now() + 120_000, operation })
     schedule(id)
   }, [schedule, stopWatching])
-  /** The watched operation has a result. True while the page keeps watching:
-   *  for a new instance to start, or for the second step it submitted. */
-  const advance = useCallback(async (id: number, status: Status, result: { status: string; message: string }) => {
+  /** The watched operation has a result. True while the page keeps watching
+   *  the second step, which the hub queued when the first succeeded. */
+  const advance = useCallback((id: number, status: Status, result: { id: string; status: string; message: string }) => {
+    const finish = (step: FollowUp, outcome: typeof result) => {
+      if (outcome.status === "succeeded") endChain(id, step.done, false)
+      else endChain(id, `${step.steps[1]}未成功：${(outcome.message || "请展开操作记录查看详情").replace(/。$/, "")}。`)
+    }
     const chain = chains.current.get(id)
-    if (chain?.final) {
-      if (result.status === "succeeded") endChain(id, chain.final.done, false)
-      else endChain(id, `${chain.final.steps[1]}未成功：${(result.message || "请展开操作记录查看详情").replace(/。$/, "")}。`)
-      return false
-    }
+    if (chain?.final) { finish(chain.final, result); return false }
     const next = chain?.next
-    if (!chain || !next) return false
+    if (!next) return false
     if (result.status !== "succeeded") { endChain(id, `${next.steps[0]}未成功，未${next.steps[1]}。`, false, "failed"); return false }
-    if (next.running) {
-      const state = moduleView(status, next.running.module)?.runtime?.[String(next.running.port)]
-      if (state !== "active") {
-        // The first report after a new instance may still show it starting.
-        chain.waitUntil ??= Date.now() + 30_000
-        if ((!state || state === "activating") && Date.now() < chain.waitUntil) return true
-        endChain(id, `实例未在运行，未${next.steps[1]}。`)
-        return false
-      }
-    }
-    const revision = moduleView(status, next.module)?.revision
-    const operation = crypto.randomUUID().replaceAll("-", "")
-    try {
-      if (!revision) throw new Error("模块状态不可用")
-      await api(`/management/${id}/operations`, { method: "POST", body: JSON.stringify({ id: operation, action: next.action, payload: next.payload, revision, intent: next.intent, ...(next.module !== "snell" ? { module: next.module } : {}) }) })
-    } catch (e) {
-      endChain(id, `${next.steps[1]}未提交：${String(e)}。`)
-      return false
-    }
+    const follow = status.operations?.find(operation => operation.after === result.id)
+    if (!follow) { endChain(id, `${next.steps[0]}已完成，${next.steps[1]}未执行。`); return false }
     chains.current.set(id, { final: next })
-    setProgress(previous => ({ ...previous, [id]: { text: `2/2 ${next.steps[1]}… 请保持此页面打开直到完成。`, status: "pending" } }))
-    watches.current.set(id, { deadline: Date.now() + 120_000, operation })
+    if (!["queued", "delivered"].includes(follow.status)) { finish(next, follow); return false }
+    setProgress(previous => ({ ...previous, [id]: { text: `2/2 ${next.steps[1]}…`, status: "pending" } }))
+    watches.current.set(id, { deadline: Date.now() + 120_000, operation: follow.id })
     return true
   }, [endChain])
   const detail = useRef<HTMLDivElement>(null)
@@ -164,14 +148,14 @@ export function Management({ nodes }: { nodes: Node[] }) {
           else if (!status.bound && !lifecycleActive(status.lifecycle)) stopWatching(id, watch && status.lifecycle?.status !== "succeeded" ? "管理绑定尚未确认，请安装完成后手动刷新配置。" : "")
           else if (watch?.operation && status.lifecycle?.id === watch.operation && status.lifecycle.status === "succeeded") stopWatching(id)
           else if (result) {
-            if (await advance(id, status, result)) schedule(id)
+            if (advance(id, status, result)) schedule(id)
             else stopWatching(id)
           }
           else if ((active || lifecycleActive(status.lifecycle) || watch?.operation) && !stopped.current.has(id)) {
             if (!watch) watches.current.set(id, { deadline: Date.now() + 120_000 })
             schedule(id)
           } else if (watch) stopWatching(id)
-          if (!watches.current.has(id) && chains.current.has(id)) endChain(id, "已停止自动确认，后续步骤未执行。")
+          if (!watches.current.has(id) && chains.current.has(id)) endChain(id, "已停止自动确认，请手动刷新查看后续步骤结果。", false, "pending")
         }
       } catch (e) {
         if (alive.current && sequences.current.get(id) === sequence) {

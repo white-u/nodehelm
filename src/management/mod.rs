@@ -47,6 +47,15 @@ const PROTOCOL: i64 = 1;
 
 use models::{core_version, CoreSnapshot};
 
+/// A module's part of a snapshot: Snell's at the top level, the others under `modules`.
+pub(super) fn module_state<'a>(state: &'a Value, module: &str) -> &'a Value {
+    if module == "snell" {
+        state
+    } else {
+        &state["modules"][module]
+    }
+}
+
 pub fn ensure(c: &Connection) -> Result<()> {
     c.execute_batch(
         "CREATE TABLE IF NOT EXISTS managed_node (
@@ -58,7 +67,8 @@ pub fn ensure(c: &Connection) -> Result<()> {
       id TEXT PRIMARY KEY, node INTEGER NOT NULL REFERENCES managed_node(node) ON DELETE CASCADE,
       request_hash TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL,
       message TEXT NOT NULL DEFAULT '', created INTEGER NOT NULL, expires INTEGER NOT NULL,
-      module TEXT NOT NULL DEFAULT '', action TEXT NOT NULL DEFAULT '');",
+      module TEXT NOT NULL DEFAULT '', action TEXT NOT NULL DEFAULT '',
+      follow TEXT NOT NULL DEFAULT '', after TEXT NOT NULL DEFAULT '');",
     )?;
     c.execute_batch("CREATE TABLE IF NOT EXISTS managed_maintenance (node INTEGER PRIMARY KEY REFERENCES managed_node(node) ON DELETE CASCADE, token TEXT NOT NULL, expires INTEGER NOT NULL);")?;
     c.execute_batch(pm::SCHEMA)?;
@@ -72,6 +82,8 @@ pub fn ensure(c: &Connection) -> Result<()> {
     for (name, sql) in [
         ("module", "ALTER TABLE managed_operation ADD COLUMN module TEXT NOT NULL DEFAULT ''"),
         ("action", "ALTER TABLE managed_operation ADD COLUMN action TEXT NOT NULL DEFAULT ''"),
+        ("follow", "ALTER TABLE managed_operation ADD COLUMN follow TEXT NOT NULL DEFAULT ''"),
+        ("after", "ALTER TABLE managed_operation ADD COLUMN after TEXT NOT NULL DEFAULT ''"),
     ] {
         if !columns.iter().any(|column| column == name) {
             c.execute(sql, [])?;
@@ -333,59 +345,39 @@ pub async fn port_traffic(
 ) -> Response {
     response(pm::read(&app.db.conn(), node, input.port.into(), now()))
 }
-#[derive(Deserialize, Default)]
+#[derive(Deserialize)]
 pub struct ExportFormat {
     #[serde(default)]
     format: String,
-    port: Option<u16>,
+    port: u16,
 }
-fn render_configuration(value: Value, format: &str) -> Result<String> {
+/// One instance's client configuration: a Surge proxy line for Snell, a share
+/// link for singbox.
+fn render_instance(mut value: Value, format: &str, port: u16) -> Result<String> {
+    let rows = match format {
+        "share" => &mut value["modules"]["sb"]["resources"],
+        "" | "surge" => &mut value["resources"],
+        _ => refuse!("不支持的客户端配置格式"),
+    };
+    let rows = rows.as_array_mut().context(crate::Shown("模块尚无配置".into()))?;
+    rows.retain(|r| r["port"].as_u64() == Some(u64::from(port)));
+    if rows.len() != 1 {
+        refuse!("实例不存在，请刷新配置");
+    }
     let snap: Snapshot = serde_json::from_value(value)?;
     snap.validate()?;
     if snap.blocked {
         refuse!("节点配置待恢复，暂停下载配置");
     }
-    if matches!(format, "sing-box" | "share") {
-        let sb = snap.modules.get("sb").context(crate::Shown("singbox 尚未接入".into()))?;
-        return if format == "share" { models::share_links(sb) } else { models::sing_box(sb) };
+    if format == "share" {
+        return models::share_links(snap.modules.get("sb").context(crate::Shown("singbox 尚未接入".into()))?);
     }
-    if !matches!(format, "" | "surge") {
-        refuse!("不支持的客户端配置格式");
-    }
-    if snap.resources.is_empty() {
-        refuse!("Snell 尚无可下载配置");
-    }
-    let mut text = String::from("[Proxy]\n");
-    for r in snap.resources {
-        let host = if r.host.contains(':') { format!("[{}]", r.host) } else { r.host };
-        text.push_str(&format!(
-            "{}-{} = snell, {}, {}, psk={}, version=6, tfo=true, reuse=true, mode={}\n",
-            r.name, r.port, host, r.public_port, r.psk, r.mode
-        ));
-    }
-    Ok(text)
-}
-fn render_instance(mut value: Value, format: &str, port: u16) -> Result<String> {
-    let resources = if matches!(format, "sing-box" | "share") {
-        &mut value["modules"]["sb"]["resources"]
-    } else {
-        &mut value["resources"]
-    };
-    let rows = resources.as_array_mut().context(crate::Shown("模块尚无配置".into()))?;
-    rows.retain(|r| r["port"].as_u64() == Some(u64::from(port)));
-    if rows.len() != 1 {
-        refuse!("实例不存在，请刷新配置");
-    }
-    let text = render_configuration(value, format)?;
-    if format == "sing-box" {
-        let client: Value = serde_json::from_str(&text)?;
-        let outbound = client["outbounds"]
-            .as_array()
-            .and_then(|rows| rows.iter().find(|r| r["type"] != "selector"))
-            .context(crate::Shown("实例配置不可用".into()))?;
-        return Ok(serde_json::to_string_pretty(outbound)?);
-    }
-    Ok(text.strip_prefix("[Proxy]\n").unwrap_or(&text).trim_end().to_owned())
+    let r = &snap.resources[0];
+    let host = if r.host.contains(':') { format!("[{}]", r.host) } else { r.host.clone() };
+    Ok(format!(
+        "{}-{} = snell, {}, {}, psk={}, version=6, tfo=true, reuse=true, mode={}",
+        r.name, r.port, host, r.public_port, r.psk, r.mode
+    ))
 }
 
 pub async fn export_configuration(
@@ -405,10 +397,7 @@ pub async fn export_configuration(
             .optional()?;
         let cipher = cipher.filter(|v| !v.is_empty()).context(crate::Shown("尚无已确认配置".into()))?;
         let value = open(&key(&app.db)?, node, &cipher)?;
-        match format.port {
-            Some(port) => render_instance(value, &format.format, port),
-            None => render_configuration(value, &format.format),
-        }
+        render_instance(value, &format.format, format.port)
     })();
     match result {
         Ok(text) => (

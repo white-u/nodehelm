@@ -5,7 +5,7 @@ use base64::{
     Engine,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 
 pub fn default_module() -> String {
@@ -318,35 +318,6 @@ impl ModuleSnapshot {
     }
 }
 
-pub fn sing_box(state: &ModuleSnapshot) -> Result<String> {
-    state.validate("sb")?;
-    if state.blocked || state.resources.is_empty() {
-        refuse!("singbox 尚无可下载配置");
-    }
-    let mut outbounds = vec![];
-    let mut tags = vec![];
-    for r in &state.resources {
-        let tag = format!("{}-{}", string(r, "name"), r["port"]);
-        tags.push(tag.clone());
-        let mut outbound = json!({"tag":tag,"server":r["host"],"server_port":r["public_port"]});
-        if r["protocol"] == "ss2022" {
-            outbound["type"] = json!("shadowsocks");
-            outbound["method"] = json!("2022-blake3-aes-128-gcm");
-            outbound["password"] = r["psk"].clone();
-        } else {
-            outbound["type"] = json!("vless");
-            outbound["uuid"] = r["uuid"].clone();
-            outbound["flow"] = json!("xtls-rprx-vision");
-            outbound["tls"] = json!({"enabled":true,"server_name":r["sni"],"utls":{"enabled":true,"fingerprint":"chrome"},"reality":{"enabled":true,"public_key":r["public_key"],"short_id":r["short_id"]}});
-        }
-        outbounds.push(outbound);
-    }
-    outbounds.insert(0, json!({"type":"selector","tag":"proxy","outbounds":tags}));
-    Ok(serde_json::to_string_pretty(
-        &json!({"log":{"level":"warn"},"dns":{"servers":[{"type":"local","tag":"local"}]},"inbounds":[{"type":"mixed","tag":"local","listen":"127.0.0.1","listen_port":2080}],"outbounds":outbounds,"route":{"default_domain_resolver":"local","final":"proxy"}}),
-    )?)
-}
-
 // Encode URI components, including Base64 key punctuation. SIP002 requires
 // plaintext, percent-encoded userinfo for AEAD-2022 rather than Base64 userinfo.
 fn uri_component(value: &str) -> String {
@@ -396,6 +367,7 @@ pub fn share_links(state: &ModuleSnapshot) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     #[test]
     fn fields_reject_commands_and_bad_addresses() {
         let mut v = json!({"name":"fw","port":23456,"target_host":"127.0.0.1","target_port":12345});
@@ -470,23 +442,6 @@ mod tests {
         assert_eq!(message.matches("本机／内网地址").count(), 6, "{message}");
         assert!(message.contains("100.128.0.1 - (查询失败)"), "the shared range ends at 100.127");
     }
-    #[test]
-    fn ss_export_excludes_private_server_fields() {
-        let r = json!({"name":"SS","port":12345,"host":"example.com","public_port":12345,"protocol":"ss2022","sni":"","psk":STANDARD.encode([1;16])});
-        let s = ModuleSnapshot {
-            installed: true,
-            core: None,
-            resources: vec![r],
-            revision: "a".repeat(64),
-            blocked: false,
-            runtime: BTreeMap::new(),
-            usage: BTreeMap::new(),
-        };
-        let text = sing_box(&s).unwrap();
-        assert!(text.contains("2022-blake3-aes-128-gcm"));
-        assert!(!text.contains("private_key"));
-    }
-
     #[test]
     fn share_links_encode_names_keys_and_ipv6_and_never_export_private_keys() {
         let private = URL_SAFE_NO_PAD.encode([2; 32]);
