@@ -45,8 +45,10 @@ try {
   await enrollmentPanel.getByRole('button',{name:'安装并接入此节点',exact:true}).click()
   const enrollCommand=await enrollmentPanel.locator('pre').textContent()
   assert.match(enrollCommand,new RegExp(`^curl -fsS 'https://panel\\.example\\.com/management-files/enroll\\.sh' \\| sh -s -- [0-9a-f]{64}$`),enrollCommand)
+  // The entry toggles: a second click closes node management.
   await unboundCard.getByRole('button',{name:'接入管理',exact:true}).click()
-  assert(await enrollmentPanel.isVisible(),'repeated enrollment clicks must keep node management open')
+  await enrollmentPanel.waitFor({state:'detached'})
+  await unboundCard.getByRole('button',{name:'接入管理',exact:true}).click();await enrollmentPanel.waitFor()
   await enrollmentPanel.getByRole('button',{name:'收起',exact:true}).click()
   await enrollmentPanel.waitFor({state:'detached'})
   assert(!await page.getByTestId('node-detail').isVisible(),'closing enrollment must not reveal Snell for an unbound node')

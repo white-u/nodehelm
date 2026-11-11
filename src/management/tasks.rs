@@ -509,6 +509,9 @@ pub async fn poll(State(app): State<Shared>, headers: HeaderMap, Json(input): Js
                     ("succeeded", "core_upgrade") => "已升级核心，公网连通性需另行验证",
                     ("succeeded", "core_rollback") => "已回退核心，公网连通性需另行验证",
                     ("succeeded", "core_uninstall") => "已卸载模块",
+                    ("succeeded", "install") => "已安装",
+                    ("succeeded", "delete") => "已删除",
+                    ("succeeded", "reset") => "已重置用量",
                     ("succeeded", _) => "已应用，公网连通性需另行验证",
                     ("rolled_back", action) if core_lifecycle(action) => {
                         "核心操作未完成，已保留或恢复原配置，请检查实例运行状态"

@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input"
 import { RefreshCw, Search } from "lucide-react"
 import { ManagementDetail, NodeManagement } from "./ServiceDetail"
 import { useServiceConfirmation } from "./ServiceInteractions"
-import { type FollowUp, type Module, type PmDraft, type Status, type NodeStatus, names, modules, moduleView, lifecycleActive, defaultHost, readManagement } from "./model"
+import { type FollowUp, type Module, type PmDraft, type Status, type NodeStatus, names, modules, moduleView, lifecycleActive, defaultHost, readManagement, feedbackSeconds } from "./model"
 
 export function Management({ nodes }: { nodes: Node[] }) {
   const { discard, confirmation } = useServiceConfirmation()
@@ -49,7 +49,14 @@ export function Management({ nodes }: { nodes: Node[] }) {
     const step = chain?.next ?? chain?.final
     if (failed && step?.draft) keptDrafts.current.set(`${id}:${step.draft.port}`, step.draft)
     const resume = failed && step?.draft ? "可在实例行点击“添加流量统计”继续，已保留填写的参数。" : ""
-    setProgress(previous => ({ ...previous, [id]: { text: text + resume, status: outcome, action: step?.action } }))
+    const entry = { text: text + resume, status: outcome, action: step?.action }
+    setProgress(previous => ({ ...previous, [id]: entry }))
+    // A finished chain's success note goes after a few seconds; failures stay until the next action.
+    if (outcome === "succeeded") setTimeout(() => setProgress(previous => {
+      if (previous[id] !== entry) return previous
+      const { [id]: _, ...rest } = previous
+      return rest
+    }), feedbackSeconds * 1000)
   }, [])
   const stopWatching = useCallback((id: number, notice = "", suspend = false) => {
     const watch = watches.current.get(id)
@@ -246,6 +253,8 @@ export function Management({ nodes }: { nodes: Node[] }) {
     keptDrafts.current.delete(key)
   }
   function openNodeManagement(id: number, trigger: HTMLElement) {
+    // The entry toggles, as the module entries do.
+    if (managedNode === id) { setManagedNode(0); return }
     nodeManagementTrigger.current = trigger
     setManagedNode(id)
     void refreshNode(id)
@@ -290,7 +299,7 @@ export function Management({ nodes }: { nodes: Node[] }) {
             <div className="flex items-center gap-2"><span aria-hidden="true" className={`size-2 shrink-0 rounded-full ${dot}`} /><h3 className="min-w-0 break-words font-medium">{n.name}</h3>{(tag || working) && <span className={`shrink-0 text-xs ${tag ? tagClass : "text-muted-foreground"}`}>{[tag, working && "操作待确认"].filter(Boolean).join(" · ")}</span>}</div>
             <p className="break-all pl-4 text-xs text-muted-foreground">{[n.group, n.ipv4 || n.ip || n.hostname].filter(Boolean).join(" · ") || `节点 #${n.id}`}</p>
           </div>
-          const entries = status && !status.bound ? <Button variant="outline" onClick={event => openNodeManagement(n.id, event.currentTarget)}>接入管理</Button> : <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4" aria-label={`${n.name}的模块`}>{modules.map(id => {
+          const entries = status && !status.bound ? <Button variant="outline" aria-expanded={managedNode === n.id} onClick={event => openNodeManagement(n.id, event.currentTarget)}>接入管理</Button> : <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4" aria-label={`${n.name}的模块`}>{modules.map(id => {
               const view = moduleView(status, id)
               const active = status?.operations?.some(o => o.module === id && ["queued", "delivered"].includes(o.status))
               const removing = lifecycleActive(status?.lifecycle) && (status?.lifecycle?.scope === id || status?.lifecycle?.scope === "all")
@@ -302,7 +311,7 @@ export function Management({ nodes }: { nodes: Node[] }) {
               </button>
             })}</div>
           const warnings = <>{row?.error && <p className="text-xs text-destructive">{status ? "显示上次配置；刷新成功后可操作。" : row.error}</p>}{status?.snapshot?.blocked && <p className="text-xs text-destructive">配置待核实，已暂停写入</p>}</>
-          const manage = <Button id={`node-manage-${n.id}`} variant="ghost" className="ml-auto min-h-11 shrink-0 text-xs text-muted-foreground" data-testid={`node-manage-${n.id}`} onClick={event => openNodeManagement(n.id, event.currentTarget)}>节点管理</Button>
+          const manage = <Button id={`node-manage-${n.id}`} variant="ghost" className="ml-auto min-h-11 shrink-0 text-xs text-muted-foreground" data-testid={`node-manage-${n.id}`} aria-expanded={managedNode === n.id} onClick={event => openNodeManagement(n.id, event.currentTarget)}>节点管理</Button>
           return <div key={n.id} className={`overflow-hidden rounded-xl border bg-background shadow-xs transition-colors motion-reduce:transition-none ${expanded === n.id ? "border-primary/40 ring-1 ring-primary/10" : "hover:border-foreground/20"}`}>
             <article id={`node-row-${n.id}`} data-testid={`node-card-${n.id}`} className="min-w-0 scroll-mt-24 space-y-2 p-3">
               <div className="flex flex-col gap-3 lg:flex-row lg:items-center">

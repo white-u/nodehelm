@@ -83,7 +83,7 @@ try {
       await page.waitForFunction(id=>document.querySelector('[data-testid="node-detail"]')?.getAttribute('data-node-id')===String(id),node.id)
     }
     if(kind==='module')await page.getByTestId('node-detail').getByRole('button',{name:'模块维护',exact:true}).click()
-    else if(kind==='node')await page.getByTestId(`node-manage-${node.id}`).click()
+    else if(kind==='node'){const entry=page.getByTestId(`node-manage-${node.id}`);if(await entry.getAttribute('aria-expanded')!=='true')await entry.click()}
   }
   async function refresh(){await page.getByRole('button',{name:'刷新此节点',exact:true}).click()}
   const revisions=snapshot=>({snell:snapshot.revision,sb:snapshot.modules.sb.revision,fw:snapshot.modules.fw.revision,pm:snapshot.modules.pm.revision})

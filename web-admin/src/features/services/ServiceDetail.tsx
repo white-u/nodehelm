@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input"
 import { Plus, RefreshCw } from "lucide-react"
 import { PmFields, PmPanel } from "./PortPolicies"
 import { InlinePanel, useServiceConfirmation } from "./ServiceInteractions"
-import { type Module, type ApplyIntent, type Resource, type CoreAction, type Snapshot, type Status, type NodeStatus, type FollowUp, type PmDraft, type PmPolicy, names, modules, moduleView, lifecycleActive, lifecycleLabels, runtimeLabels, runtimeDots, actionLabels, labels, sniChoices, quote, newResource, editable, instancePayload, pmBlocked, pmDraft, newPmDraft, pmPayload, pmSummary, serviceFeedbackClass } from "./model"
+import { type Module, type ApplyIntent, type Resource, type CoreAction, type Snapshot, type Status, type NodeStatus, type FollowUp, type PmDraft, type PmPolicy, names, modules, moduleView, lifecycleActive, lifecycleLabels, runtimeLabels, runtimeDots, actionLabels, labels, sniChoices, quote, newResource, editable, instancePayload, pmBlocked, pmDraft, newPmDraft, pmPayload, pmSummary, serviceFeedbackClass, feedbackSeconds } from "./model"
 
 export function ManagementDetail({ node, module, selectedName, record, defaultAddress, notice, progress = "", progressStatus = "pending", progressAction, alerts = true, onSubmitted, onOpenPm, pmOpening, onDirtyChange, onNodeManagement, enabled, settingsError, reload }: {
   node: number; module: Module; selectedName: string; record?: NodeStatus; defaultAddress: string; notice?: string
@@ -51,6 +51,12 @@ export function ManagementDetail({ node, module, selectedName, record, defaultAd
   }
   const view = moduleView(status, module)
   const submittedResult = status?.operations?.find(operation => operation.id === submittedOperation && !["queued", "delivered"].includes(operation.status))
+  // A confirmed success clears itself; failures stay until the next action.
+  useEffect(() => {
+    if (submittedResult?.status !== "succeeded") return
+    const timer = setTimeout(() => { setMessage(""); setSubmittedOperation("") }, feedbackSeconds * 1000)
+    return () => clearTimeout(timer)
+  }, [submittedResult?.status])
   const draftStale = form !== null && baseRevision !== view?.revision
   const chaining = /^[12]\/2/.test(progress)
   const active = chaining || lifecycleActive(status?.lifecycle) || status?.operations?.some(o => ["queued", "delivered"].includes(o.status))
@@ -141,7 +147,7 @@ export function ManagementDetail({ node, module, selectedName, record, defaultAd
     {settingsError && <p role="alert" className="text-sm text-destructive">管理设置读取失败：{settingsError} · 已暂停写入和配置查看。</p>}
     {notice && <p role="status" className={`text-sm ${serviceFeedbackClass("warning")}`}>{notice}</p>}
     {progress && <p role="status" className={`text-sm ${serviceFeedbackClass(progressStatus, progressAction)}`} data-testid="chain-progress">{progress}</p>}
-    {message && !(submittedOperation && status?.lifecycle?.id === submittedOperation && status.lifecycle.status === "succeeded") && <p role={submittedResult && ["rejected", "rolled_back", "recovery_failed"].includes(submittedResult.status) ? "alert" : "status"} className={`text-sm ${serviceFeedbackClass(submittedResult?.status ?? "pending", submittedResult?.action)}`}>{submittedResult ? `${labels[submittedResult.status] ?? submittedResult.status} · ${submittedResult.message || "请展开操作记录查看详情。"}` : submittedOperation && notice ? "操作已提交，结果尚未确认，请手动刷新。" : message}</p>}
+    {message && !(submittedOperation && status?.lifecycle?.id === submittedOperation && status.lifecycle.status === "succeeded") && <p role={submittedResult && ["rejected", "rolled_back", "recovery_failed"].includes(submittedResult.status) ? "alert" : "status"} className={`text-sm ${serviceFeedbackClass(submittedResult?.status ?? "pending", submittedResult?.action)}`}>{submittedResult ? submittedResult.message || labels[submittedResult.status] || submittedResult.status : submittedOperation && notice ? "操作已提交，结果尚未确认，请手动刷新。" : message}</p>}
   </>
   const availability = <>
     {enabled === false && <p className="text-sm text-muted-foreground">尚未启用管理写入。后台需要配置 HTTPS 公网地址；现有监控不受此开关控制。</p>}

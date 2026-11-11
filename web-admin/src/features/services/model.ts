@@ -21,6 +21,8 @@ export type Status = { lifecycle?: Lifecycle; compatible?: boolean; abandonable?
 export const names: Record<Module, string> = { snell: "Snell", sb: "singbox", fw: "realm 转发", pm: "端口流量统计" }
 export const runtimeLabels: Record<string, string> = { active: "运行中", inactive: "已停止", failed: "服务失败", activating: "启动中", deactivating: "停止中", unknown: "运行状态未知" }
 export const runtimeDots: Record<string, string> = { active: "bg-emerald-500", activating: "bg-amber-500", deactivating: "bg-amber-500", failed: "bg-destructive" }
+/** How long a success note stays before it clears itself. */
+export const feedbackSeconds = 6
 export const actionLabels: Record<string, string> = { install: "安装", apply: "保存应用", delete: "删除", reset: "重置用量", check: "目标 TCP 检查", core_upgrade: "升级核心", core_rollback: "回退核心", core_uninstall: "卸载模块" }
 export const labels: Record<string, string> = { checked: "目标检查完成", queued: "等待发送", delivered: "执行中／待核实", succeeded: "已应用", rolled_back: "操作未完成", rejected: "请求被拒绝", cancelled: "未发送，已取消", expired: "过期未执行" }
 export const sniChoices = ["addons.mozilla.org", "www.microsoft.com", "www.amazon.com", "swdist.apple.com", "updates.cdn-apple.com"]
