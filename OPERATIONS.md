@@ -1,21 +1,33 @@
-# NodeHelm 部署与维护速查
+# NodeHelm 运维速查
 
-[文档索引](INDEX.md) · [开发构建](DEVELOPMENT.md)
+[文档索引](INDEX.md) · [部署文档](DEPLOY.md) · [服务管理与恢复](NODE_MANAGEMENT_DEPLOY.md) · [开发构建](DEVELOPMENT.md)
 
-本页用于当前独立 NodeHelm 项目。完整安装、四模块管理、升级卸载及中断恢复流程以 [部署与恢复说明](NODE_MANAGEMENT_DEPLOY.md) 为准。原 monitor 服务有独立安装器，不使用本项目命令修改它。
+日常运维的位置、命令、通知规则和故障定位。安装步骤见 [部署文档](DEPLOY.md)，服务管理各模块及中断恢复见 [服务管理与恢复](NODE_MANAGEMENT_DEPLOY.md)。同机的原 monitor 服务有自己的安装器，不要用它覆盖本项目，也不要用本项目命令修改它。
 
-## 安装入口与服务位置
+## 服务位置
 
-使用本项目离线包，按 [README](README.md#安装-node-manager) 核对摘要并执行首次安装。不要运行原 monitor 上游 Release 安装器覆盖此项目。
+后台主机（安装器默认值）：
 
-| 项目 | 安装器默认值 |
+| 项目 | 位置 |
 | --- | --- |
 | hub 二进制 | `/opt/node-manager-hub/monitor-hub` |
+| 维护工具 | `/opt/node-manager-hub/tools`，本机命令 `nodehelm-hub` |
 | 数据库 | `/var/lib/node-manager-hub/hub.db` |
 | 磁盘主题 | `/var/lib/node-manager-hub/themes/` |
 | systemd 单元 | `/etc/systemd/system/node-manager-hub.service` |
 | 监听 | `127.0.0.1:9911` |
 | 后台入口 | `https://你的域名/admin/` |
+
+节点：
+
+| 项目 | 位置 |
+| --- | --- |
+| 监控 Agent | `/opt/monitor/monitor-agent`、`/opt/monitor/agent.env`，服务 `monitor-agent`（systemd 或 OpenRC） |
+| 管理组件 | `/opt/node-manager`，状态 `/var/lib/node-manager`，服务 `node-manager-agent`，本机命令 `nodehelm` |
+| 端口流量统计 | `node-manager-pm.service`、`node-manager-pm.timer`，nftables 表 `ip node_manager_pm` |
+| 整节点卸载收尾 | `node-manager-cleanup.service`，材料 `/var/lib/node-manager-cleanup` |
+
+hub、监控 Agent 与管理组件可在同机共存，服务、凭据和卸载入口各自独立，不能通过删除整个 `/opt` 目录处理。
 
 默认主题随后台二进制更新。磁盘主题目录中 `short` 为 `default` 的主题会顶替内置版本；早期版本在面板中更新过默认主题会留下 `themes/default`，删除后恢复使用内置版本。
 
@@ -37,18 +49,17 @@
 
 `--site https://你的域名` 可明确 agent 接入地址和 cookie 的安全标志；域名必须是 HTTPS 域名入口。正常从 HTTPS 域名打开后台时可用浏览器地址生成安装命令，但通过 SSH 隧道访问、节点入口与后台域名不同、或代理不能正确表达 HTTPS 时应显式指定。添加/安装节点有额外入口保护，仅能打开页面不代表可添加节点。
 
-首次启动且数据库尚无密码时，后台把应急密码写入本机服务日志；独立安装器随后立即重置，新密码只显示在安装终端，日志中的那一个已失效。安装器不将密码存入发布包。遗失密码可使用下文的重置入口。登录后在后台添加节点并复制 agent 安装命令。hub 的 `/install.sh` 提供的是 [agent 安装器](install.sh)，它安装 hub 内嵌的 `agent/` 监控 agent（从 hub 的 `/agent/{arch}` 下载），不是 hub 自身。
+首次启动且数据库尚无密码时，后台把应急密码写入本机服务日志；独立安装器随后立即重置，新密码只显示在安装终端，日志中的那一个已失效。遗失密码可使用下文的重置入口。登录后在后台添加节点并复制 agent 安装命令。hub 的 `/install.sh` 提供的是 [agent 安装器](install.sh)，它安装 hub 内嵌的监控 agent（从 hub 的 `/agent/{arch}` 下载），不是 hub 自身。
 
-agent 默认路径是 `/opt/monitor/monitor-agent`、`/opt/monitor/agent.env`，服务名 `monitor-agent`，支持 systemd 或 OpenRC。hub 与 agent 可在同机共存，但服务、凭据和卸载入口不同。
-
-## 更新与日志
+## 日志与更新
 
 ```sh
+sudo nodehelm-hub logs
 systemctl status node-manager-hub --no-pager
 journalctl -u node-manager-hub -n 100 --no-pager
 ```
 
-安装与更新是同一条命令。已安装时它下载并校验最新发布包，相同版本直接退出，否则先做更新前备份并检查新程序；失败会回退，完成后删除这份备份：
+更新后台用 `sudo nodehelm-hub update`：先按发布的校验清单比对，已是最新直接退出；否则下载并校验发布包，做更新前备份并检查新程序，失败自动回退，完成后删除这份备份。还没有 `nodehelm-hub` 命令时用安装时的同一条命令，已安装时它显示菜单（无终端时加 `--yes` 即更新）：
 
 ```sh
 curl -fsSL https://github.com/white-u/nodehelm/releases/latest/download/nodehelm.sh | sudo sh
@@ -56,9 +67,11 @@ curl -fsSL https://github.com/white-u/nodehelm/releases/latest/download/nodehelm
 
 连不上 GitHub 时，把发布包和 `nodehelm.sh` 传到服务器，运行 `sudo sh nodehelm.sh --package 发布包`；也可解压后直接运行包内的 `update-hub.sh`。校验文件与程序来自同一发布，只能发现下载损坏；要防发布被篡改，需另行核对来源。
 
-切换中断使用同一工具 `recover`，不能删除恢复记录绕过检查。管理组件用 `/opt/node-manager/install.py upgrade` 单独维护；完整参数见部署说明。
+更新中断后再运行一次 `sudo nodehelm-hub` 即自动完成，不能删除恢复记录绕过检查。
 
-hub 与 agent 分别更新。后台显示 monitor 基础版本与上游 Agent 版本；NodeHelm 更新使用本项目独立构建，不以原 monitor 版本提示替换本项目。自建镜像时 [Dockerfile](Dockerfile) 使用预编译的两个架构二进制，不会从 Rust 源码构建；镜像使用 UID/GID `65534`，数据挂载必须可写，默认数据库路径为 `/data/monitor.db`。
+后台更新后再更新节点：节点上 `sudo nodehelm upgrade` 同时升级管理组件和监控 Agent。监控 Agent 随后台发布并嵌入后台，后台「更新」页列出 agent 或管理组件与后台不一致的节点；未接入服务管理的节点用该页给出的升级命令。
+
+自建镜像时 [Dockerfile](Dockerfile) 使用预编译的两个架构二进制，不会从 Rust 源码构建；镜像使用 UID/GID `65534`，数据挂载必须可写，默认数据库路径为 `/data/monitor.db`。
 
 ## 通知
 
@@ -84,15 +97,15 @@ hub 与 agent 分别更新。后台显示 monitor 基础版本与上游 Agent �
 
 ## 备份、恢复与时间
 
-优先使用后台的数据备份功能，它走 SQLite 备份接口。运行中只复制 `monitor.db` 可能遗漏 WAL 中已提交的数据；手工文件备份应先正常停止 hub，再保存数据目录，并核对所有权和文件完整性。
+优先使用后台的数据备份功能，它走 SQLite 备份接口。运行中只复制数据库文件可能遗漏 WAL 中已提交的数据；手工文件备份应先正常停止 hub，再保存数据目录，并核对所有权和文件完整性。
 
 完整迁移还应保存磁盘主题目录及 systemd 中的监听/站点设置；数据库备份不会打包外部主题文件。数据库包含设置、节点 token、会话等敏感数据，应限制访问。恢复操作会替换业务数据，先留存现状备份，再使用后台恢复入口；源码会先迁移并验证候选数据库，包含 fork 扩展表兼容性检查。
 
 日、账期与分时记录使用 hub 本地时间。容器默认 `TZ=UTC`，镜像包含 zoneinfo；要按其他时区记账，应在部署时显式设置，例如 `TZ=Asia/Singapore`。修改时区影响后续归类，不会重算旧分时记录。更改系统时间或时区也会影响之后的归类。
 
-## 密码与卸载
+## 密码与维护命令
 
-遗失应急密码时，在后台主机执行，确认数据库路径确实属于本项目：
+遗失应急密码时，在后台主机运行 `sudo nodehelm-hub reset-password`；定制部署直接调用程序，确认数据库路径确实属于本项目：
 
 ```sh
 sudo /opt/node-manager-hub/monitor-hub --db /var/lib/node-manager-hub/hub.db --reset-password
@@ -100,7 +113,19 @@ sudo /opt/node-manager-hub/monitor-hub --db /var/lib/node-manager-hub/hub.db --r
 
 新密码只在当前终端显示；所有旧登录会话失效。不要将终端输出分享给他人。自定义部署须使用对应程序和数据库路径。
 
-后台主机上 `sudo nodehelm-hub`（安装前为 `nodehelm.sh`）的 `update`、`logs`、`reset-password`、`uninstall` 覆盖日常维护，无参数在终端运行时显示菜单，无终端时需加 `--yes`（更新）；备份与恢复使用后台「数据」页；节点上 `sudo nodehelm` 负责升级、状态、日志、换绑与卸载，`recover` 处理中断；`logs` 先显示服务状态与本机检查，并隐藏应急密码。中断的更新或卸载在下次运行时自动完成。卸载删除全部数据（数据库、密钥、主题、维护记录和服务器上的备份）。维护工具保存在 `/opt/node-manager-hub/tools`，恢复与卸载不需要联网。管理组件、原监控 Agent、受管业务实例各有独立生命周期，不能通过删除整个 `/opt` 目录处理。`install-hub.sh` 不支持原安装器的 `--reset-password` 或 `--uninstall` 参数。
+日常维护命令：
+
+| 位置 | 命令 | 作用 |
+| --- | --- | --- |
+| 后台主机 | `sudo nodehelm-hub`（安装前为 `nodehelm.sh`） | 无参数在终端显示菜单；`update`、`logs`、`reset-password`、`uninstall` |
+| 节点 | `sudo nodehelm` | 无参数显示菜单；`upgrade`、`logs`、`rebind`、`uninstall` |
+
+- 两个命令在运行时都先自动完成上次中断的更新、卸载或业务操作。
+- `nodehelm-hub logs` 先显示服务状态与本机 HTTP 检查，并隐藏日志中的应急密码；`nodehelm logs` 显示管理组件与监控 Agent 的运行状态和管理组件日志。
+- 后台卸载删除全部数据（数据库、密钥、主题、维护记录和服务器上的备份）；仍有节点接入时会提示数量，并拒绝无人值守的 `--yes`。
+- 维护工具保存在 `/opt/node-manager-hub/tools`，恢复与卸载不需要联网。
+- 备份与恢复使用后台「数据」页。
+- `install-hub.sh` 只做首次安装，不支持原 monitor 安装器的 `--reset-password` 或 `--uninstall` 参数。
 
 ## 故障定位
 

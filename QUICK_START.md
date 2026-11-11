@@ -45,7 +45,7 @@ hub.example.com {
 每台 VPS 需要两条命令，都由后台生成，在 VPS 上以 root 执行：
 
 1. **监控**：「节点」页点「添加节点」，填名称，复制安装命令到 VPS 执行，几秒内节点上线。
-2. **服务管理**：「服务管理」→ 选中该节点 →「节点管理」→「安装并接入此节点」，复制一行命令到 VPS 执行：
+2. **服务管理**：「服务管理」→ 该节点卡片的「接入管理」→「安装并接入此节点」，复制一行命令到 VPS 执行：
 
    ```sh
    curl -fsS 'https://hub.example.com/management-files/enroll.sh' | sh -s -- <登记码>
@@ -63,4 +63,4 @@ hub.example.com {
 
 ---
 
-下一步：[完整部署文档](DEPLOY.md)（更新、卸载、常见问题） · [部署与恢复说明](NODE_MANAGEMENT_DEPLOY.md)（各模块细节）
+下一步：[完整部署文档](DEPLOY.md)（更新、卸载、常见问题） · [服务管理与恢复](NODE_MANAGEMENT_DEPLOY.md)（各模块细节与中断恢复）

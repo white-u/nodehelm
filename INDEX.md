@@ -20,12 +20,12 @@
 
 | 阅读目的 | 入口 |
 | --- | --- |
-| 使用入口及安装介绍 | [README.md](README.md) |
+| 功能概览与安装入口 | [README.md](README.md) |
 | 四步快速部署 | [QUICK_START.md](QUICK_START.md) |
-| 从零部署步骤 | [DEPLOY.md](DEPLOY.md) |
-| 独立部署、反代、接入和恢复 | [NODE_MANAGEMENT_DEPLOY.md](NODE_MANAGEMENT_DEPLOY.md) |
-| 日常运维速查、通知事件与延迟通知规则 | [OPERATIONS.md](OPERATIONS.md) |
-| 源码构建与联调 | [DEVELOPMENT.md](DEVELOPMENT.md) |
+| 从零部署：安装、反代、接入、更新、卸载与常见问题 | [DEPLOY.md](DEPLOY.md) |
+| 服务管理详解：页面行为、四个模块的规则、升级卸载与中断恢复（随离线包分发） | [NODE_MANAGEMENT_DEPLOY.md](NODE_MANAGEMENT_DEPLOY.md) |
+| 运维速查：服务位置、维护命令、通知事件与延迟通知规则、备份与故障定位 | [OPERATIONS.md](OPERATIONS.md) |
+| 源码构建、联调、测试与发行 | [DEVELOPMENT.md](DEVELOPMENT.md) |
 
 ## 常用任务入口
 

@@ -21,7 +21,8 @@ curl -fsSL https://your-hub/install.sh | sh -s -- --server https://your-hub --to
 ```
 
 安装脚本识别 systemd 与 OpenRC，二进制装到 `/opt/monitor/monitor-agent`，token 写入
-`/opt/monitor/agent.env`（0600）——和 hub 同一个目录，那台机器上只有这一处要看。
+`/opt/monitor/agent.env`（0600）。升级用同一脚本的 `--upgrade`（不带凭证，沿用机器上已有的设置），
+卸载用 `--uninstall`；已接入服务管理的节点运行 `sudo nodehelm upgrade` 即一并升级。
 
 ## 运行
 
@@ -69,7 +70,7 @@ monitor-agent --server https://your-hub --token <token>
 连接 hub 时逐个尝试解析出的地址，除最后一个外每个限 5 秒。网卡上只有内网 IPv4（NAT）时先连 hub 的
 IPv4：NAT 的公网地址不在网卡上，hub 只有看到一条 IPv4 连接才知道它。
 
-协议说明见文档站的[架构与协议](https://monitor-document.pages.dev/dev/architecture)。
+协议沿用上游，说明见上游文档站的[架构与协议](https://monitor-document.pages.dev/dev/architecture)。
 
 ## 构建
 

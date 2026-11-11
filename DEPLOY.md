@@ -1,6 +1,6 @@
 # NodeHelm 部署文档
 
-[文档索引](INDEX.md) · [部署与恢复说明](NODE_MANAGEMENT_DEPLOY.md) · [运维速查](OPERATIONS.md)
+[文档索引](INDEX.md) · [服务管理与恢复](NODE_MANAGEMENT_DEPLOY.md) · [运维速查](OPERATIONS.md)
 
 本文按顺序给出从零部署 NodeHelm 的步骤。下文域名统一写作 `https://hub.example.com`，请换成你自己的。
 
@@ -130,9 +130,9 @@ sudo nodehelm-hub reset-password
 | --- | --- | --- |
 | 后台 | 后台主机上 `sudo nodehelm-hub update` | 自动回退到原程序 |
 | 节点管理组件和监控 Agent | 节点上 `sudo nodehelm upgrade` | 组件自动回退；Agent 保留原版本 |
+| 业务核心 | 服务管理 → 选择模块 → 实例列表上方「升级核心」 | 自动恢复原核心；模块维护可显式回退 |
 
 监控 Agent 随后台发布并嵌入后台，节点从后台的 `/agent/{arch}` 下载，不访问 GitHub；后台更新后，「更新」页的 agent 一栏列出需要升级的节点。未接入服务管理的节点没有 `nodehelm` 命令，用该栏给出的升级命令。
-| 业务核心 | 服务管理 → 选择模块 → 实例列表上方「升级核心」 | 自动恢复原核心；模块维护可显式回退 |
 
 更新后台：先核对发布的校验清单，已是最新会直接退出，不下载发布包；否则先做更新前备份，再切换并检查新程序，失败自动回退；完成后删除这份备份。还没有 `nodehelm-hub` 命令时，用安装时的同一条命令，已安装时它显示菜单。后台「更新」页提供命令的复制按钮。
 
@@ -211,4 +211,4 @@ sudo journalctl -u node-manager-cleanup.service -n 50 --no-pager
 | 后台更新中断 | 再运行一次 `sudo nodehelm-hub` |
 | 节点操作中断 | 节点上再运行一次 `sudo nodehelm` |
 
-不要通过关闭证书校验绕过问题。更细的恢复流程见 [部署与恢复说明](NODE_MANAGEMENT_DEPLOY.md)。
+不要通过关闭证书校验绕过问题。更细的恢复流程见 [服务管理与恢复](NODE_MANAGEMENT_DEPLOY.md)。
