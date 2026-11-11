@@ -116,6 +116,11 @@ try {
   let task=await submit(editor.getByRole('button',{name:'保存并应用',exact:true}))
   assert.equal(task.request.intent,'create');assert.equal(task.request.payload.name,'12345');assert.equal(task.request.payload.public_port,12345);assert.equal(task.request.payload.psk,'')
   const savedSnell={...task.request.payload,psk:'s'.repeat(32)}
+  // While it runs, its module entry says 执行中, the node name gets no extra tag and the configuration has one line about it.
+  await page.getByTestId(`node-module-${id}-snell`).getByText('执行中',{exact:true}).waitFor()
+  assert.equal(await page.getByTestId(`node-card-${id}`).getByText('操作待确认').count(),0)
+  await instances.getByText('操作已提交，正在确认结果。',{exact:true}).waitFor()
+  assert.equal(await instances.getByText(/节点有待完成操作/).count(),0)
   snapshot.resources=[savedSnell];snapshot.runtime={'12345':'active'};snapshot.revision='b'.repeat(64);await finish(task)
   snapshot.resources.push({...savedSnell,name:'Other Snell',port:12346,public_port:12346,host:'other-snell.example.com',psk:'o'.repeat(32)})
   snapshot.runtime['12346']='active';snapshot.revision='c'.repeat(64);await poll();await refresh()

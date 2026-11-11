@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input"
 import { RefreshCw, Search } from "lucide-react"
 import { ManagementDetail, NodeManagement } from "./ServiceDetail"
 import { useServiceConfirmation } from "./ServiceInteractions"
-import { type FollowUp, type Module, type PmDraft, type Status, type NodeStatus, names, modules, moduleView, lifecycleActive, defaultHost, readManagement, feedbackSeconds } from "./model"
+import { type FollowUp, type Module, type PmDraft, type Status, type NodeStatus, names, modules, moduleView, lifecycleActive, lifecycleLabels, defaultHost, readManagement, feedbackSeconds } from "./model"
 
 export function Management({ nodes }: { nodes: Node[] }) {
   const { discard, confirmation } = useServiceConfirmation()
@@ -292,11 +292,12 @@ export function Management({ nodes }: { nodes: Node[] }) {
         {shown.map(n => {
           const row = records[n.id]
           const status = row?.status
-          const working = lifecycleActive(status?.lifecycle) || status?.operations?.some(operation => ["queued", "delivered"].includes(operation.status))
+          // Only a whole-node uninstall is named here; a module's own work shows on its entry.
+          const working = status?.lifecycle?.scope === "all" && lifecycleActive(status.lifecycle) ? lifecycleLabels[status.lifecycle.status] ?? "卸载待确认" : ""
           const [dot, tag, tagClass] = row?.error ? ["bg-destructive", "读取失败", "text-destructive"] : !status ? ["bg-muted-foreground/30", "读取中", "text-muted-foreground"]
             : !status.bound ? ["bg-amber-500", "未绑定", "text-amber-700 dark:text-amber-400"] : status.online ? ["bg-emerald-500", "", ""] : ["bg-muted-foreground/40", "离线", "text-muted-foreground"]
           const heading = <div className="min-w-0 lg:w-52 lg:shrink-0">
-            <div className="flex items-center gap-2"><span aria-hidden="true" className={`size-2 shrink-0 rounded-full ${dot}`} /><h3 className="min-w-0 break-words font-medium">{n.name}</h3>{(tag || working) && <span className={`shrink-0 text-xs ${tag ? tagClass : "text-muted-foreground"}`}>{[tag, working && "操作待确认"].filter(Boolean).join(" · ")}</span>}</div>
+            <div className="flex items-center gap-2"><span aria-hidden="true" className={`size-2 shrink-0 rounded-full ${dot}`} /><h3 className="min-w-0 break-words font-medium">{n.name}</h3>{(tag || working) && <span className={`shrink-0 text-xs ${tag ? tagClass : "text-muted-foreground"}`}>{[tag, working].filter(Boolean).join(" · ")}</span>}</div>
             <p className="break-all pl-4 text-xs text-muted-foreground">{[n.group, n.addresses?.[0]?.address || n.hostname].filter(Boolean).join(" · ") || `节点 #${n.id}`}</p>
           </div>
           const entries = status && !status.bound ? <Button variant="outline" aria-expanded={managedNode === n.id} onClick={event => openNodeManagement(n.id, event.currentTarget)}>接入管理</Button> : <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4" aria-label={`${n.name}的模块`}>{modules.map(id => {
@@ -310,7 +311,8 @@ export function Management({ nodes }: { nodes: Node[] }) {
                 <span className={`shrink-0 text-xs ${selected ? "text-primary-foreground" : "text-muted-foreground"}`}>{state}</span>
               </button>
             })}</div>
-          const warnings = <>{row?.error && <p className="text-xs text-destructive">{status ? "显示上次配置；刷新成功后可操作。" : row.error}</p>}{status?.snapshot?.blocked && <p className="text-xs text-destructive">配置待核实，已暂停写入</p>}</>
+          // The expanded configuration explains these in full, so the card leaves them out then.
+          const warnings = open && node === n.id && !managedNode && status?.bound ? null : <>{row?.error && <p className="text-xs text-destructive">{status ? "显示上次配置；刷新成功后可操作。" : row.error}</p>}{status?.snapshot?.blocked && <p className="text-xs text-destructive">配置待核实，已暂停写入</p>}</>
           const manage = <Button id={`node-manage-${n.id}`} variant="ghost" className="ml-auto min-h-11 shrink-0 text-xs text-muted-foreground" data-testid={`node-manage-${n.id}`} aria-expanded={managedNode === n.id} onClick={event => openNodeManagement(n.id, event.currentTarget)}>节点管理</Button>
           return <div key={n.id} className={`overflow-hidden rounded-xl border bg-background shadow-xs transition-colors motion-reduce:transition-none ${expanded === n.id ? "border-primary/40 ring-1 ring-primary/10" : "hover:border-foreground/20"}`}>
             <article id={`node-row-${n.id}`} data-testid={`node-card-${n.id}`} className="min-w-0 scroll-mt-24 space-y-2 p-3">
