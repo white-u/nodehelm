@@ -88,6 +88,9 @@ try {
   await select('snell')
   await instances.getByRole('button',{name:'新增实例',exact:true}).waitFor()
   assert(await page.getByTestId(`node-card-${id}`).evaluate(row=>!!row.nextElementSibling?.matches('[data-testid="node-detail"]')),'configuration expands right below its node row')
+  // The card shows the address the node page shows, here the pinned one, and search finds it.
+  await page.getByTestId(`node-card-${id}`).getByText('203.0.113.42').waitFor()
+  await page.getByLabel('搜索服务器').fill('203.0.113.42');await page.getByTestId(`node-card-${id}`).waitFor()
   await page.getByLabel('搜索服务器').fill('不存在的节点');await page.getByTestId(`node-card-${id}`).waitFor()
   assert(await detail.isVisible(),'a search must not hide the expanded node');await page.getByLabel('搜索服务器').fill('')
   await page.getByTestId(`node-module-${id}-snell`).click();await detail.waitFor({state:'detached'})

@@ -241,7 +241,7 @@ export function Management({ nodes }: { nodes: Node[] }) {
   const unbound = nodes.filter(n => records[n.id]?.status && !records[n.id]?.status?.bound).length
   // Nodes not read yet, or unreadable, are listed under 全部 only.
   const matches = (n: Node) => filter === "all" || (filter === "bound") === !!records[n.id]?.status?.bound && !!records[n.id]?.status
-  const shown = nodes.filter(n => (open && n.id === node) || n.id === managedNode || (matches(n) && [n.name, n.group, n.ip, n.ipv4, n.ipv6, n.hostname].some(value => value?.toLocaleLowerCase().includes(query))))
+  const shown = nodes.filter(n => (open && n.id === node) || n.id === managedNode || (matches(n) && [n.name, n.group, ...(n.addresses ?? []).map(item => item.address), n.hostname].some(value => value?.toLocaleLowerCase().includes(query))))
   const online = nodes.filter(n => records[n.id]?.status?.online && !records[n.id]?.error).length
   const record = records[node]
   const managementTarget = nodes.find(n => n.id === managedNode)
@@ -297,7 +297,7 @@ export function Management({ nodes }: { nodes: Node[] }) {
             : !status.bound ? ["bg-amber-500", "未绑定", "text-amber-700 dark:text-amber-400"] : status.online ? ["bg-emerald-500", "", ""] : ["bg-muted-foreground/40", "离线", "text-muted-foreground"]
           const heading = <div className="min-w-0 lg:w-52 lg:shrink-0">
             <div className="flex items-center gap-2"><span aria-hidden="true" className={`size-2 shrink-0 rounded-full ${dot}`} /><h3 className="min-w-0 break-words font-medium">{n.name}</h3>{(tag || working) && <span className={`shrink-0 text-xs ${tag ? tagClass : "text-muted-foreground"}`}>{[tag, working && "操作待确认"].filter(Boolean).join(" · ")}</span>}</div>
-            <p className="break-all pl-4 text-xs text-muted-foreground">{[n.group, n.ipv4 || n.ip || n.hostname].filter(Boolean).join(" · ") || `节点 #${n.id}`}</p>
+            <p className="break-all pl-4 text-xs text-muted-foreground">{[n.group, n.addresses?.[0]?.address || n.hostname].filter(Boolean).join(" · ") || `节点 #${n.id}`}</p>
           </div>
           const entries = status && !status.bound ? <Button variant="outline" aria-expanded={managedNode === n.id} onClick={event => openNodeManagement(n.id, event.currentTarget)}>接入管理</Button> : <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4" aria-label={`${n.name}的模块`}>{modules.map(id => {
               const view = moduleView(status, id)
