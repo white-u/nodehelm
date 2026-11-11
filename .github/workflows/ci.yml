@@ -54,6 +54,11 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: python3 -m unittest discover -s management/tests -v
+      # Port traffic statistics against real nftables, in a network namespace of
+      # its own; systemd is mocked inside the test.
+      - run: |
+          sudo apt-get -qq update && sudo apt-get -qq install -y nftables
+          sudo unshare -n python3 management/tests/integration_pm.py
       - run: cargo test
 
       # The agent ships inside the hub, so it is checked with it.

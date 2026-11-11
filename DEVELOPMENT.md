@@ -43,6 +43,7 @@ npm run dev
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
 python3 -m unittest discover -s management/tests
+sudo unshare -n python3 management/tests/integration_pm.py   # Linux，需要 nftables
 cargo test
 (cd agent && cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked)
 shellcheck -S warning install.sh install-hub.sh update-hub.sh nodehelm.sh scripts/*.sh
@@ -71,8 +72,7 @@ scripts/e2e.sh target/debug/monitor-hub agent/target/release/monitor-agent
 
 | 范围 | 运行方式 | 说明 |
 | --- | --- | --- |
-| 业务模块 | 在一次性 Linux 测试机以 root 运行 `python3 management/tests/integration_{snell,modules}.py` | 使用隔离的名称、路径与单元，不安装管理组件，不影响已有服务 |
-| 端口流量统计 | 以 root 运行 `unshare -n python3 management/tests/integration_pm.py` | 在新的网络命名空间中创建和清理 nftables 表 |
+| 业务模块 | 在一次性 Linux 测试机以 root 运行 `python3 management/tests/integration_{snell,modules}.py` | 使用隔离的名称、路径与单元，不安装管理组件，不影响已有服务；`integration_modules` 同时核对 Reality 探测日志仍能被端口流量统计识别，升级 sing-box 核心时必跑 |
 | 核心升级回退 | `unshare -n python3 management/tests/integration_core_lifecycle.py <发布归档目录>` | 同上，需要预先下载的核心归档 |
 
 ## 修改模块与协议

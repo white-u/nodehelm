@@ -6,6 +6,7 @@ import os
 import pathlib
 import shutil
 import socket
+import ssl
 import struct
 import subprocess
 import sys
@@ -18,6 +19,7 @@ from controller import Controller
 from modules import SPECS
 from protocol import Rejected
 import fw
+import pm
 import sb
 from core_driver import command
 from snell import Driver as SnellDriver
@@ -138,8 +140,20 @@ def main():
                 raise RuntimeError('Reality TCP client failed')
             assert b'Example Domain' in result.stdout
             p.terminate();p.wait(timeout=10);processes.remove(p)
+            # PM leaves failed REALITY handshakes out of the online IPs by matching
+            # this core's log line; a reworded line would count probes silently.
+            try:
+                with socket.create_connection(('127.0.0.1',port),timeout=10) as raw, ssl.create_default_context().wrap_socket(raw,server_hostname=chosen):pass
+            except (OSError,ssl.SSLError):pass
+            for _ in range(20):
+                logged=command('journalctl','-u',d.unit(port),'--since','-3min','-o','cat','-q','--no-pager',check=False).stdout.decode()
+                if any(m[1]=='127.0.0.1' for m in pm.REALITY_PROBE.finditer(logged)):break
+                time.sleep(0.5)
+            else:
+                print(logged[-1500:],flush=True)
+                raise RuntimeError('REALITY probe log line no longer matches pm.REALITY_PROBE')
             execute(c,'delete',{'port':port})
-            print('PASS SB Reality: target TLS1.3/h2, real client handshake, CRUD, keys retained, rollback',flush=True)
+            print('PASS SB Reality: target TLS1.3/h2, real client handshake, probe log matched by PM, CRUD, keys retained, rollback',flush=True)
         else:
             failures.append('External Reality target unavailable; handshake not verified')
         c,d=build('fw');execute(c,'install')
