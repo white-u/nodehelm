@@ -77,10 +77,16 @@ jobs:
       # The panel's flows against this hub, each on a throwaway database. The
       # tests load Playwright through PLAYWRIGHT_PACKAGE, outside the panel's
       # own dependencies.
+      # The browser download has stalled once for ten minutes; a bounded attempt
+      # repeated beats waiting out the job timeout.
       - run: |
           mkdir "$RUNNER_TEMP/playwright" && cd "$RUNNER_TEMP/playwright"
           npm init -y >/dev/null && npm i --no-audit --no-fund playwright@1.65.0
-          npx playwright install --with-deps chromium
+          for attempt in 1 2 3; do
+            timeout 180 npx playwright install --with-deps chromium && exit 0
+            echo "::warning::playwright install attempt $attempt failed"
+          done
+          exit 1
       - run: for t in management management-lifecycle admin; do node "web-admin/tests/$t.browser.mjs" target/debug/monitor-hub; done
         env:
           PLAYWRIGHT_PACKAGE: ${{ runner.temp }}/playwright/package.json
