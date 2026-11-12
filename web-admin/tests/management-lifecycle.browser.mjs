@@ -62,6 +62,11 @@ try {
     const id=Number(new URL(route.request().url()).pathname.split('/').at(-1)),fixture=fixtures.get(id)
     return fixture?route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(fixture)}):route.continue()
   })
+  await page.route('**/api/management/nodes',async route=>{
+    const response=await route.fetch(),all=await response.json()
+    for(const [id,fixture] of fixtures)all[id]=fixture
+    return route.fulfill({response,json:all})
+  })
   await page.goto(base+'/admin/manage')
   const maintenance=page.getByTestId('node-maintenance'),moduleMaintenance=page.getByTestId('module-maintenance'),instances=page.getByTestId('instance-config'),progress=maintenance.getByTestId('lifecycle-progress')
   const panel=page.getByTestId('node-management-panel')

@@ -415,6 +415,7 @@ pub async fn export_configuration(
 pub fn admin_routes() -> Router<Shared> {
     Router::new()
         .route("/api/management", get(settings).post(configure))
+        .route("/api/management/nodes", get(statuses))
         .route("/api/management/{node}", get(status).delete(unbind))
         .route("/api/management/{node}/abandon", post(abandon))
         .route("/api/management/{node}/enrollment", post(enrollment))

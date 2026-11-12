@@ -835,3 +835,33 @@ async fn two_module_changes_queue_their_second_step_on_the_hub() {
     let state = body(status(Admin, f.state(), Path(f.node)).await).await;
     assert!(state["operations"].as_array().unwrap().iter().all(|o| o["after"] != "c".repeat(32)));
 }
+#[tokio::test]
+async fn all_statuses_match_each_node_and_isolate_failures() {
+    let f = Fixture::new();
+    let credential = f.bind().await;
+    body(
+        poll(
+            f.state(),
+            f.headers(&credential),
+            Json(Poll { snapshot: snapshot(), result: None, lifecycle_result: None }),
+        )
+        .await,
+    )
+    .await;
+    let other = f
+        .app
+        .db
+        .create_node(&crate::db::Node { name: "other".into(), ..Default::default() }, "another-monitor-token")
+        .unwrap();
+    let all = body(statuses(Admin, f.state()).await).await;
+    for node in [f.node, other] {
+        assert_eq!(all[node.to_string()], body(status(Admin, f.state(), Path(node)).await).await);
+    }
+    assert_eq!(all[f.node.to_string()]["bound"], true);
+    assert_eq!(all[other.to_string()]["bound"], false);
+    // A node whose snapshot cannot be opened reports why; the others still load.
+    fs::remove_file(format!("{}.management.key", f.app.db.file())).unwrap();
+    let all = body(statuses(Admin, f.state()).await).await;
+    assert!(all[f.node.to_string()]["error"].as_str().is_some_and(|e| !e.is_empty()));
+    assert_eq!(all[other.to_string()]["bound"], false);
+}

@@ -120,63 +120,87 @@ export function Management({ nodes }: { nodes: Node[] }) {
       if (alive.current && sequence === settingsSequence.current) setSettingsError(String(e))
     }
   }, [])
-  const refreshNode = useCallback((id: number, force = false, manual = false): Promise<void> => {
+  /** Starts a read of the node's status; the returned sequence identifies it in `settle`. */
+  const begin = useCallback((id: number, force: boolean, manual: boolean) => {
     if (manual) {
       // A refresh restarts the watch but keeps a running chain's operation.
       const operation = chains.current.has(id) ? watches.current.get(id)?.operation : undefined
       stopWatching(id); stopped.current.delete(id)
       if (operation) watches.current.set(id, { deadline: Date.now() + 120_000, operation })
     }
-    const running = pending.current.get(id)
-    if (running && !force) return running
     const sequence = (sequences.current.get(id) ?? 0) + 1
     sequences.current.set(id, sequence)
     // Background reads retain the current presentation. Only first load or an
     // explicit refresh should show a loading state and disable refresh controls.
     setRecords(previous => ({ ...previous, [id]: { ...previous[id], loading: force || !previous[id]?.status } }))
+    return sequence
+  }, [stopWatching])
+  /** Applies a read's outcome unless a later read of the node has started. */
+  const settle = useCallback((id: number, sequence: number, manual: boolean, outcome: Status | Error) => {
+    if (!alive.current || sequences.current.get(id) !== sequence) return
+    if (outcome instanceof Error) {
+      setRecords(previous => ({ ...previous, [id]: { ...previous[id], loading: false, error: String(outcome) } }))
+      if (watches.current.has(id)) stopWatching(id, "读取失败，已停止自动确认。请手动刷新配置查看结果。", true)
+      return
+    }
+    const status = outcome
+    setRecords(previous => ({ ...previous, [id]: { status, loading: false, updatedAt: Date.now(), refreshed: manual } }))
+    const active = status.operations?.some(operation => ["queued", "delivered"].includes(operation.status))
+    const blocked = status.snapshot?.blocked || Object.values(status.snapshot?.modules ?? {}).some(view => view.blocked)
+    const watch = watches.current.get(id)
+    const result = status.operations?.find(operation => operation.id === watch?.operation && !["queued", "delivered"].includes(operation.status))
+    if (status.lifecycle && ["paused", "interrupted"].includes(status.lifecycle.status)) stopWatching(id, "卸载尚未完成，请查看管理页中的进度和恢复提示。", true)
+    else if (blocked) stopWatching(id, "配置待核实，已停止自动确认。核实后请手动刷新。", true)
+    else if (!status.bound && !lifecycleActive(status.lifecycle)) stopWatching(id, watch && status.lifecycle?.status !== "succeeded" ? "管理绑定尚未确认，请安装完成后手动刷新配置。" : "")
+    else if (watch?.operation && status.lifecycle?.id === watch.operation && status.lifecycle.status === "succeeded") stopWatching(id)
+    else if (result) {
+      if (advance(id, status, result)) schedule(id)
+      else stopWatching(id)
+    }
+    else if ((active || lifecycleActive(status.lifecycle) || watch?.operation) && !stopped.current.has(id)) {
+      if (!watch) watches.current.set(id, { deadline: Date.now() + 120_000 })
+      schedule(id)
+    } else if (watch) stopWatching(id)
+    if (!watches.current.has(id) && chains.current.has(id)) endChain(id, "已停止自动确认，请手动刷新查看后续步骤结果。", false, "pending")
+  }, [advance, endChain, schedule, stopWatching])
+  const refreshNode = useCallback((id: number, force = false, manual = false): Promise<void> => {
+    const running = pending.current.get(id)
+    if (running && !force) return running
+    const sequence = begin(id, force, manual)
     const request = (async () => {
       try {
-        const status = await readManagement<Status>(`/management/${id}`)
-        if (alive.current && sequences.current.get(id) === sequence) {
-          setRecords(previous => ({ ...previous, [id]: { status, loading: false, updatedAt: Date.now(), refreshed: manual } }))
-          const active = status.operations?.some(operation => ["queued", "delivered"].includes(operation.status))
-          const blocked = status.snapshot?.blocked || Object.values(status.snapshot?.modules ?? {}).some(view => view.blocked)
-          const watch = watches.current.get(id)
-          const result = status.operations?.find(operation => operation.id === watch?.operation && !["queued", "delivered"].includes(operation.status))
-          if (status.lifecycle && ["paused", "interrupted"].includes(status.lifecycle.status)) stopWatching(id, "卸载尚未完成，请查看管理页中的进度和恢复提示。", true)
-          else if (blocked) stopWatching(id, "配置待核实，已停止自动确认。核实后请手动刷新。", true)
-          else if (!status.bound && !lifecycleActive(status.lifecycle)) stopWatching(id, watch && status.lifecycle?.status !== "succeeded" ? "管理绑定尚未确认，请安装完成后手动刷新配置。" : "")
-          else if (watch?.operation && status.lifecycle?.id === watch.operation && status.lifecycle.status === "succeeded") stopWatching(id)
-          else if (result) {
-            if (advance(id, status, result)) schedule(id)
-            else stopWatching(id)
-          }
-          else if ((active || lifecycleActive(status.lifecycle) || watch?.operation) && !stopped.current.has(id)) {
-            if (!watch) watches.current.set(id, { deadline: Date.now() + 120_000 })
-            schedule(id)
-          } else if (watch) stopWatching(id)
-          if (!watches.current.has(id) && chains.current.has(id)) endChain(id, "已停止自动确认，请手动刷新查看后续步骤结果。", false, "pending")
-        }
+        settle(id, sequence, manual, await readManagement<Status>(`/management/${id}`))
       } catch (e) {
-        if (alive.current && sequences.current.get(id) === sequence) {
-          setRecords(previous => ({ ...previous, [id]: { ...previous[id], loading: false, error: String(e) } }))
-          if (watches.current.has(id)) stopWatching(id, "读取失败，已停止自动确认。请手动刷新配置查看结果。", true)
-        }
+        settle(id, sequence, manual, e instanceof Error ? e : new Error(String(e)))
       } finally {
         if (sequences.current.get(id) === sequence) pending.current.delete(id)
       }
     })()
     pending.current.set(id, request)
     return request
-  }, [advance, endChain, schedule, stopWatching])
+  }, [begin, settle])
   useLayoutEffect(() => { refreshRef.current = refreshNode }, [refreshNode])
+  // Every node in one request; a node the hub could not read carries its own error.
   const refreshAll = useCallback(async (manual = false) => {
     const queue = ids ? ids.split(",").map(Number) : []
-    // Existing per-node APIs, bounded so a large fleet cannot flood the hub.
-    await Promise.all(Array.from({ length: Math.min(3, queue.length) }, async () => {
-      while (alive.current && queue.length) await refreshNode(queue.shift()!, manual, manual)
-    }))
-  }, [ids, refreshNode])
+    if (!queue.length) return
+    const started = queue.map(id => [id, begin(id, manual, manual)] as const)
+    const request = (async () => {
+      try {
+        const all = await readManagement<Record<string, Status & { error?: string }>>("/management/nodes")
+        for (const [id, sequence] of started) {
+          const entry = all[id]
+          settle(id, sequence, manual, !entry ? new Error("节点不存在，可能已被删除") : entry.error ? new Error(entry.error) : entry)
+        }
+      } catch (e) {
+        for (const [id, sequence] of started) settle(id, sequence, manual, e instanceof Error ? e : new Error(String(e)))
+      } finally {
+        for (const [id, sequence] of started) if (sequences.current.get(id) === sequence) pending.current.delete(id)
+      }
+    })()
+    for (const [id] of started) pending.current.set(id, request)
+    await request
+  }, [ids, begin, settle])
   const invalidate = useCallback(() => {
     alive.current = false
     settingsSequence.current++

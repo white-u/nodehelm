@@ -4,52 +4,77 @@
 use super::*;
 
 pub async fn status(_: Admin, State(app): State<Shared>, Path(node): Path<i64>) -> Response {
+    response(node_status(&app, node))
+}
+/// Every node's status in one response, so the services page needs a single
+/// round trip instead of one per node. A node that cannot be read carries its
+/// error and does not fail the others.
+pub async fn statuses(_: Admin, State(app): State<Shared>) -> Response {
     response((|| {
-        let row: Option<(String, i64, String, i64, String)> = app
-            .db
-            .conn()
-            .query_row(
-                "SELECT credential,last_seen,snapshot,protocol,component FROM managed_node WHERE node=?1",
-                [node],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-            )
-            .optional()?;
-        let Some((credential, seen, snapshot, protocol, component)) = row else {
+        let nodes: Vec<i64> = {
             let c = app.db.conn();
-            return Ok(json!({"bound":false,"compatible":false,
-                "lifecycle":lifecycle::latest(&c,node)?,"abandonable":lifecycle::active(&c,node)?}));
+            let mut statement = c.prepare("SELECT id FROM node ORDER BY id")?;
+            let rows = statement.query_map([], |r| r.get(0))?;
+            rows.collect::<std::result::Result<_, _>>()?
         };
-        let mut snapshot =
-            if snapshot.is_empty() { Value::Null } else { open(&key(&app.db)?, node, &snapshot)? };
-        if let Some(items) = snapshot["resources"].as_array_mut() {
-            for item in items {
-                item.as_object_mut().map(|o| o.remove("psk"));
-            }
+        let mut all = serde_json::Map::new();
+        for node in nodes {
+            let value = node_status(&app, node).unwrap_or_else(|e| match e.downcast_ref::<crate::Shown>() {
+                Some(shown) => json!({"error":shown.0}),
+                None => {
+                    tracing::warn!("management status of node {node} failed: {e:#}");
+                    json!({"error":crate::api::INTERNAL})
+                }
+            });
+            all.insert(node.to_string(), value);
         }
-        if let Some(modules) = snapshot["modules"].as_object_mut() {
-            for state in modules.values_mut() {
-                if let Some(resources) = state["resources"].as_array_mut() {
-                    for item in resources {
-                        if let Some(map) = item.as_object_mut() {
-                            for key in ["psk", "uuid", "private_key"] {
-                                map.remove(key);
-                            }
+        Ok(Value::Object(all))
+    })())
+}
+fn node_status(app: &crate::App, node: i64) -> Result<Value> {
+    let row: Option<(String, i64, String, i64, String)> = app
+        .db
+        .conn()
+        .query_row(
+            "SELECT credential,last_seen,snapshot,protocol,component FROM managed_node WHERE node=?1",
+            [node],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .optional()?;
+    let Some((credential, seen, snapshot, protocol, component)) = row else {
+        let c = app.db.conn();
+        return Ok(json!({"bound":false,"compatible":false,
+                "lifecycle":lifecycle::latest(&c,node)?,"abandonable":lifecycle::active(&c,node)?}));
+    };
+    let mut snapshot = if snapshot.is_empty() { Value::Null } else { open(&key(&app.db)?, node, &snapshot)? };
+    if let Some(items) = snapshot["resources"].as_array_mut() {
+        for item in items {
+            item.as_object_mut().map(|o| o.remove("psk"));
+        }
+    }
+    if let Some(modules) = snapshot["modules"].as_object_mut() {
+        for state in modules.values_mut() {
+            if let Some(resources) = state["resources"].as_array_mut() {
+                for item in resources {
+                    if let Some(map) = item.as_object_mut() {
+                        for key in ["psk", "uuid", "private_key"] {
+                            map.remove(key);
                         }
                     }
                 }
             }
         }
-        let c = app.db.conn();
-        let mut stmt=c.prepare("SELECT id,status,message,created,module,action,after FROM managed_operation WHERE node=?1 ORDER BY created DESC,rowid DESC LIMIT 30")?;
-        let rows=stmt.query_map([node],|r|Ok(json!({"id":r.get::<_,String>(0)?,"status":r.get::<_,String>(1)?,"message":r.get::<_,String>(2)?,"created":r.get::<_,i64>(3)?,"module":r.get::<_,String>(4)?,"action":r.get::<_,String>(5)?,"after":r.get::<_,String>(6)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
-        let abandonable =
-            seen <= now() - ABANDON_AFTER && (!credential.is_empty() || lifecycle::active(&c, node)?);
-        Ok(
-            json!({"bound":!credential.is_empty(),"online":seen>now()-30,"last_seen":seen,"snapshot":snapshot,"operations":rows,"compatible":protocol==PROTOCOL,
+    }
+    let c = app.db.conn();
+    let mut stmt=c.prepare("SELECT id,status,message,created,module,action,after FROM managed_operation WHERE node=?1 ORDER BY created DESC,rowid DESC LIMIT 30")?;
+    let rows=stmt.query_map([node],|r|Ok(json!({"id":r.get::<_,String>(0)?,"status":r.get::<_,String>(1)?,"message":r.get::<_,String>(2)?,"created":r.get::<_,i64>(3)?,"module":r.get::<_,String>(4)?,"action":r.get::<_,String>(5)?,"after":r.get::<_,String>(6)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
+    let abandonable =
+        seen <= now() - ABANDON_AFTER && (!credential.is_empty() || lifecycle::active(&c, node)?);
+    Ok(
+        json!({"bound":!credential.is_empty(),"online":seen>now()-30,"last_seen":seen,"snapshot":snapshot,"operations":rows,"compatible":protocol==PROTOCOL,
                 "lifecycle":lifecycle::latest(&c,node)?,"abandonable":abandonable,
                 "component_current":component==component_digest(FILES)}),
-        )
-    })())
+    )
 }
 #[derive(Clone, Copy, PartialEq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
