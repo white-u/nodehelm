@@ -215,6 +215,8 @@ try {
   await instances.getByText(/^近 7 天已记录 入站 3\.00 MB · 出站 1\.00 MB/).waitFor()
   const today=new Date();await instances.getByRole('button',{name:new RegExp(`^${today.getUTCMonth()+1}/${today.getUTCDate()} 入站 3\\.00 MB`)}).click()
   await instances.getByText(/小时用量 UTC/).waitFor()
+  // The pointer left on the day button rests over a bar of the new chart; hovering a bar selects it.
+  await page.mouse.move(0,0)
   const hourly = instances.getByRole('group',{name:'24 小时入站与出站用量',exact:true})
   assert.equal(await hourly.getByRole('button').count(),24)
   await instances.getByLabel('查看小时用量',{exact:true}).selectOption('0')
