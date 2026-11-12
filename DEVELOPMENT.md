@@ -105,4 +105,12 @@ CI 在 Linux 上将当前 hub 与同一提交的 agent 配对；macOS 不能直�
 
 [release.yml](.github/workflows/release.yml) 先构建两个架构的 agent，再构建嵌入它们的 x86_64 / aarch64 musl 后台二进制，`v*` 标签必须匹配 Cargo 版本；发布二进制、各架构离线包 `node-manager-*.tar.gz`、入口脚本 `nodehelm.sh` 与 `sha256sums.txt`，再将同一批二进制打入容器镜像。在普通分支上手动触发只构建；发布步骤以标签 ref 为条件，手动选择标签运行也可能进入发布流程。
 
+发布新版本：
+
+1. 一批修改在 `main` 上完成后，修改 `Cargo.toml` 的版本，运行 `cargo update -p monitor-hub --offline` 同步 `Cargo.lock`，提交 `release: x.y.z` 并推送 `main`。
+2. 等该提交的 ci 通过后，在同一提交上推送标签：`git push origin "$(git rev-parse HEAD):refs/tags/vx.y.z"`。
+3. 发布页出现 `sha256sums.txt` 即完成；随后在后台主机运行 `sudo nodehelm-hub update`，节点运行 `sudo nodehelm upgrade`。
+
+已发布的标签不移动、不复用，有问题发布下一个版本。本地交叉编译的后台只用于测试：其中的 agent 与正式发布的字节不同，换回正式版本后节点会重装一次 agent。
+
 [audit.yml](.github/workflows/audit.yml) 检查依赖漏洞，并在定时/手动运行时核对最新发行版。修改默认主题时升高 `web-theme/theme.json` 的版本，CI 核对它与 `package.json`、`package-lock.json` 一致；默认主题只调用其 README 列出的主题契约接口。文档修改只需回读、检查本地链接与差异，无需为此下载所有依赖或发布版本。
