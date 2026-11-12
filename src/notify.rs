@@ -1021,6 +1021,87 @@ mod tests {
         assert!(latency(sweep(&app, &mut restarted, now + 1_380).unwrap()).is_empty(), "no history yet");
     }
 
+    /// The window after a recovery is three times as long as the one recovery
+    /// is judged over; reading back past the recovery, it found the outage just
+    /// recovered from and announced it again every other minute.
+    #[test]
+    fn a_recovered_outage_is_not_announced_again() {
+        let app = app();
+        let now = 100 * 86_400 + 10 * 3_600;
+        let a = node(&app, "a", false, now);
+        connect(&app, a);
+        let probe = crate::db::PingTask {
+            name: "上海".into(),
+            target: "sh.example:80".into(),
+            interval: 60,
+            nodes: vec![a],
+            ..Default::default()
+        };
+        let task = app.db.save_ping_task(&probe).unwrap();
+        for h in 3..27 {
+            app.db
+                .conn()
+                .execute(
+                    "INSERT INTO ping_hour VALUES (?1, ?2, ?3, 60, 0, 40, 38, 45)",
+                    rusqlite::params![a, task, (now / 3_600 - h) * 3_600],
+                )
+                .unwrap();
+        }
+        app.db.set(crate::latency::NODES, &a.to_string()).unwrap();
+        with_channel(&app);
+        let mut watch = Watch::default();
+        let mut events = Vec::new();
+        // Forty minutes unreachable, then reachable again for half an hour.
+        for m in 0..70 {
+            let at = now + m * 60;
+            app.db.insert_pings(a, &[(task, at, if m < 40 { -1 } else { 40 })]).unwrap();
+            for note in
+                sweep(&app, &mut watch, at).unwrap().into_iter().filter(|n| n.event.starts_with("latency"))
+            {
+                events.push((m, note.event));
+            }
+        }
+        assert_eq!(events, [(8, "latency"), (48, "latency_recovered")]);
+    }
+
+    #[test]
+    fn a_route_that_usually_loses_much_raises_no_alert() {
+        let app = app();
+        let now = 100 * 86_400 + 10 * 3_600;
+        let fair = node(&app, "fair", false, now);
+        let poor = node(&app, "poor", false, now);
+        connect(&app, fair);
+        connect(&app, poor);
+        let probe = crate::db::PingTask {
+            name: "上海".into(),
+            target: "sh.example:80".into(),
+            interval: 60,
+            nodes: vec![fair, poor],
+            ..Default::default()
+        };
+        let task = app.db.save_ping_task(&probe).unwrap();
+        // Usually 10% lost against 25%.
+        for (n, answered, lost) in [(fair, 54, 6), (poor, 45, 15)] {
+            for h in 3..27 {
+                app.db
+                    .conn()
+                    .execute(
+                        "INSERT INTO ping_hour VALUES (?1, ?2, ?3, ?4, ?5, 40, 38, 45)",
+                        rusqlite::params![n, task, (now / 3_600 - h) * 3_600, answered, lost],
+                    )
+                    .unwrap();
+            }
+        }
+        app.db.set(crate::latency::NODES, &format!("{fair},{poor}")).unwrap();
+        with_channel(&app);
+        let rows: Vec<_> = (0..10).map(|m| (task, now - 540 + m * 60, 300)).collect();
+        app.db.insert_pings(fair, &rows).unwrap();
+        app.db.insert_pings(poor, &rows).unwrap();
+        let notes = sweep(&app, &mut Watch::default(), now).unwrap();
+        let nodes: Vec<_> = notes.iter().filter(|n| n.event == "latency").map(|n| n.node.as_str()).collect();
+        assert_eq!(nodes, ["fair"]);
+    }
+
     #[test]
     fn offline_is_announced_once_after_the_grace_period_and_paired_with_the_return() {
         let app = app();

@@ -272,7 +272,7 @@ export function Notify({ nodes, refresh }: { nodes: Node[]; refresh: () => void 
       />
       <NodeAlerts
         title="延迟通知"
-        hint="延迟探测最近 10 次（至少 5 分钟）明显高于平时，或丢包过半时提醒；只看间隔不超过 5 分钟的探测"
+        hint="延迟探测最近 10 次（至少 5 分钟）明显高于平时，或丢包过半时提醒；只看间隔不超过 5 分钟的探测，长期丢包超过 15% 的线路不提醒"
         nodes={nodes}
         saved={new Set(text("notify_latency_nodes").split(",").filter(Boolean).map(Number))}
         onSave={async (chosen) => { await save({ notify_latency_nodes: chosen.map((n) => n.id).join(",") }, "延迟通知已保存") }}

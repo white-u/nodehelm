@@ -1148,14 +1148,16 @@ impl Db {
     }
 
     /// One node's hourly median round trips since `since`, as `(task_id, ts,
-    /// latency)`, hours with no answer left out: the latency alert's baseline.
-    pub fn hourly_pings(&self, node_id: i64, since: i64) -> Result<Vec<(i64, i64, i64)>> {
+    /// latency, percent lost)`, hours with no answer left out: the latency
+    /// alert's baseline.
+    pub fn hourly_pings(&self, node_id: i64, since: i64) -> Result<Vec<(i64, i64, i64, i64)>> {
         let conn = self.conn();
         let mut stmt = conn.prepare_cached(
-            "SELECT task_id, ts, latency FROM ping_hour
+            "SELECT task_id, ts, latency, lost * 100 / (answered + lost) FROM ping_hour
              WHERE node_id=?1 AND ts>=?2 AND answered>0 AND latency IS NOT NULL",
         )?;
-        let rows = stmt.query_map(params![node_id, since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        let rows =
+            stmt.query_map(params![node_id, since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 

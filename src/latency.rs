@@ -39,6 +39,10 @@ const RECOVERY_WINDOW: i64 = 600;
 /// History the baseline reads, and the hours it needs before anything is judged.
 const BASELINE_SPAN: i64 = 7 * 86_400;
 const BASELINE_HOURS: usize = 12;
+/// A pair whose hours usually lose more than this percentage is a poor route
+/// rather than a normal one that changed, and raises no alert. The median, so
+/// that an outage of a few hours does not make a normal route poor.
+const LOSSY: i64 = 15;
 /// Results are filed a minute at a time, so the newest minute may be missing:
 /// a window ends at the newest result filed rather than at the present.
 const FILING_LAG: i64 = 60;
@@ -92,6 +96,10 @@ struct Baseline {
     overall: i64,
     /// The median of the same hour of day, ±1 h, where three hours exist.
     by_hour: [Option<i64>; 24],
+    /// Whether the hours usually lose more than [`LOSSY`]. Only raising an
+    /// alert is skipped: one raised before still recovers, so that a pair near
+    /// the line is not announced again each time it crosses back.
+    lossy: bool,
 }
 
 impl Baseline {
@@ -112,7 +120,7 @@ impl Baseline {
                 hours.iter().filter(|&&(ts, _)| matches!(near(ts), 0 | 1 | 23)).map(|&(_, l)| l).collect();
             (slot.len() >= 3).then(|| median(slot)).flatten()
         });
-        Some(Self { overall, by_hour })
+        Some(Self { overall, by_hour, lossy: false })
     }
 }
 
@@ -273,13 +281,19 @@ pub fn check(
         }
         if mine.iter().any(|t| !watch.baselines.contains_key(&(node, t.id))) {
             let mut hours: HashMap<i64, Vec<(i64, i64)>> = HashMap::new();
-            for (task, ts, latency) in app.db.hourly_pings(node, now - BASELINE_SPAN)? {
+            let mut losses: HashMap<i64, Vec<i64>> = HashMap::new();
+            for (task, ts, latency, loss) in app.db.hourly_pings(node, now - BASELINE_SPAN)? {
                 if ts >= state.targets.get(&task).map_or(0, |(_, since)| *since) {
                     hours.entry(task).or_default().push((ts, latency));
+                    losses.entry(task).or_default().push(loss);
                 }
             }
             for task in &mine {
-                let b = Baseline::from(hours.get(&task.id).map_or(&[][..], Vec::as_slice));
+                let b =
+                    Baseline::from(hours.get(&task.id).map_or(&[][..], Vec::as_slice)).map(|b| Baseline {
+                        lossy: losses.remove(&task.id).and_then(median).is_some_and(|l| l > LOSSY),
+                        ..b
+                    });
                 watch.baselines.insert((node, task.id), b);
             }
         }
@@ -306,17 +320,25 @@ pub fn check(
         for task in mine {
             let key = format!("{node}:{}", task.id);
             let frozen = state.alerted.get(&key).copied();
-            let Some(baseline) = frozen.or_else(|| {
-                watch.baselines.get(&(node, task.id)).and_then(|b| b.as_ref()).map(|b| b.at(now))
-            }) else {
+            let learned = watch.baselines.get(&(node, task.id)).and_then(|b| b.as_ref());
+            if frozen.is_none() && learned.is_some_and(|b| b.lossy) {
+                continue;
+            }
+            let Some(baseline) = frozen.or_else(|| learned.map(|b| b.at(now))) else {
                 continue;
             };
             let all = samples.remove(&task.id).unwrap_or_default();
             let window = windows[&task.id];
-            // Oldest first, so the last is the newest.
+            // Oldest first, so the last is the newest. A pair that recovered is
+            // judged on what followed: its longer window would otherwise still
+            // hold the spell it recovered from and announce it again at once.
             let newest = all.last().map_or(now, |&(ts, _)| ts);
+            let from = match frozen {
+                None => state.recovered.get(&key).copied().unwrap_or(i64::MIN),
+                Some(_) => i64::MIN,
+            };
             let recent: Vec<i64> =
-                all.iter().filter(|&&(ts, _)| ts > newest - window).map(|&(_, l)| l).collect();
+                all.iter().filter(|&&(ts, _)| ts > newest - window && ts > from).map(|&(_, l)| l).collect();
             let expected = (window / task.interval.max(1)) as usize;
             if recent.len() < MIN_SAMPLES.max(expected * 3 / 4) {
                 continue;
