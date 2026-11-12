@@ -19,21 +19,28 @@ pub const NODES: &str = "notify_latency_nodes";
 /// What was announced, as JSON; outside `notify_`, which the panel writes.
 const STATE: &str = "latency_alerted";
 
-/// Probes run at most this far apart are judged; slower ones would take more
-/// than half an hour to gather a window.
+/// Probes run at most this far apart are judged; slower ones would take close
+/// to an hour to gather a window.
 const MAX_INTERVAL: i64 = 300;
-/// The shortest window, and the samples it must hold at the least.
+/// The shortest window, and the probe rounds it spans at the least: with five,
+/// random spikes on half the answers of a probe run every minute already
+/// raised an alert every hour or so.
 const WINDOW: i64 = 300;
-const MIN_SAMPLES: usize = 5;
-/// At most the newest this many samples of a pair are judged: a tripled
-/// window of the shortest interval, 15 minutes at 5 s.
-const MAX_SAMPLES: usize = 180;
+const WINDOW_ROUNDS: i64 = 10;
+/// Samples a window must hold, one short of its rounds: a round skipped or
+/// filed late, or stamps drifting past the window's edge, would otherwise leave
+/// a probe run every minute unjudged.
+const MIN_SAMPLES: usize = 9;
 /// A pair back within this long of recovering waits three windows, not one.
 const FLAP_WINDOW: i64 = 3_600;
+/// An alerted pair recovers over at least this long, so that a dip between two
+/// bad spells is not announced.
+const RECOVERY_WINDOW: i64 = 600;
 /// History the baseline reads, and the hours it needs before anything is judged.
 const BASELINE_SPAN: i64 = 7 * 86_400;
 const BASELINE_HOURS: usize = 12;
-/// Results are filed a minute at a time, so the newest minute may be missing.
+/// Results are filed a minute at a time, so the newest minute may be missing:
+/// a window ends at the newest result filed rather than at the present.
 const FILING_LAG: i64 = 60;
 
 /// A round trip over both of these is high: double alone would flag 5 ms
@@ -136,9 +143,9 @@ impl Window {
 }
 
 /// Bad when four in five answers are above the threshold, or half the probes
-/// were lost; good again when the median is under [`recovery`] and loss under
-/// 20%. The gap between the two keeps a pair near its threshold from
-/// flapping.
+/// were lost; good again when four in five answers are under [`recovery`] and
+/// loss is under 20%. The gap between the two keeps a pair near its threshold
+/// from flapping.
 fn judge(samples: &[i64], baseline: i64, alerted: bool) -> (Verdict, Window) {
     let answered: Vec<i64> = samples.iter().copied().filter(|&l| l >= 0).collect();
     let window = Window {
@@ -151,7 +158,8 @@ fn judge(samples: &[i64], baseline: i64, alerted: bool) -> (Verdict, Window) {
     }
     let high = answered.iter().filter(|&&l| l > threshold(baseline)).count();
     let bad = window.loss() >= 50 || (!answered.is_empty() && high * 5 >= answered.len() * 4);
-    let good = window.loss() < 20 && window.median.is_some_and(|m| m < recovery(baseline));
+    let low = answered.iter().filter(|&&l| l < recovery(baseline)).count();
+    let good = window.loss() < 20 && !answered.is_empty() && low * 5 >= answered.len() * 4;
     let verdict = match (alerted, bad, good) {
         (false, true, _) => Verdict::Bad,
         (true, _, true) => Verdict::Good,
@@ -278,16 +286,22 @@ pub fn check(
         let windows: HashMap<i64, i64> = mine
             .iter()
             .map(|t| {
-                let flapping = state.recovered.contains_key(&format!("{node}:{}", t.id));
-                (t.id, WINDOW.max(5 * t.interval.max(1)) * if flapping { 3 } else { 1 })
+                let key = format!("{node}:{}", t.id);
+                let shortest = WINDOW.max(WINDOW_ROUNDS * t.interval.max(1));
+                let window = if state.alerted.contains_key(&key) {
+                    RECOVERY_WINDOW.max(shortest)
+                } else if state.recovered.contains_key(&key) {
+                    shortest * 3
+                } else {
+                    shortest
+                };
+                (t.id, window)
             })
             .collect();
         let widest = windows.values().copied().max().unwrap_or(WINDOW);
-        let mut samples: HashMap<i64, Vec<i64>> = HashMap::new();
+        let mut samples: HashMap<i64, Vec<(i64, i64)>> = HashMap::new();
         for (task, ts, latency) in app.db.recent_pings(node, now - widest - FILING_LAG)? {
-            if windows.get(&task).is_some_and(|w| ts >= now - w - FILING_LAG) {
-                samples.entry(task).or_default().push(latency);
-            }
+            samples.entry(task).or_default().push((ts, latency));
         }
         for task in mine {
             let key = format!("{node}:{}", task.id);
@@ -298,12 +312,16 @@ pub fn check(
                 continue;
             };
             let all = samples.remove(&task.id).unwrap_or_default();
-            let recent = &all[all.len().saturating_sub(MAX_SAMPLES)..];
-            let expected = (windows[&task.id] / task.interval.max(1)) as usize;
-            if recent.len() < MIN_SAMPLES.max(expected.min(MAX_SAMPLES) * 3 / 4) {
+            let window = windows[&task.id];
+            // Oldest first, so the last is the newest.
+            let newest = all.last().map_or(now, |&(ts, _)| ts);
+            let recent: Vec<i64> =
+                all.iter().filter(|&&(ts, _)| ts > newest - window).map(|&(_, l)| l).collect();
+            let expected = (window / task.interval.max(1)) as usize;
+            if recent.len() < MIN_SAMPLES.max(expected * 3 / 4) {
                 continue;
             }
-            let (verdict, w) = judge(recent, baseline, frozen.is_some());
+            let (verdict, w) = judge(&recent, baseline, frozen.is_some());
             if !armed {
                 continue;
             }
@@ -350,27 +368,32 @@ mod tests {
     #[test]
     fn brief_spikes_do_not_alert_but_a_sustained_rise_does() {
         let base = 40;
-        // Two of five high: a burst, not news.
-        assert_eq!(judge(&[40, 300, 300, 42, 41], base, false).0, Verdict::Unchanged);
-        assert_eq!(judge(&[40, 300, 300, 300, 300], base, false).0, Verdict::Bad);
+        let mixed = |high: usize, l: i64| [vec![l; high], vec![41; 10 - high]].concat();
+        // Seven of ten high: a burst, not news.
+        assert_eq!(judge(&mixed(7, 300), base, false).0, Verdict::Unchanged);
+        assert_eq!(judge(&mixed(8, 300), base, false).0, Verdict::Bad);
         // Double alone is not enough on a short route.
-        assert_eq!(judge(&[12; 5], 5, false).0, Verdict::Unchanged);
-        assert_eq!(judge(&[60; 5], 5, false).0, Verdict::Bad);
-        // Too few samples say nothing.
-        assert_eq!(judge(&[300; 4], base, false).0, Verdict::Unchanged);
+        assert_eq!(judge(&[12; 10], 5, false).0, Verdict::Unchanged);
+        assert_eq!(judge(&[60; 10], 5, false).0, Verdict::Bad);
+        // One round missing is still judged; two say nothing.
+        assert_eq!(judge(&[300; 9], base, false).0, Verdict::Bad);
+        assert_eq!(judge(&[300; 8], base, false).0, Verdict::Unchanged);
     }
 
     #[test]
     fn loss_alerts_on_its_own_and_recovery_needs_both() {
+        let mixed = |first: usize, a: i64, b: i64| [vec![a; first], vec![b; 10 - first]].concat();
         // Past the 900 ms deadline a slow link reads as loss.
-        assert_eq!(judge(&[-1, -1, -1, 400, 410], 400, false).0, Verdict::Bad);
-        assert_eq!(judge(&[-1, 40, 41, 40, 42], 40, false).0, Verdict::Unchanged);
-        // Back under 1.5 × with little loss recovers; between the thresholds holds.
-        assert_eq!(judge(&[45; 5], 40, true).0, Verdict::Good);
-        assert_eq!(judge(&[70; 5], 40, true).0, Verdict::Unchanged);
-        assert_eq!(judge(&[-1, 45, 45, 45, 45], 40, true).0, Verdict::Unchanged);
+        assert_eq!(judge(&mixed(5, -1, 400), 400, false).0, Verdict::Bad);
+        assert_eq!(judge(&mixed(4, -1, 40), 40, false).0, Verdict::Unchanged);
+        // Four in five back under 1.5 × with little loss recovers; a median
+        // under it alone, or between the thresholds, holds.
+        assert_eq!(judge(&mixed(8, 45, 300), 40, true).0, Verdict::Good);
+        assert_eq!(judge(&mixed(6, 45, 300), 40, true).0, Verdict::Unchanged);
+        assert_eq!(judge(&[70; 10], 40, true).0, Verdict::Unchanged);
+        assert_eq!(judge(&mixed(2, -1, 45), 40, true).0, Verdict::Unchanged);
         // A baseline of 0 ms (a probe on the same host) still recovers.
-        assert_eq!(judge(&[3; 5], 0, true).0, Verdict::Good);
+        assert_eq!(judge(&[3; 10], 0, true).0, Verdict::Good);
     }
 
     #[test]

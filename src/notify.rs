@@ -992,11 +992,11 @@ mod tests {
         with_channel(&app);
 
         // A burst is not news, and nothing is said for nodes not chosen.
-        minutes(now - 300, &[40, 300, 300, 41, 40]);
+        minutes(now - 600, &[40, 300, 300, 41, 40, 40, 41, 40, 42, 40]);
         app.db.set(crate::latency::NODES, &a.to_string()).unwrap();
-        assert!(latency(sweep(&app, &mut watch, now).unwrap()).is_empty(), "two of five high");
+        assert!(latency(sweep(&app, &mut watch, now).unwrap()).is_empty(), "two of ten high");
 
-        minutes(now - 240, &[300, 300, 300, 300, 310]);
+        minutes(now - 540, &[300, 300, 300, 300, 300, 300, 300, 300, 300, 310]);
         assert!(latency(sweep(&app, &mut watch, now + 30).unwrap()).is_empty(), "once a minute");
         let notes = latency(sweep(&app, &mut watch, now + 60).unwrap());
         assert_eq!(notes.len(), 1);
@@ -1006,14 +1006,19 @@ mod tests {
         let mut restarted = Watch::default();
         assert!(latency(sweep(&app, &mut restarted, now + 120).unwrap()).is_empty(), "announced once");
 
-        minutes(now - 60, &[42, 41, 43, 40, 42]);
-        let notes = latency(sweep(&app, &mut restarted, now + 240).unwrap());
+        // Recovery is judged over the last ten minutes of results: seven back to
+        // normal of ten is a median, not yet a recovery; eight is.
+        minutes(now + 60, &[42; 7]);
+        assert!(latency(sweep(&app, &mut restarted, now + 480).unwrap()).is_empty(), "recovery is slow");
+        minutes(now + 480, &[42]);
+        let notes = latency(sweep(&app, &mut restarted, now + 540).unwrap());
         assert_eq!(notes[0].title, "🟢 a 延迟恢复");
+        assert_eq!(notes[0].message, "上海：42 ms，丢包 0%");
 
         // A new target starts its history over: the old baseline judges nothing.
         app.db.save_ping_task(&probe("gz.example:80", task)).unwrap();
-        minutes(now + 240, &[300; 5]);
-        assert!(latency(sweep(&app, &mut restarted, now + 600).unwrap()).is_empty(), "no history yet");
+        minutes(now + 720, &[300; 10]);
+        assert!(latency(sweep(&app, &mut restarted, now + 1_380).unwrap()).is_empty(), "no history yet");
     }
 
     #[test]
