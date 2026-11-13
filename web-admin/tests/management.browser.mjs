@@ -52,6 +52,9 @@ try {
   await enrollmentPanel.getByRole('button',{name:'收起',exact:true}).click()
   await enrollmentPanel.waitFor({state:'detached'})
   assert(!await page.getByTestId('node-detail').isVisible(),'closing enrollment must not reveal Snell for an unbound node')
+  // With the command shown, the binding is picked up without a manual refresh.
+  await unboundCard.getByRole('button',{name:'接入管理',exact:true}).click()
+  await enrollmentPanel.getByRole('button',{name:'安装并接入此节点',exact:true}).click();await enrollmentPanel.locator('pre').waitFor()
   const enrollment=await api(`/api/management/${id}/enrollment`,{})
   const credential='c'.repeat(64)
   await api('/api/management-agent/v1/enroll',{enrollment:enrollment.enrollment,credential,boot_id:''})
@@ -61,7 +64,9 @@ try {
     const response=await context.request.post(base+'/api/management-agent/v1/poll',{data:{snapshot,result},headers:{Authorization:'Bearer '+credential,'X-Node-Manager-Protocol':'1'}})
     assert(response.ok(),`poll: HTTP ${response.status()} ${await response.text()}`);return response.json()
   }
-  await poll();await page.reload()
+  await poll()
+  await page.getByTestId(`node-module-${id}-snell`).waitFor({timeout:12000});await enrollmentPanel.locator('pre').waitFor({state:'detached'})
+  await page.reload()
   const instances=page.getByTestId('instance-config'),detail=page.getByTestId('node-detail')
   const editor=page.getByTestId('service-instance-editor'),pmEditor=page.getByTestId('pm-policy-editor')
   const nodePanel=page.getByTestId('node-management-panel')
@@ -301,8 +306,8 @@ try {
   assert((await decision().textContent()).includes('东京服务节点'))
   const revoked=page.waitForResponse(response=>response.request().method()==='DELETE'&&new URL(response.url()).pathname===`/api/management/${second.id}`)
   await accept();assert((await revoked).ok());assert.equal((await api(`/api/management/${id}`)).bound,true)
-  await nodePanel.getByRole('button',{name:'安装并接入此节点',exact:true}).click();await nodePanel.getByRole('button',{name:'复制命令',exact:true}).waitFor()
-  await nodePanel.getByRole('button',{name:'收起',exact:true}).click();await nodePanel.waitFor({state:'detached'})
+  // Unbound, the node leaves 已接入 without its panel holding it in place.
+  await nodePanel.waitFor({state:'detached'});await page.getByTestId(`node-card-${second.id}`).waitFor({state:'detached'})
   await page.setViewportSize({width:375,height:812});await fits();await add.click();await fits();await page.screenshot({path:'/tmp/node-manager-service-form-mobile.png'})
   await editor.getByRole('button',{name:'取消',exact:true}).click();await page.getByTitle('切换主题',{exact:true}).click()
   await fits();await page.screenshot({path:'/tmp/node-manager-service-overview-mobile-dark.png',fullPage:true})

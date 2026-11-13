@@ -213,6 +213,7 @@ try {
   await abandonment.getByRole('button',{name:'确认操作',exact:true}).click()
   for(let i=0;i<50&&!abandoned;i++)await page.waitForTimeout(50)
   assert.deepEqual(abandoned,{name:all.name})
+  await panel.waitFor({state:'detached'})
   console.log('PASS lifecycle browser: real protocol check and scope/revision submissions; other-protocol node blocked; fixture running/paused/offline/resume-attempt and cleaning/finalizing/revoked/succeeded UI; active write/export/enrollment guards; bounded polling; unrelated modules retained')
 } finally {
   if(browser)await browser.close()

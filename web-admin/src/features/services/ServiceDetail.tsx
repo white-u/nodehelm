@@ -263,7 +263,7 @@ function OperationHistory({ status }: { status?: Status }) {
   </details>
 }
 
-export function NodeManagement({ node: target, record, notice, enabled, settingsError, onSubmitted, onClose, restoreFocus, reload }: { node: Node; record?: NodeStatus; notice?: string; enabled: boolean | null; settingsError: string; onSubmitted: (operation: string) => void; onClose: () => void; restoreFocus: () => void; reload: (manual?: boolean) => Promise<void> }) {
+export function NodeManagement({ node: target, record, notice, enabled, settingsError, onSubmitted, onClose, restoreFocus, reload, read }: { node: Node; record?: NodeStatus; notice?: string; enabled: boolean | null; settingsError: string; onSubmitted: (operation: string) => void; onClose: () => void; restoreFocus: () => void; reload: (manual?: boolean) => Promise<void>; read: (id: number) => Promise<void> }) {
   const { confirm, confirmation } = useServiceConfirmation()
   const node = target.id
   const selectedName = target.name
@@ -272,6 +272,8 @@ export function NodeManagement({ node: target, record, notice, enabled, settings
   const [error, setError] = useState("")
   const [message, setMessage] = useState("")
   const [command, setCommand] = useState("")
+  // Until when the shown command is watched for: its code's ten minutes, on this browser's clock.
+  const [deadline, setDeadline] = useState(0)
   const [submittedLifecycle, setSubmittedLifecycle] = useState("")
   const [busy, setBusy] = useState(false)
   const running = useRef(false)
@@ -280,21 +282,31 @@ export function NodeManagement({ node: target, record, notice, enabled, settings
   const active = lifecycleActive(status?.lifecycle) || status?.operations?.some(operation => ["queued", "delivered"].includes(operation.status))
   const blocked = status?.snapshot?.blocked || Object.values(status?.snapshot?.modules ?? {}).some(view => view.blocked)
   const writable = enabled && !settingsError && !fetchError && status?.bound && status.online && status.compatible && !active && !blocked && !busy
-  async function run(action: () => Promise<void>) {
+  // `close`: once the node is no longer bound the panel has nothing left to do, so it
+  // closes and the card follows the list's filter.
+  async function run(action: () => Promise<void | false>, close = false) {
     if (running.current) return
     running.current = true; setBusy(true); setError(""); setMessage(""); setSubmittedLifecycle("")
-    try { await action(); if (mounted.current) await reload() } catch (failure) { if (mounted.current) setError(String(failure)) } finally { running.current = false; if (mounted.current) setBusy(false) }
+    try { const done = await action() !== false; if (mounted.current) { await reload(); if (close && done) { onClose(); requestAnimationFrame(restoreFocus) } } } catch (failure) { if (mounted.current) setError(String(failure)) } finally { running.current = false; if (mounted.current) setBusy(false) }
   }
   async function uninstall(resume = false) {
     const operation = await requestUninstall(node, selectedName, status, resume ? status!.lifecycle!.scope : "all", resume, onSubmitted, reload, confirm)
     if (operation && mounted.current) { setSubmittedLifecycle(operation); setMessage("卸载请求已提交；以节点实际确认结果为准。") }
   }
+  // While the command is shown, the binding it makes is picked up without a manual refresh.
+  const bound = !!status?.bound
+  useEffect(() => {
+    if (!command || bound) return
+    const timer = setInterval(() => { if (Date.now() < deadline) void read(node); else clearInterval(timer) }, 5000)
+    return () => clearInterval(timer)
+  }, [command, bound, deadline, node, read])
   async function enroll() {
     const data = await api<{ site: string; node: number; enrollment: string }>(`/management/${node}/enrollment`, { method: "POST" })
     const server = data.site.replace(/\/$/, "")
     if (!mounted.current) return
     // The hub's enroll.sh checks install.py against its digest; the code is an argument, never in the URL.
     setCommand(`curl -fsS ${quote(server + "/management-files/enroll.sh")} | sh -s -- ${data.enrollment}`)
+    setDeadline(Date.now() + 600_000)
   }
   return <InlinePanel title={`${selectedName} · 节点管理`} description="此节点的管理绑定、卸载进度和授权管理" testId="node-management-panel" busy={busy} onClose={() => { onClose(); requestAnimationFrame(restoreFocus) }} footer={<Button variant="outline" disabled={busy || record?.loading} onClick={() => { void reload(true) }}>{record?.loading ? "正在刷新…" : "刷新此节点"}</Button>}>
     <div className="space-y-5" data-testid="node-maintenance" data-node-id={node}>
@@ -308,14 +320,14 @@ export function NodeManagement({ node: target, record, notice, enabled, settings
       <dl className="space-y-3 text-sm"><div className="flex justify-between gap-3"><dt className="text-muted-foreground">节点地址</dt><dd className="min-w-0 break-all">{target.ipv4 || target.ip || target.hostname || "暂无地址"}</dd></div><div className="flex justify-between gap-3"><dt className="text-muted-foreground">管理绑定</dt><dd>{!status ? "正在读取…" : status.bound ? "已绑定" : "未绑定"}</dd></div><div className="flex justify-between gap-3"><dt className="text-muted-foreground">状态</dt><dd>{fetchError ? "读取失败" : !status ? "正在读取…" : !status.bound ? "未接入" : status.online ? "上次读取在线" : "上次读取离线"}</dd></div>{status?.last_seen ? <div className="flex flex-wrap justify-between gap-3 text-xs"><dt className="text-muted-foreground">组件最后通信</dt><dd className="tabular-nums">{new Date(status.last_seen * 1000).toLocaleString()}</dd></div> : null}</dl>
       <LifecycleProgress status={status} busy={busy} fetchError={!!fetchError || !!settingsError} resume={() => { void run(() => uninstall(true)) }} />
       {status && !status.bound && <div className="space-y-3"><p className="text-xs text-muted-foreground">已接入过的 VPS 在本机运行 sudo nodehelm rebind，输入后台地址和命令末尾的接入码。</p><Button disabled={!enabled || !!settingsError || !!fetchError || busy || !!active} onClick={() => { void run(enroll) }}>安装并接入此节点</Button></div>}
-      {command && !status?.bound && !active && <div className="space-y-3"><p className="text-sm">在目标 VPS 以 root 执行，需要 Python 3.10+、curl、sha256sum 和 systemd。命令十分钟内有效，包含一次性凭据，请勿分享。安装与授权一次完成。执行后点击“刷新此节点”确认接入和首次上报。</p><pre className="max-h-72 overflow-auto rounded bg-muted p-3 text-xs">{command}</pre><Button variant="outline" onClick={() => { void run(async () => { await navigator.clipboard.writeText(command); if (mounted.current) setMessage("安装命令已复制") }) }}>复制命令</Button></div>}
+      {command && !status?.bound && !active && <div className="space-y-3"><p className="text-sm">在目标 VPS 以 root 执行，需要 Python 3.10+、curl、sha256sum 和 systemd。命令十分钟内有效，包含一次性凭据，请勿分享。安装与授权一次完成，执行后页面会自动确认接入和首次上报。</p><pre className="max-h-72 overflow-auto rounded bg-muted p-3 text-xs">{command}</pre><Button variant="outline" onClick={() => { void run(async () => { await navigator.clipboard.writeText(command); if (mounted.current) setMessage("安装命令已复制") }) }}>复制命令</Button></div>}
       {status?.bound && <>
         {status.component_current === false && <p className="text-xs text-muted-foreground" data-testid="component-outdated">此节点的管理组件与后台版本不一致或未上报版本。请先升级后台，再在 VPS 执行 sudo python3 /opt/node-manager/install.py upgrade。</p>}
         {!status.compatible && <p role="alert" className="text-sm text-destructive">管理组件与后台版本不一致，请先升级组件。</p>}
         <div className="space-y-3 border-t pt-4"><h3 className="text-sm font-medium">全部卸载</h3><p className="text-xs text-muted-foreground">清理此节点全部受管服务、配置及管理组件。</p><Button variant="outline" className="text-destructive" disabled={!writable} onClick={() => { void run(() => uninstall()) }}>全部卸载此节点</Button>{!status.online && <p className="text-sm text-muted-foreground">节点离线，无法执行卸载；已有请求保持未确认，恢复在线后继续。</p>}</div>
-        <details className="space-y-3 border-t pt-3"><summary className="cursor-pointer text-sm text-muted-foreground">紧急撤销授权</summary><p className="text-xs text-muted-foreground">仅应急撤销凭据，不卸载服务；重新接入时在 VPS 运行 sudo nodehelm rebind。</p><Button variant="outline" className="text-destructive" disabled={busy || !!active || !!fetchError || !!settingsError} onClick={() => { void run(async () => { if (!await confirm(`撤销 ${selectedName} 的管理绑定？业务服务保留，重新接入时在 VPS 运行 sudo nodehelm rebind。`, { destructive: true })) return; await api(`/management/${node}`, { method: "DELETE" }) }) }}>撤销管理绑定</Button></details>
+        <details className="space-y-3 border-t pt-3"><summary className="cursor-pointer text-sm text-muted-foreground">紧急撤销授权</summary><p className="text-xs text-muted-foreground">仅应急撤销凭据，不卸载服务；重新接入时在 VPS 运行 sudo nodehelm rebind。</p><Button variant="outline" className="text-destructive" disabled={busy || !!active || !!fetchError || !!settingsError} onClick={() => { void run(async () => { if (!await confirm(`撤销 ${selectedName} 的管理绑定？业务服务保留，重新接入时在 VPS 运行 sudo nodehelm rebind。`, { destructive: true })) return false; await api(`/management/${node}`, { method: "DELETE" }) }, true) }}>撤销管理绑定</Button></details>
       </>}
-      {status?.abandonable && <details className="space-y-3 border-t pt-3" data-testid="abandon-node"><summary className="cursor-pointer text-sm text-muted-foreground">节点已不存在？</summary><p className="text-xs text-muted-foreground">此节点已离线超过 10 分钟。仅在 VPS 已销毁、已重装或确定不再恢复时使用：后台放弃待确认的任务和卸载进度并撤销授权。此操作不会清理 VPS 上的任何内容；若 VPS 之后恢复，在本机运行 sudo nodehelm rebind 重新接入。</p><Button variant="outline" className="text-destructive" disabled={busy || !!fetchError || !!settingsError} onClick={() => { void run(async () => { if (!await confirm(`放弃对 ${selectedName} 的管理？此操作不清理 VPS 上的内容。`, { destructive: true, expectedName: selectedName })) return; await api(`/management/${node}/abandon`, { method: "POST", body: JSON.stringify({ name: selectedName }) }) }) }}>确认节点已失效</Button></details>}
+      {status?.abandonable && <details className="space-y-3 border-t pt-3" data-testid="abandon-node"><summary className="cursor-pointer text-sm text-muted-foreground">节点已不存在？</summary><p className="text-xs text-muted-foreground">此节点已离线超过 10 分钟。仅在 VPS 已销毁、已重装或确定不再恢复时使用：后台放弃待确认的任务和卸载进度并撤销授权。此操作不会清理 VPS 上的任何内容；若 VPS 之后恢复，在本机运行 sudo nodehelm rebind 重新接入。</p><Button variant="outline" className="text-destructive" disabled={busy || !!fetchError || !!settingsError} onClick={() => { void run(async () => { if (!await confirm(`放弃对 ${selectedName} 的管理？此操作不清理 VPS 上的内容。`, { destructive: true, expectedName: selectedName })) return false; await api(`/management/${node}/abandon`, { method: "POST", body: JSON.stringify({ name: selectedName }) }) }, true) }}>确认节点已失效</Button></details>}
       <OperationHistory status={status} />
     </div>
   </InlinePanel>
