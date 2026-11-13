@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
-import { api, type Node } from "@/lib/api"
+import { api, ApiError, type Node } from "@/lib/api"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { RefreshCw, Search } from "lucide-react"
 import { ManagementDetail, NodeManagement } from "./ServiceDetail"
 import { useServiceConfirmation } from "./ServiceInteractions"
-import { type FollowUp, type Module, type PmDraft, type Status, type NodeStatus, names, modules, moduleView, lifecycleActive, lifecycleLabels, defaultHost, readManagement, feedbackSeconds } from "./model"
+import { type UncertainRequest, type FollowUp, type Module, type PmDraft, type Status, type NodeStatus, names, modules, moduleView, lifecycleActive, lifecycleLabels, defaultHost, readManagement, feedbackSeconds, requestObserved } from "./model"
 
-export function Management({ nodes }: { nodes: Node[] }) {
+export function Management({ nodes, registerLeaveGuard }: { nodes: Node[]; registerLeaveGuard: (guard: () => Promise<boolean>) => () => void }) {
   const { discard, confirmation } = useServiceConfirmation()
   const [selectedNode, setNode] = useState(0)
   const node = nodes.some(n => n.id === selectedNode) ? selectedNode : nodes[0]?.id ?? 0
@@ -20,11 +20,39 @@ export function Management({ nodes }: { nodes: Node[] }) {
   const [chosenFilter, setFilter] = useState<"bound" | "unbound" | "all">()
   const [managedNode, setManagedNode] = useState(0)
   const nodeManagementTrigger = useRef<HTMLElement | null>(null)
-  const dirty = useRef(false)
-  const onDirtyChange = useCallback((value: boolean) => { dirty.current = value }, [])
+  const [dirty, onDirtyChange] = useState(false)
+  useLayoutEffect(() => {
+    if (!dirty) return
+    function beforeUnload(event: BeforeUnloadEvent) {
+      event.preventDefault()
+      event.returnValue = true
+    }
+    const guard = async () => {
+      const { scrollX, scrollY } = window
+      if (!await discard(true)) {
+        requestAnimationFrame(() => window.scrollTo({ top: scrollY, left: scrollX, behavior: "instant" }))
+        return false
+      }
+      removeEventListener("beforeunload", beforeUnload)
+      unregister()
+      onDirtyChange(false)
+      return true
+    }
+    const unregister = registerLeaveGuard(guard)
+    addEventListener("beforeunload", beforeUnload)
+    return () => {
+      removeEventListener("beforeunload", beforeUnload)
+      unregister()
+    }
+  }, [dirty, discard, registerLeaveGuard])
+  const uncertainRequests = useRef(new Map<number, UncertainRequest>())
+  const retrying = useRef(new Set<number>())
   const [records, setRecords] = useState<Record<number, NodeStatus>>({})
   const [enabled, setEnabled] = useState<boolean | null>(null)
   const [settingsError, setSettingsError] = useState("")
+  const [enabling, setEnabling] = useState(false)
+  const [enableError, setEnableError] = useState("")
+  const enablingRequest = useRef(false)
   // Whether PM alerts are pushed anywhere; unknown counts as yes, so no false warning.
   const [alerts, setAlerts] = useState(true)
   const alive = useRef(false)
@@ -37,7 +65,7 @@ export function Management({ nodes }: { nodes: Node[] }) {
   const [notices, setNotices] = useState<Record<number, string>>({})
   // Two-step changes by node: the step the hub queues after the watched operation
   // (`next`), or that step itself once queued (`final`). The hub runs it either way.
-  const chains = useRef(new Map<number, { next?: FollowUp; final?: FollowUp }>())
+  const chains = useRef(new Map<number, { operation: string; next?: FollowUp; final?: FollowUp }>())
   // What the page shows of a chain; "1/2" or "2/2" while it runs, which keeps writes locked.
   const [progress, setProgress] = useState<Record<number, { text: string; status: string; action?: string }>>({})
   // PM drafts whose step did not go through, by "node:port", for "添加流量统计".
@@ -63,12 +91,15 @@ export function Management({ nodes }: { nodes: Node[] }) {
     if (watch?.timer) clearTimeout(watch.timer)
     watches.current.delete(id)
     if (suspend) stopped.current.add(id)
-    if (suspend && chains.current.has(id)) {
-      const { next, final } = chains.current.get(id)!
-      endChain(id, next ? `已停止自动确认；${next.steps[0]}成功后后台会继续${next.steps[1]}，请稍后手动刷新查看。` : `${final?.steps[1]}结果尚未确认，请手动刷新查看。`, false, "pending")
+    const chain = chains.current.get(id)
+    if (suspend && chain) {
+      // Keep the operation and the draft available for the next successful read.
+      const { next, final } = chain
+      const text = next ? `${next.steps[0]}成功后后台会继续${next.steps[1]}。` : `${final?.steps[1]}结果尚未确认。`
+      setProgress(previous => ({ ...previous, [id]: { text, status: "pending" } }))
     }
     setNotices(previous => ({ ...previous, [id]: notice }))
-  }, [endChain])
+  }, [])
   const schedule = useCallback((id: number) => {
     const watch = watches.current.get(id)
     if (!watch) return
@@ -80,10 +111,11 @@ export function Management({ nodes }: { nodes: Node[] }) {
     watch.timer = setTimeout(() => { void refreshRef.current(id) }, Math.min(3000, watch.deadline - Date.now()))
   }, [stopWatching])
   const submitted = useCallback((id: number, operation: string, next?: FollowUp) => {
+    if (!alive.current) return
     stopWatching(id)
     stopped.current.delete(id)
     chains.current.delete(id)
-    if (next) chains.current.set(id, { next })
+    if (next) chains.current.set(id, { operation, next })
     setProgress(previous => ({ ...previous, [id]: { text: next ? `1/2 ${next.steps[0]}…` : "", status: "pending" } }))
     watches.current.set(id, { deadline: Date.now() + 120_000, operation })
     schedule(id)
@@ -99,13 +131,19 @@ export function Management({ nodes }: { nodes: Node[] }) {
     if (chain?.final) { finish(chain.final, result); return false }
     const next = chain?.next
     if (!next) return false
-    if (result.status !== "succeeded") { endChain(id, `${next.steps[0]}未成功，未${next.steps[1]}。`, false, "failed"); return false }
+    if (result.status !== "succeeded") { endChain(id, `${next.steps[0]}未成功，未${next.steps[1]}。${result.message}`, false, "failed"); return false }
     const follow = status.operations?.find(operation => operation.after === result.id)
     if (!follow) { endChain(id, `${next.steps[0]}已完成，${next.steps[1]}未执行。`); return false }
-    chains.current.set(id, { final: next })
+    chains.current.set(id, { operation: follow.id, final: next })
     if (!["queued", "delivered"].includes(follow.status)) { finish(next, follow); return false }
-    setProgress(previous => ({ ...previous, [id]: { text: `2/2 ${next.steps[1]}…`, status: "pending" } }))
-    watches.current.set(id, { deadline: Date.now() + 120_000, operation: follow.id })
+    const suspended = stopped.current.has(id)
+    const text = suspended ? `${next.steps[1]}结果尚未确认。` : `2/2 ${next.steps[1]}…`
+    setProgress(previous => ({ ...previous, [id]: { text, status: "pending" } }))
+    if (!suspended) {
+      const timer = watches.current.get(id)?.timer
+      if (timer) clearTimeout(timer)
+      watches.current.set(id, { deadline: Date.now() + 120_000, operation: follow.id })
+    }
     return true
   }, [endChain])
   const detail = useRef<HTMLDivElement>(null)
@@ -124,7 +162,7 @@ export function Management({ nodes }: { nodes: Node[] }) {
   const begin = useCallback((id: number, force: boolean, manual: boolean) => {
     if (manual) {
       // A refresh restarts the watch but keeps a running chain's operation.
-      const operation = chains.current.has(id) ? watches.current.get(id)?.operation : undefined
+      const operation = chains.current.get(id)?.operation
       stopWatching(id); stopped.current.delete(id)
       if (operation) watches.current.set(id, { deadline: Date.now() + 120_000, operation })
     }
@@ -144,25 +182,24 @@ export function Management({ nodes }: { nodes: Node[] }) {
       return
     }
     const status = outcome
-    setRecords(previous => ({ ...previous, [id]: { status, loading: false, updatedAt: Date.now(), refreshed: manual } }))
+    const uncertain = uncertainRequests.current.get(id)
+    if (uncertain && requestObserved(status, uncertain)) uncertainRequests.current.delete(id)
+    setRecords(previous => ({ ...previous, [id]: { status, loading: false, updatedAt: Date.now(), refreshed: manual, uncertain: uncertainRequests.current.get(id), retrying: retrying.current.has(id) } }))
     const active = status.operations?.some(operation => ["queued", "delivered"].includes(operation.status))
     const blocked = status.snapshot?.blocked || Object.values(status.snapshot?.modules ?? {}).some(view => view.blocked)
     const watch = watches.current.get(id)
-    const result = status.operations?.find(operation => operation.id === watch?.operation && !["queued", "delivered"].includes(operation.status))
+    const operationId = chains.current.get(id)?.operation ?? watch?.operation
+    const result = status.operations?.find(operation => operation.id === operationId && !["queued", "delivered"].includes(operation.status))
+    const following = result && advance(id, status, result)
     if (status.lifecycle && ["paused", "interrupted"].includes(status.lifecycle.status)) stopWatching(id, "卸载尚未完成，请查看管理页中的进度和恢复提示。", true)
     else if (blocked) stopWatching(id, "配置待核实，已停止自动确认。核实后请手动刷新。", true)
-    else if (!status.bound && !lifecycleActive(status.lifecycle)) stopWatching(id, watch && status.lifecycle?.status !== "succeeded" ? "管理绑定尚未确认，请安装完成后手动刷新配置。" : "")
-    else if (watch?.operation && status.lifecycle?.id === watch.operation && status.lifecycle.status === "succeeded") stopWatching(id)
-    else if (result) {
-      if (advance(id, status, result)) schedule(id)
-      else stopWatching(id)
-    }
-    else if ((active || lifecycleActive(status.lifecycle) || watch?.operation) && !stopped.current.has(id)) {
-      if (!watch) watches.current.set(id, { deadline: Date.now() + 120_000 })
+    else if (!status.bound && !lifecycleActive(status.lifecycle)) stopWatching(id, watch && status.lifecycle?.status !== "succeeded" ? "管理绑定尚未确认，请安装完成后手动刷新配置。" : "", chains.current.has(id))
+    else if ((result && !following) || (watch?.operation && status.lifecycle?.id === watch.operation && status.lifecycle.status === "succeeded")) stopWatching(id)
+    else if ((following || active || lifecycleActive(status.lifecycle) || watch?.operation) && !stopped.current.has(id)) {
+      if (!watches.current.has(id)) watches.current.set(id, { deadline: Date.now() + 120_000 })
       schedule(id)
     } else if (watch) stopWatching(id)
-    if (!watches.current.has(id) && chains.current.has(id)) endChain(id, "已停止自动确认，请手动刷新查看后续步骤结果。", false, "pending")
-  }, [advance, endChain, schedule, stopWatching])
+  }, [advance, schedule, stopWatching])
   const refreshNode = useCallback((id: number, force = false, manual = false): Promise<void> => {
     const running = pending.current.get(id)
     if (running && !force) return running
@@ -221,16 +258,16 @@ export function Management({ nodes }: { nodes: Node[] }) {
   }, [node, refreshNode])
   async function select(id: number, nextModule = module, scroll = true) {
     const changing = id !== node || nextModule !== module
-    if (changing && !await discard(dirty.current)) return false
-    if (changing) { dirty.current = false; setPmOpening(null) }
+    if (changing && !await discard(dirty)) return false
+    if (changing) { onDirtyChange(false); setPmOpening(null) }
     setNode(id); setModule(nextModule); setOpen(true)
     setManagedNode(0)
     if (scroll) reveal.current = id
     return true
   }
   async function collapse() {
-    if (!await discard(dirty.current)) return
-    dirty.current = false; setPmOpening(null)
+    if (!await discard(dirty)) return
+    onDirtyChange(false); setPmOpening(null)
     setOpen(false)
   }
   // After the commit, so the row is placed after any row above it has collapsed.
@@ -268,7 +305,7 @@ export function Management({ nodes }: { nodes: Node[] }) {
     void refreshNode(id)
   }
 
-  const nodeManagement = managementTarget && <NodeManagement key={managementTarget.id} node={managementTarget} record={records[managementTarget.id]} notice={notices[managementTarget.id]} enabled={enabled} settingsError={settingsError} onSubmitted={operation => submitted(managementTarget.id, operation)} onClose={() => setManagedNode(0)} restoreFocus={() => {
+  const nodeManagement = managementTarget && <NodeManagement key={managementTarget.id} node={managementTarget} record={records[managementTarget.id]} notice={notices[managementTarget.id]} enabled={enabled} settingsError={settingsError} onSubmitted={operation => submitted(managementTarget.id, operation)} onUncertain={request => rememberUncertain(managementTarget.id, request)} onClose={() => setManagedNode(0)} restoreFocus={() => {
       if (nodeManagementTrigger.current?.isConnected) nodeManagementTrigger.current.focus()
       else {
         const trigger = document.getElementById(`node-manage-${managementTarget.id}`)
@@ -276,8 +313,56 @@ export function Management({ nodes }: { nodes: Node[] }) {
         else detail.current?.focus({ preventScroll: true })
       }
     }} reload={async (manual = false) => { await Promise.all([refreshSettings(), refreshNode(managementTarget.id, true, manual)]) }} read={refreshNode} />
+  function rememberUncertain(id: number, request: UncertainRequest) {
+    if (!alive.current) return
+    uncertainRequests.current.set(id, request)
+    setRecords(previous => ({ ...previous, [id]: { ...previous[id], loading: true, uncertain: request } }))
+  }
+  async function retryUncertain(id: number) {
+    const request = uncertainRequests.current.get(id)
+    if (!request || retrying.current.has(id)) return
+    retrying.current.add(id)
+    setRecords(previous => ({ ...previous, [id]: { ...previous[id], retrying: true } }))
+    let submittedRetry = false
+    try {
+      const status = await readManagement<Status>(`/management/${id}`)
+      if (!requestObserved(status, request)) {
+        if ((lifecycleActive(status.lifecycle) && !(request.kind === "lifecycle" && status.lifecycle?.id === request.id && request.attempt !== undefined)) || status.operations?.some(operation => ["queued", "delivered"].includes(operation.status))) throw new Error("节点有待完成操作，请先核实结果。")
+        // Explicit recovery only: never assign a fresh id or regenerate the payload.
+        submittedRetry = true
+        const result = await api<{ id?: string; lifecycle?: Status["lifecycle"] }>(`/management/${id}/${request.kind === "lifecycle" ? "lifecycle" : "operations"}`, { method: "POST", signal: AbortSignal.timeout(15_000), body: request.body })
+        if (request.kind === "lifecycle" ? !result?.lifecycle || !requestObserved({ ...status, lifecycle: result.lifecycle }, request) : result?.id !== request.id) throw new Error("操作回执无法核实。")
+      }
+      uncertainRequests.current.delete(id)
+      if (alive.current) setRecords(previous => ({ ...previous, [id]: { ...previous[id], uncertain: undefined } }))
+      submitted(id, request.id, request.next)
+    } catch (error) {
+      let message = `原请求仍未确认：${error instanceof Error ? error.message : String(error)}`
+      if (submittedRetry && error instanceof ApiError && error.status >= 400 && error.status < 500) {
+        // A rejected retry is not evidence that the original request failed.
+        // Only release local recovery after a successful read finds no such task.
+        try {
+          const status = await readManagement<Status>(`/management/${id}`)
+          if (!requestObserved(status, request)) {
+            uncertainRequests.current.delete(id)
+            if (alive.current) setRecords(previous => ({ ...previous, [id]: { ...previous[id], uncertain: undefined } }))
+            stopWatching(id)
+            message = request.kind === "lifecycle" ? `本次重试被拒绝，未确认卸载请求已受理。请核对状态后重新操作：${error.message}` : `本次重试被拒绝，未查到原请求。请核对配置后重新编辑：${error.message}`
+            if (chains.current.has(id)) { endChain(id, message, false, "failed"); message = "" }
+          }
+        } catch (readError) {
+          message += `；结果读取失败：${readError instanceof Error ? readError.message : String(readError)}`
+        }
+      }
+      setNotices(previous => ({ ...previous, [id]: message }))
+    } finally {
+      await refreshNode(id, true)
+      retrying.current.delete(id)
+      if (alive.current) setRecords(previous => ({ ...previous, [id]: { ...previous[id], retrying: false } }))
+    }
+  }
   const moduleDetail = <div ref={detail} hidden={!!managementTarget || !record?.status?.bound} id="service-detail" tabIndex={-1} aria-label={`${nodes.find(n => n.id === node)?.name ?? "节点"} · ${names[module]}配置`} className="border-t bg-muted/30 p-3 focus:outline-none" data-testid="node-detail" data-node-id={node}>
-      <ManagementDetail key={`${node}/${module}`} node={node} module={module} selectedName={nodes.find(n => n.id === node)?.name ?? ""} record={record} defaultAddress={defaultHost(nodes.find(n => n.id === node))} notice={notices[node]} progress={progress[node]?.text} progressStatus={progress[node]?.status} progressAction={progress[node]?.action} alerts={alerts} onSubmitted={(operation, next) => submitted(node, operation, next)} onOpenPm={port => { void openPm(port) }} pmOpening={pmOpening?.node === node && module === "pm" ? pmOpening : undefined} onDirtyChange={onDirtyChange} onNodeManagement={trigger => openNodeManagement(node, trigger)} enabled={enabled} settingsError={settingsError} reload={async (manual = false) => { await Promise.all([refreshSettings(), node ? refreshNode(node, true, manual) : Promise.resolve()]) }} />
+      <ManagementDetail key={`${node}/${module}`} node={node} module={module} selectedName={nodes.find(n => n.id === node)?.name ?? ""} record={record} defaultAddress={defaultHost(nodes.find(n => n.id === node))} notice={notices[node]} progress={progress[node]?.text} progressStatus={progress[node]?.status} progressAction={progress[node]?.action} alerts={alerts} onSubmitted={(operation, next) => submitted(node, operation, next)} onUncertain={request => rememberUncertain(node, request)} onOpenPm={port => { void openPm(port) }} pmOpening={pmOpening?.node === node && module === "pm" ? pmOpening : undefined} onDirtyChange={onDirtyChange} onNodeManagement={trigger => openNodeManagement(node, trigger)} enabled={enabled} settingsError={settingsError} reload={async (manual = false) => { await Promise.all([refreshSettings(), node ? refreshNode(node, true, manual) : Promise.resolve()]) }} />
     </div>
 
   return <section className="space-y-5">
@@ -285,7 +370,15 @@ export function Management({ nodes }: { nodes: Node[] }) {
       <div><h1 className="text-xl font-semibold tracking-tight">节点服务管理</h1><p className="mt-2 text-sm text-muted-foreground">选择节点中的模块，在下方查看和管理配置。</p></div>
       <Button className="min-h-11" variant="outline" onClick={() => { void refreshSettings(); void refreshAll(true) }} disabled={nodes.length > 0 && nodes.every(n => records[n.id]?.loading)}><RefreshCw aria-hidden="true" />刷新全部</Button>
     </div>
-    {enabled === false && <div className="flex flex-wrap items-center gap-3 rounded border p-3"><p className="text-sm">服务管理尚未启用，现有监控不受影响。</p><Button variant="outline" onClick={async () => { try { await api("/management", { method: "POST", body: JSON.stringify({ enabled: true }) }); await refreshSettings() } catch (e) { setSettingsError(String(e)) } }}>启用服务管理</Button></div>}
+    {enabled === false && <div className="flex flex-wrap items-center gap-3 rounded border p-3"><p className="text-sm">服务管理尚未启用，现有监控不受影响。</p><Button variant="outline" disabled={enabling} onClick={async () => {
+      if (enablingRequest.current) return
+      enablingRequest.current = true; setEnabling(true); setEnableError("")
+      try { await api("/management", { method: "POST", signal: AbortSignal.timeout(15_000), body: JSON.stringify({ enabled: true }) }); await refreshSettings() }
+      catch (e) { setEnableError(String(e)) }
+      finally { enablingRequest.current = false; setEnabling(false) }
+    }}>{enabling ? "正在启用…" : "启用服务管理"}</Button></div>}
+    {enabled === false && enableError && <p role="alert" className="text-sm text-destructive">启用失败：{enableError}</p>}
+    {!open && !managementTarget && settingsError && <p role="alert" className="text-sm text-destructive">管理设置读取失败：{settingsError}</p>}
     <div className="space-y-4" data-testid="management-overview">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div><h2 className="text-sm font-medium">我的节点 <span className="ml-1 text-muted-foreground">{nodes.length}</span></h2><p className="mt-1 text-xs text-muted-foreground">{online} 台上次读取在线</p></div>
@@ -331,6 +424,7 @@ export function Management({ nodes }: { nodes: Node[] }) {
               </div>
               {warnings}
             </article>
+            {expanded === n.id && row?.uncertain && <div role="status" className="flex flex-wrap items-center justify-between gap-2 border-t px-3 py-2 text-sm"><span>请求结果未确认。</span><Button variant="outline" disabled={row.retrying || row.loading || !!row.error} onClick={() => { void retryUncertain(n.id) }}>{row.retrying ? "正在核实…" : "按原请求重试"}</Button></div>}
             {managementTarget?.id === n.id && <div className="border-t bg-muted/30 p-3">{nodeManagement}</div>}
             {open && node === n.id && <>{moduleDetail}{confirmation}</>}
           </div>

@@ -47,12 +47,12 @@ fn node_status(app: &crate::App, node: i64) -> Result<Value> {
                 "lifecycle":lifecycle::latest(&c,node)?,"abandonable":lifecycle::active(&c,node)?}));
     };
     let mut snapshot = if snapshot.is_empty() { Value::Null } else { open(&key(&app.db)?, node, &snapshot)? };
-    if let Some(items) = snapshot["resources"].as_array_mut() {
+    if let Some(items) = snapshot.get_mut("resources").and_then(Value::as_array_mut) {
         for item in items {
             item.as_object_mut().map(|o| o.remove("psk"));
         }
     }
-    if let Some(modules) = snapshot["modules"].as_object_mut() {
+    if let Some(modules) = snapshot.get_mut("modules").and_then(Value::as_object_mut) {
         for state in modules.values_mut() {
             if let Some(resources) = state["resources"].as_array_mut() {
                 for item in resources {
@@ -68,8 +68,8 @@ fn node_status(app: &crate::App, node: i64) -> Result<Value> {
     let c = app.db.conn();
     let mut stmt=c.prepare("SELECT id,status,message,created,module,action,after FROM managed_operation WHERE node=?1 ORDER BY created DESC,rowid DESC LIMIT 30")?;
     let rows=stmt.query_map([node],|r|Ok(json!({"id":r.get::<_,String>(0)?,"status":r.get::<_,String>(1)?,"message":r.get::<_,String>(2)?,"created":r.get::<_,i64>(3)?,"module":r.get::<_,String>(4)?,"action":r.get::<_,String>(5)?,"after":r.get::<_,String>(6)?})))?.collect::<std::result::Result<Vec<_>,_>>()?;
-    let abandonable =
-        seen <= now() - ABANDON_AFTER && (!credential.is_empty() || lifecycle::active(&c, node)?);
+    let abandonable = seen <= now() - ABANDON_AFTER
+        && ((seen > 0 && !credential.is_empty()) || lifecycle::active(&c, node)?);
     Ok(
         json!({"bound":!credential.is_empty(),"online":seen>now()-30,"last_seen":seen,"snapshot":snapshot,"operations":rows,"compatible":protocol==PROTOCOL,
                 "lifecycle":lifecycle::latest(&c,node)?,"abandonable":abandonable,
@@ -111,6 +111,16 @@ pub(super) struct FollowUp {
 }
 fn core_lifecycle(action: &str) -> bool {
     matches!(action, "core_upgrade" | "core_rollback" | "core_uninstall")
+}
+
+fn expire_queued(tx: &rusqlite::Transaction, node: i64) -> Result<()> {
+    tx.execute(
+        "UPDATE managed_operation SET status='cancelled',
+         message=CASE WHEN action='check' AND message!='' THEN message || ' · 发送前已过期' ELSE '发送前已过期' END,
+         payload='' WHERE node=?1 AND status='queued' AND expires<=?2",
+        params![node, now()],
+    )?;
+    Ok(())
 }
 
 /// The only two-step changes: a new instance with its port's traffic rule, and
@@ -337,7 +347,7 @@ pub async fn submit(
                 _ => (),
             }
         }
-        tx.execute("UPDATE managed_operation SET status='cancelled',message='发送前已过期',payload='' WHERE node=?1 AND status='queued' AND expires<=?2",params![node,now()])?;
+        expire_queued(&tx, node)?;
         let active: i64 = tx.query_row(
             "SELECT count(*) FROM managed_operation WHERE node=?1 AND status IN ('queued','delivered')",
             [node],
@@ -346,7 +356,13 @@ pub async fn submit(
         if active > 0 {
             refuse!("该 VPS 有操作正在执行或待核实");
         }
-        tx.execute("INSERT INTO managed_operation(id,node,request_hash,payload,status,created,expires,module,action,follow) VALUES(?1,?2,?3,?4,'queued',?5,?6,?7,?8,?9)",params![op.id,node,hash,encrypted,now(),now()+300,op.module,op.action,follow])?;
+        let message =
+            if op.action == "check" { format!("端口 {}", op.payload["port"]) } else { String::new() };
+        tx.execute(
+            "INSERT INTO managed_operation(id,node,request_hash,payload,status,created,expires,module,action,follow,message)
+             VALUES(?1,?2,?3,?4,'queued',?5,?6,?7,?8,?9,?10)",
+            params![op.id, node, hash, encrypted, now(), now() + 300, op.module, op.action, follow, message],
+        )?;
         tx.commit()?;
         Ok(json!({"id":op.id}))
     })())
@@ -657,6 +673,12 @@ pub async fn poll(State(app): State<Shared>, headers: HeaderMap, Json(input): Js
                 };
                 let mut message =
                     if detail.is_empty() { message.to_owned() } else { format!("{message}：{detail}") };
+                if action == "check" {
+                    let request = open(&bytes, node, &payload)?;
+                    if let Some(port) = request["payload"]["port"].as_u64() {
+                        message = format!("端口 {port} · {message}");
+                    }
+                }
                 if (module.as_str(), action.as_str(), result.status.as_str()) == ("pm", "delete", "succeeded")
                 {
                     if let Some(port) = open(&bytes, node, &payload)?["payload"]["port"].as_i64() {
@@ -715,7 +737,7 @@ pub async fn poll(State(app): State<Shared>, headers: HeaderMap, Json(input): Js
             None => Value::Null,
         };
         let lifecycle_active = lifecycle::active(&tx, node)?;
-        tx.execute("UPDATE managed_operation SET status='cancelled',message='发送前已过期',payload='' WHERE node=?1 AND status='queued' AND expires<=?2",params![node,now()])?;
+        expire_queued(&tx, node)?;
         let hub_maintenance: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM setting WHERE key='hub_lifecycle_maintenance' AND value='on')",
             [],

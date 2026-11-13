@@ -67,7 +67,13 @@ export async function readManagement<T>(path: string): Promise<T> {
   } finally { clearTimeout(timeout) }
 }
 
-export type NodeStatus = { status?: Status; error?: string; loading: boolean; updatedAt?: number; refreshed?: boolean }
+export type UncertainRequest = { id: string; body: string; next?: FollowUp; kind?: "lifecycle"; attempt?: number }
+export function requestObserved(status: Status, request: UncertainRequest) {
+  if (request.kind !== "lifecycle") return !!status.operations?.some(operation => operation.id === request.id)
+  const job = status.lifecycle
+  return job?.id === request.id && (request.attempt === undefined || job.attempt > request.attempt || !lifecycleActive(job))
+}
+export type NodeStatus = { status?: Status; error?: string; loading: boolean; updatedAt?: number; refreshed?: boolean; uncertain?: UncertainRequest; retrying?: boolean }
 
 /** Outcome takes precedence over action: a failed deletion must never look successful. */
 export function serviceFeedbackClass(status: string, action = "") {
@@ -84,7 +90,7 @@ export const modules = Object.keys(names) as Module[]
 export function pmDraft({ ip_limit, ...rule }: PmPolicy): PmDraft {
   return { ...rule, max_ips: ip_limit?.max_ips ?? 0, cooldown_min: ip_limit?.cooldown_min ?? 30, whitelist: ip_limit?.whitelist.join("\n") ?? "", block: !!ip_limit?.block }
 }
-/** A new rule: metering only, with the IP alert on at 3, 5 and blocking from the 6th. */
+/** No quota by default. Warn above 3 IPs, alarm above 5, and block above 6. */
 export function newPmDraft(port: number, name: string): PmDraft {
   return pmDraft({ port, name, quota_gb: 0, quota_mode: "in_out", reset_day: 0, expiry_date: "", egress_mbps: 0, ip_limit: { max_ips: 3, cooldown_min: 30, whitelist: [], block: true } })
 }
@@ -116,15 +122,15 @@ export function ipThresholds(max: number, block?: boolean) {
 }
 export function ipBlock(max: number) { return `>${max + 3} 阻断后续连接` }
 export function pmSummary(rule: PmPolicy) {
-  return [rule.quota_gb ? `配额 ${rule.quota_gb} GiB` : "只计量", rule.reset_day ? `每月 ${rule.reset_day} 日重置` : "", rule.expiry_date ? `${rule.expiry_date} 到期` : "",
+  return [rule.quota_gb ? `配额 ${rule.quota_gb} GiB` : "无限额", rule.reset_day ? `每月 ${rule.reset_day} 日重置` : "", rule.expiry_date ? `${rule.expiry_date} 到期` : "",
     rule.egress_mbps ? `出站超速 ${rule.egress_mbps} Mbps 丢包` : "", rule.ip_limit ? `IP ${ipThresholds(rule.ip_limit.max_ips, rule.ip_limit.block)}` : ""].filter(Boolean).join("／")
 }
 /** Why a port cannot take a managed PM rule now, or "" when it can. */
 export function pmBlocked(snapshot: RootSnapshot | undefined, port: number) {
   const pm = snapshot?.modules?.pm
+  if (port < 1024) return "只统计 1024 以上的端口"
   if (!pm?.installed) return "启用流量统计后可同时添加"
   if (pm.blocked) return "流量统计状态需要核实"
-  if (port < 1024) return "只统计 1024 以上的端口"
   if (pm.resources.some(rule => rule.port === port)) return "该端口已有流量统计规则"
   return ""
 }

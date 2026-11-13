@@ -30,31 +30,43 @@ export function InlinePanel({ title, description, children, footer, onClose, bus
   </section>
 }
 
-type Confirmation = { message: string; destructive?: boolean; expectedName?: string; label?: string }
+type Confirmation = { message: string; destructive?: boolean; expectedName?: string; label?: string; placement?: string }
 
 export function useServiceConfirmation() {
   const [pending, setPending] = useState<(Confirmation & { id: number }) | null>(null)
   const sequence = useRef(0)
   const resolver = useRef<((accepted: boolean) => void) | null>(null)
   const trigger = useRef<HTMLElement | null>(null)
+  const restoreFocus = useRef(false)
   const confirm = useCallback((message: string, options: Omit<Confirmation, "message"> = {}) => {
     resolver.current?.(false)
+    restoreFocus.current = false
     trigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
     setPending({ message, ...options, id: ++sequence.current })
     return new Promise<boolean>(resolve => { resolver.current = resolve })
   }, [])
-  const settle = useCallback((accepted: boolean) => {
+  const settle = useCallback((id: number, accepted: boolean) => {
+    if (id !== sequence.current || !resolver.current) return
     const resolve = resolver.current
     resolver.current = null
     setPending(null)
+    restoreFocus.current = true
     resolve?.(accepted)
-    const source = trigger.current
-    requestAnimationFrame(() => { if (source?.isConnected && !source.matches(":disabled")) source.focus({ preventScroll: true }) })
   }, [])
+  // The action may keep its trigger disabled until its final refresh completes.
+  useLayoutEffect(() => {
+    const source = trigger.current
+    if (!pending && restoreFocus.current && document.activeElement !== document.body && document.activeElement !== source) restoreFocus.current = false
+    if (!pending && restoreFocus.current && source?.isConnected && !source.matches(":disabled")) {
+      restoreFocus.current = false
+      source.focus({ preventScroll: true })
+    }
+  })
   // Leaving a node/module cancels the local decision, never its submitted task.
   useEffect(() => () => { resolver.current?.(false); resolver.current = null }, [])
   const discard = useCallback((dirty: boolean) => !dirty ? Promise.resolve(true) : confirm("有尚未保存的修改，放弃草稿并继续？", { label: "放弃修改", destructive: true }), [confirm])
-  return { confirm, discard, confirmation: pending ? <ServiceConfirmation key={pending.id} {...pending} settle={settle} /> : null }
+  const confirmationFor = (placement?: string) => pending && pending.placement === placement ? <ServiceConfirmation key={pending.id} {...pending} settle={accepted => settle(pending.id, accepted)} /> : null
+  return { confirm, discard, confirmation: confirmationFor(), confirmationFor }
 }
 
 function ServiceConfirmation({ message, destructive, expectedName, label = "确认操作", settle }: Confirmation & { settle: (accepted: boolean) => void }) {
@@ -65,6 +77,11 @@ function ServiceConfirmation({ message, destructive, expectedName, label = "确�
     cancel.current?.focus({ preventScroll: true })
     cancel.current?.closest("section")?.scrollIntoView({ block: "nearest", behavior: "instant" })
   }, [])
+  useEffect(() => () => {
+    // A refreshed list can remove the target row while its decision is open.
+    // Defer to distinguish removal from StrictMode's effect replay.
+    queueMicrotask(() => { if (!cancel.current?.isConnected) settle(false) })
+  }, [settle])
   return <section role="region" aria-label="操作确认" data-testid="service-confirmation" className={`w-full min-w-0 space-y-3 rounded-lg border p-4 ${destructive ? "border-destructive/30 bg-destructive/5" : "bg-muted/40"}`} onKeyDown={event => {
     if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); settle(false) }
   }}>

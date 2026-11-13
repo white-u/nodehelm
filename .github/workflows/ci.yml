@@ -87,7 +87,7 @@ jobs:
             echo "::warning::playwright install attempt $attempt failed"
           done
           exit 1
-      - run: for t in management management-lifecycle admin; do node "web-admin/tests/$t.browser.mjs" target/debug/monitor-hub; done
+      - run: for t in management management-ux management-recovery management-lifecycle admin; do node "web-admin/tests/$t.browser.mjs" target/debug/monitor-hub; done
         env:
           PLAYWRIGHT_PACKAGE: ${{ runner.temp }}/playwright/package.json
       - run: cargo build --release --locked

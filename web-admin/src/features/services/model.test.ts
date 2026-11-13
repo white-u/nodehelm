@@ -1,6 +1,6 @@
 /// <reference types="node" />
 import assert from "node:assert/strict"
-import { serviceFeedbackClass, pmTrafficBars, editable, instancePayload, newPmDraft, newResource, pmBlocked, pmDraft, pmPayload, pmSummary, type PmPolicy, type RootSnapshot } from "./model.ts"
+import { requestObserved, serviceFeedbackClass, pmTrafficBars, editable, instancePayload, newPmDraft, newResource, pmBlocked, pmDraft, pmPayload, pmSummary, type PmPolicy, type RootSnapshot } from "./model.ts"
 
 const draft = newResource("snell", "example.com")
 assert.equal(draft.name, "")
@@ -44,7 +44,7 @@ assert.throws(() => pmPayload({ ...limitedDraft, whitelist: "256.1.1.1" }))
 assert.throws(() => pmPayload({ ...limitedDraft, whitelist: Array.from({ length: 33 }, (_, n) => `192.0.2.${n}`).join(",") }), /32/)
 assert.doesNotThrow(() => pmPayload({ ...limitedDraft, whitelist: "::ffff:192.0.2.1 2001:DB8::1" }))
 assert.equal(pmSummary({ ...pm, quota_gb: 100, reset_day: 1, ip_limit: { max_ips: 3, cooldown_min: 30, whitelist: [] } }), "配额 100 GiB／每月 1 日重置／IP >3 告警 · >5 报警")
-assert.equal(pmSummary({ ...pm, ip_limit: { max_ips: 2, cooldown_min: 30, whitelist: [], block: true } }), "只计量／IP >2 告警 · >4 报警 · >5 阻断后续连接")
+assert.equal(pmSummary({ ...pm, ip_limit: { max_ips: 2, cooldown_min: 30, whitelist: [], block: true } }), "无限额／IP >2 告警 · >4 报警 · >5 阻断后续连接")
 const empty = { installed: true, blocked: false, revision: "", resources: [] }
 const root = (rules: number[] = []): RootSnapshot => ({ ...empty, modules: { pm: { ...empty, resources: rules.map(port => ({ ...pm, port })) } } })
 assert.equal(pmBlocked(root(), 23456), "")
@@ -85,3 +85,13 @@ assert.match(serviceFeedbackClass("succeeded", "apply"), /text-emerald-/)
 assert.match(serviceFeedbackClass("delivered", "apply"), /text-blue-/, "submission is not confirmed success")
 assert.match(serviceFeedbackClass("interrupted", "uninstall"), /text-amber-/)
 console.log("Service feedback outcome precedence passed")
+
+// A resume request is confirmed by a new attempt, not merely by the old job id.
+const pausedJob = { id: "job", scope: "all" as const, status: "paused", stage: "preflight", message: "", attempt: 1 }
+const resumeRequest = { id: "job", body: "{}", kind: "lifecycle" as const, attempt: 1 }
+assert.equal(requestObserved({ bound: true, lifecycle: pausedJob }, resumeRequest), false)
+assert.equal(requestObserved({ bound: true, lifecycle: { ...pausedJob, attempt: 2, status: "running" } }, resumeRequest), true)
+assert.equal(requestObserved({ bound: true, lifecycle: { ...pausedJob, status: "succeeded" } }, resumeRequest), true)
+assert.equal(requestObserved({ bound: true, lifecycle: { ...pausedJob, id: "other", attempt: 2 } }, resumeRequest), false)
+assert.equal(requestObserved({ bound: true, lifecycle: pausedJob }, { ...resumeRequest, attempt: undefined }), true)
+console.log("Lifecycle recovery distinguishes a queued resume from its prior attempt")

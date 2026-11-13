@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react"
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type MouseEvent, type RefObject } from "react"
 import { ExternalLink, LogOut, Moon, Sun } from "lucide-react"
 import { Toaster } from "sonner"
 
@@ -18,25 +18,93 @@ function normalise(p: string) {
   return path === "/admin" || !path ? "/admin/nodes" : path
 }
 
-function usePath() {
-  const [path, setPath] = useState(() => {
-    const start = normalise(location.pathname)
-    if (start !== location.pathname) history.replaceState({}, "", start + location.search)
-    return start
-  })
+type PathTraversal = { target: number; decision?: boolean; asking?: boolean; replaying?: boolean; restored?: () => void }
+
+function usePath(leaveGuard: RefObject<(() => Promise<boolean>) | null>) {
+  const [path, setPath] = useState(() => normalise(location.pathname))
+  const current = useRef({ path, index: Number(history.state?.adminIndex ?? 0) })
+  const leaving = useRef(false)
+  const traversal = useRef<PathTraversal | null>(null)
+
+  const leave = useCallback(async (action: () => void | Promise<void>) => {
+    if (leaving.current || traversal.current) return
+    leaving.current = true
+    try {
+      if (leaveGuard.current && !await leaveGuard.current()) return
+      const move = traversal.current as PathTraversal | null
+      // A back/forward click can arrive while the original confirmation is open.
+      // Wait until popstate restores our entry before the original action proceeds.
+      if (move) await new Promise<void>(resolve => { move.restored = resolve })
+      await action()
+    } finally {
+      leaving.current = false
+    }
+  }, [leaveGuard])
+
   useEffect(() => {
-    const sync = () => setPath(normalise(location.pathname))
+    history.replaceState({ ...history.state, adminIndex: current.current.index }, "", current.current.path + location.search + location.hash)
+
+    function finishTraversal(move: PathTraversal) {
+      if (move.decision === undefined || history.state?.adminIndex !== current.current.index) return
+      if (!move.decision) traversal.current = null
+      else if (!move.replaying) {
+        move.replaying = true
+        history.go(move.target - current.current.index)
+      }
+    }
+
+    function sync(event: PopStateEvent) {
+      const next = normalise(location.pathname)
+      const index = event.state?.adminIndex
+      const previous = current.current
+      const move = traversal.current
+      if (move && index === previous.index) {
+        if (leaving.current || move.restored) {
+          traversal.current = null
+          move.restored?.()
+          return
+        }
+        finishTraversal(move)
+        if (!move.asking) {
+          move.asking = true
+          void (async () => {
+            move.decision = await leaveGuard.current?.() ?? true
+            finishTraversal(move)
+          })()
+        }
+        return
+      }
+      if (typeof index === "number" && index !== previous.index && !move?.replaying
+        && (move || leaving.current || (leaveGuard.current && next !== previous.path))) {
+        // Restore the current entry before showing the inline confirmation.
+        // Replacing or pushing here would lose the browser's forward history.
+        traversal.current ??= { target: index }
+        history.go(previous.index - index)
+        return
+      }
+      traversal.current = null
+      move?.restored?.()
+      current.current = { path: next, index: index ?? previous.index }
+      setPath(next)
+    }
     addEventListener("popstate", sync)
     return () => removeEventListener("popstate", sync)
-  }, [])
-  return [
-    path,
-    useCallback((next: string) => {
-      const to = normalise(next)
-      history.pushState({}, "", to)
+  }, [leaveGuard])
+
+  const go = useCallback((next: string) => {
+    const to = normalise(next)
+    if (to === current.current.path) return
+    void leave(() => {
+      const previous = current.current.index
+      // The login page can remove a callback error from the current entry.
+      if (history.state?.adminIndex !== previous) history.replaceState({ ...history.state, adminIndex: previous }, "")
+      history.pushState({ adminIndex: previous + 1 }, "", to)
+      current.current = { path: to, index: previous + 1 }
       setPath(to)
-    }, []),
-  ] as const
+    })
+  }, [leave])
+
+  return [path, go, leave] as const
 }
 
 const DARK_MEDIA = matchMedia("(prefers-color-scheme: dark)")
@@ -99,7 +167,14 @@ function useTheme() {
 }
 
 export default function App() {
-  const [path, go] = usePath()
+  const leaveGuard = useRef<(() => Promise<boolean>) | null>(null)
+  const registerLeaveGuard = useCallback((guard: () => Promise<boolean>) => {
+    leaveGuard.current = guard
+    return () => {
+      if (leaveGuard.current === guard) leaveGuard.current = null
+    }
+  }, [])
+  const [path, go, leave] = usePath(leaveGuard)
   const [dark, toggleTheme] = useTheme()
   const [me, setMe] = useState<Me | null>(null)
   const [meError, setMeError] = useState("")
@@ -144,8 +219,16 @@ export default function App() {
   }
 
   async function signOut() {
-    await api("/auth/logout", { method: "POST" }).catch(() => {})
-    location.href = "/"
+    await leave(async () => {
+      await api("/auth/logout", { method: "POST" }).catch(() => {})
+      location.href = "/"
+    })
+  }
+
+  function openStatus(event: MouseEvent<HTMLAnchorElement>) {
+    if (!leaveGuard.current || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
+    event.preventDefault()
+    void leave(() => { location.href = "/" })
   }
 
   return (
@@ -157,14 +240,14 @@ export default function App() {
           <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3">
             {/* The site name is the way back to the status page, as in the
                 theme's own header. */}
-            <a href="/" className="font-semibold transition-opacity hover:opacity-70">
+            <a href="/" onClick={openStatus} className="font-semibold transition-opacity hover:opacity-70">
               {me.site_name || "Monitor"}
             </a>
             <span className="text-xs text-muted-foreground">后台</span>
             <div className="flex-1" />
             {/* The status page is a separate app, so this is a navigation. */}
             <Button variant="ghost" size="sm" asChild>
-              <a href="/">
+              <a href="/" onClick={openStatus}>
                 <ExternalLink /> 状态面板
               </a>
             </Button>
@@ -185,6 +268,7 @@ export default function App() {
             <Admin
               path={path}
               go={go}
+              registerLeaveGuard={registerLeaveGuard}
               nodes={nodes}
               refresh={refresh}
               // The hub's own public URL rather than this browser's address: the

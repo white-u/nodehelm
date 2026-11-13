@@ -18,8 +18,15 @@ pub async fn enrollment(_: Admin, State(app): State<Shared>, Path(node): Path<i6
         if bound.is_some_and(|s| !s.is_empty()) {
             refuse!("节点已绑定，请先解绑");
         }
-        c.execute("INSERT INTO managed_node(node,enrollment,expires) VALUES(?1,?2,?3) ON CONFLICT(node) DO UPDATE SET enrollment=excluded.enrollment,expires=excluded.expires",params![node,sha256(&code),now()+600])?;
-        Ok(json!({"node":node,"enrollment":code,"expires":now()+600,"site":app.site}))
+        let expires = now() + 600;
+        // A new binding must wait for its own first report after a full uninstall.
+        c.execute(
+            "INSERT INTO managed_node(node,enrollment,expires) VALUES(?1,?2,?3)
+             ON CONFLICT(node) DO UPDATE SET enrollment=excluded.enrollment,expires=excluded.expires,
+                 last_seen=0,snapshot='',protocol=0,component=''",
+            params![node, sha256(&code), expires],
+        )?;
+        Ok(json!({"node":node,"enrollment":code,"expires":expires,"site":app.site}))
     })())
 }
 #[derive(Deserialize)]
@@ -169,6 +176,9 @@ pub async fn abandon(
         let uninstalling = lifecycle::active(&tx, node)?;
         if !uninstalling && !seen.as_ref().is_some_and(|(credential, _)| !credential.is_empty()) {
             refuse!("此节点没有管理绑定");
+        }
+        if !uninstalling && seen.as_ref().is_some_and(|(_, last_seen)| *last_seen <= 0) {
+            refuse!("管理组件尚未首次上报，可使用撤销管理绑定");
         }
         if seen.is_some_and(|(_, last_seen)| last_seen > now() - ABANDON_AFTER) {
             refuse!("节点最近仍有上报，请等待离线超过 10 分钟后再确认");

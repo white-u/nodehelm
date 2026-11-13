@@ -70,7 +70,8 @@ try {
   const instances=page.getByTestId('instance-config'),detail=page.getByTestId('node-detail')
   const editor=page.getByTestId('service-instance-editor'),pmEditor=page.getByTestId('pm-policy-editor')
   const nodePanel=page.getByTestId('node-management-panel')
-  page.on('dialog',async dialog=>{errors.push('unexpected native dialog: '+dialog.type());await dialog.dismiss()})
+  let expectedBeforeUnload=false,unloadPrompts=0
+  page.on('dialog',async dialog=>{if(dialog.type()==='beforeunload'&&expectedBeforeUnload)unloadPrompts++;else errors.push('unexpected native dialog: '+dialog.type());await dialog.dismiss()})
   await context.grantPermissions(['clipboard-read','clipboard-write'])
   let reads=0
   page.on('request',request=>{if(request.method()==='GET'&&/^\/api\/management(?:\/\d+)?$/.test(new URL(request.url()).pathname))reads++})
@@ -82,7 +83,7 @@ try {
     await page.waitForFunction(({node,module})=>document.querySelector(`[data-testid="node-module-${node}-${module}"]`)?.getAttribute('aria-pressed')==='true',{node,module})
   }
   const decision=()=>page.getByRole('region',{name:'操作确认'})
-  async function accept(label='确认操作'){await decision().getByRole('button',{name:label,exact:true}).click()}
+  async function accept(label){await (label?decision().getByRole('button',{name:label,exact:true}):decision().getByRole('button').filter({hasNotText:'取消操作'})).click()}
   async function submit(button){
     const posted=page.waitForResponse(response=>response.request().method()==='POST'&&response.url().endsWith('/operations'))
     await button.click();await accept();const response=await posted;assert(response.ok(),await response.text());return (await poll()).task
@@ -131,6 +132,67 @@ try {
   snapshot.runtime['12346']='active';snapshot.revision='c'.repeat(64);await poll();await refresh()
   const first=instances.getByTestId('instance-12345'),secondSnell=instances.getByTestId('instance-12346')
   assert(await instances.getByTestId('core-maintenance').evaluate(element=>!!(element.compareDocumentPosition(document.querySelector('[data-testid="instance-12345"]'))&Node.DOCUMENT_POSITION_FOLLOWING)),'core maintenance must precede instance rows')
+  await first.getByRole('button',{name:'删除',exact:true}).click()
+  assert(await first.getByRole('region',{name:'操作确认'}).isVisible(),'delete confirmation belongs to its instance')
+  await first.screenshot({path:'/tmp/node-manager-instance-confirmation.png'})
+  await decision().getByRole('button',{name:'取消操作',exact:true}).click()
+  await page.waitForFunction(()=>document.activeElement?.textContent==='删除')
+  await first.getByRole('button',{name:'编辑',exact:true}).click()
+  await editor.getByLabel('名称（可选）',{exact:true}).fill('Confirmed edit')
+  let uncertainId,uncertainPosts=0
+  const operationRoute=`**/api/management/${id}/operations`
+  await page.route(operationRoute,async route=>{
+    uncertainPosts++;uncertainId=route.request().postDataJSON().id
+    const response=await route.fetch();assert(response.ok())
+    await route.abort('connectionreset')
+  })
+  await editor.getByRole('button',{name:'保存并应用',exact:true}).click();await accept('确认应用')
+  await page.getByTestId(`node-module-${id}-snell`).getByText('执行中',{exact:true}).waitFor()
+  assert.equal(await editor.getByLabel('名称（可选）',{exact:true}).inputValue(),'Confirmed edit')
+  assert(await editor.getByRole('button',{name:'保存并应用',exact:true}).isDisabled())
+  assert.equal(await editor.getByText(/^操作失败/).count(),0)
+  task=(await poll()).task;assert.equal(task.request.id,uncertainId)
+  snapshot.resources[0]={...savedSnell,...task.request.payload,psk:savedSnell.psk}
+  snapshot.revision='d'.repeat(64);await finish(task)
+  assert.equal(uncertainPosts,1,'uncertain requests must never be resubmitted automatically')
+  await page.unroute(operationRoute)
+  await editor.waitFor({state:'detached'})
+  assert(await add.isEnabled(),'confirmed success must release the uncertain-operation lock')
+  // A request lost before reaching the Hub remains recoverable with its original id.
+  await first.getByRole('button',{name:'编辑',exact:true}).click()
+  await editor.getByLabel('名称（可选）',{exact:true}).fill('Recovered request')
+  let missingRequest
+  await page.route(operationRoute,async route=>{missingRequest=route.request().postDataJSON();await route.abort('connectionreset')})
+  await editor.getByRole('button',{name:'保存并应用',exact:true}).click();await accept('确认应用')
+  await page.getByText('请求结果未确认。',{exact:true}).waitFor()
+  assert(await editor.getByRole('button',{name:'保存并应用',exact:true}).isDisabled())
+  await page.unroute(operationRoute)
+  await page.getByTestId(`node-module-${id}-sb`).click();await accept('放弃修改');await select('sb')
+  await instances.getByRole('button',{name:'新增实例',exact:true}).waitFor()
+  assert(await instances.getByRole('button',{name:'新增实例',exact:true}).isDisabled(),'uncertain request locks all modules on its node')
+  await page.getByTestId(`node-manage-${id}`).click()
+  assert(await nodePanel.getByRole('button',{name:'全部卸载此节点',exact:true}).isDisabled())
+  const retried=page.waitForRequest(request=>request.method()==='POST'&&request.url().endsWith('/operations'))
+  await page.getByRole('button',{name:'按原请求重试',exact:true}).click()
+  assert.deepEqual((await retried).postDataJSON(),missingRequest,'manual recovery must reuse the complete original request')
+  await page.getByText('请求结果未确认。',{exact:true}).waitFor({state:'detached'})
+  task=(await poll()).task;assert.equal(task.request.id,missingRequest.id)
+  snapshot.resources[0]={...savedSnell,...task.request.payload,psk:savedSnell.psk};snapshot.revision='e'.repeat(64);await finish(task)
+  await nodePanel.getByRole('button',{name:'收起',exact:true}).click();await select('snell')
+  await first.getByRole('button',{name:'编辑',exact:true}).click()
+  await editor.getByLabel('名称（可选）',{exact:true}).fill('Rejected retry draft')
+  await page.route(operationRoute,route=>route.abort('connectionreset'))
+  await editor.getByRole('button',{name:'保存并应用',exact:true}).click();await accept('确认应用')
+  await page.getByText('请求结果未确认。',{exact:true}).waitFor()
+  await page.unroute(operationRoute)
+  snapshot.revision='f'.repeat(64);await poll()
+  await page.getByRole('button',{name:'按原请求重试',exact:true}).click()
+  await instances.getByText(/本次重试被拒绝，未查到原请求/).waitFor()
+  await page.getByText('请求结果未确认。',{exact:true}).waitFor({state:'detached'})
+  assert.equal(await editor.getByLabel('名称（可选）',{exact:true}).inputValue(),'Rejected retry draft')
+  await editor.getByRole('button',{name:'取消',exact:true}).click();await accept('放弃修改')
+  assert(await add.isEnabled(),'rejected retry plus a successful lookup must not permanently lock the node')
+  assert.equal(await instances.getByText(/操作已提交/).count(),0,'a rejected retry without a stored task must not be described as submitted')
   await first.getByRole('button',{name:'编辑',exact:true}).click();assert.equal(await editor.getByLabel('监听端口',{exact:true}).inputValue(),'12345')
   await secondSnell.getByRole('button',{name:'编辑',exact:true}).click();assert.equal(await editor.getByLabel('名称（可选）',{exact:true}).inputValue(),'Other Snell')
   await secondSnell.getByRole('button',{name:'收起编辑',exact:true}).click();await editor.waitFor({state:'detached'})
@@ -161,7 +223,7 @@ try {
   await editor.getByLabel('协议',{exact:true}).selectOption('ss2022');assert.equal(await editor.getByLabel('SNI 地址',{exact:true}).count(),0)
   await editor.getByLabel('监听端口',{exact:true}).fill('34568')
   // A NAT-mapped client port is folded away by default and follows the listen port until changed.
-  await editor.getByText('客户端端口（NAT 端口映射时修改）',{exact:true}).click();assert.equal(await editor.getByLabel('客户端访问端口',{exact:true}).inputValue(),'34568')
+  await editor.getByText('客户端地址与端口',{exact:true}).click();assert.equal(await editor.getByLabel('客户端访问端口',{exact:true}).inputValue(),'34568')
   await editor.getByLabel('客户端访问端口',{exact:true}).fill('44568')
   task=await submit(editor.getByRole('button',{name:'保存并应用',exact:true}));assert.equal(task.request.payload.sni,'');assert.equal(task.request.payload.public_port,44568)
   snapshot.modules.sb.resources.push({...task.request.payload,psk:'AQEBAQEBAQEBAQEBAQEBAQ=='});snapshot.modules.sb.runtime['34568']='active';snapshot.modules.sb.revision='c'.repeat(64);await finish(task)
@@ -181,6 +243,12 @@ try {
   await editor.getByLabel('目标 IPv4 地址',{exact:true}).fill('192.0.2.1');task=await submit(editor.getByRole('button',{name:'保存并应用',exact:true}))
   snapshot.modules.fw.resources=[task.request.payload];snapshot.modules.fw.runtime={'23456':'active'};await finish(task)
 
+  const savedPolicies=snapshot.modules.pm.resources
+  snapshot.modules.pm.resources=[snapshot,...Object.values(snapshot.modules).filter(view=>view!==snapshot.modules.pm)].flatMap(view=>view.resources.filter(resource=>resource.port>=1024&&view.runtime[resource.port]==='active').map(resource=>({name:resource.name,port:resource.port,quota_gb:0,quota_mode:'in_out',reset_day:0,expiry_date:'',egress_mbps:0})))
+  await poll();await select('pm');await refresh()
+  await instances.getByText('所有可用端口均已添加流量统计规则。',{exact:true}).waitFor()
+  assert(await instances.getByRole('button',{name:'新增流量统计规则',exact:true}).isDisabled())
+  snapshot.modules.pm.resources=savedPolicies
   snapshot.modules.pm.installed=false;await poll();await select('pm');await refresh()
   task=await submit(instances.getByRole('button',{name:'启用流量统计',exact:true}));assert.equal(task.request.action,'install')
   snapshot.modules.pm.installed=true;await finish(task)
@@ -203,6 +271,7 @@ try {
   await pmEditor.getByRole('button',{name:'重新载入最新配置',exact:true}).click();await accept()
   assert.equal(await pmEditor.getByLabel('配额（GiB，0 关闭）',{exact:true}).inputValue(),'30')
   await pmEditor.getByRole('button',{name:'取消',exact:true}).click();await pmEditor.waitFor({state:'detached'})
+  await instances.getByRole('button',{name:'重置用量',exact:true}).click();assert(await page.getByTestId('pm-rule-23456').getByRole('region',{name:'操作确认'}).isVisible());await accept('取消操作')
   task=await submit(instances.getByRole('button',{name:'重置用量',exact:true}));assert.equal(task.request.action,'reset');await finish(task)
   await instances.getByRole('button',{name:'编辑',exact:true}).click();await pmEditor.locator('summary').filter({hasText:'IP 告警'}).click()
   await pmEditor.getByLabel('告警阈值（IP 数，0 关闭）',{exact:true}).fill('2');await pmEditor.getByLabel('白名单 IP / 网段（可选，最多 32 项）',{exact:true}).fill('203.0.113.9, 2001:db8::9')
@@ -265,13 +334,14 @@ try {
   await progress.filter({hasText:'创建实例未成功，未应用流量统计规则。'}).waitFor()
 
   // A rejected PM step keeps what was filled in for "添加流量统计".
-  await add.click();await editor.getByLabel('监听端口',{exact:true}).fill('40003');await editor.getByLabel(/同时启用流量统计/).check();await editor.getByLabel('配额（GiB，0 关闭）',{exact:true}).fill('7')
+  assert.equal(await editor.getByLabel('监听端口',{exact:true}).inputValue(),'40002','failed first step retains the instance draft')
+  await editor.getByLabel('监听端口',{exact:true}).fill('40003');await editor.getByLabel(/同时启用流量统计/).check();await editor.getByLabel('配额（GiB，0 关闭）',{exact:true}).fill('7')
   task=await submit(editor.getByRole('button',{name:'保存并应用',exact:true}));addSnell(snellRow(40003))
   task=(await poll({id:task.request.id,status:'succeeded',message:'fixture applied'})).task;assert.equal(task.request.module,'pm')
   await poll({id:task.request.id,status:'rejected',message:'流量统计状态需要核实'});await progress.filter({hasText:/^应用流量统计规则未成功：请求被拒绝[^。]*。可在实例行点击“添加流量统计”继续，已保留填写的参数。$/}).waitFor()
   await instances.getByTestId('instance-40003').getByRole('button',{name:'添加流量统计',exact:true}).click()
   await pmEditor.getByText('新增流量统计规则',{exact:false}).waitFor();assert.equal(await pmEditor.getByLabel('配额（GiB，0 关闭）',{exact:true}).inputValue(),'7')
-  await pmEditor.getByRole('button',{name:'取消',exact:true}).click();await pmEditor.waitFor({state:'detached'})
+  await pmEditor.getByRole('button',{name:'取消',exact:true}).click();await accept('放弃修改');await pmEditor.waitFor({state:'detached'})
 
   // Deleting an instance with PM removes the rule first, then the instance.
   await select('snell');await instances.getByTestId('instance-40001').getByRole('button',{name:'删除',exact:true}).click()
@@ -308,9 +378,39 @@ try {
   await accept();assert((await revoked).ok());assert.equal((await api(`/api/management/${id}`)).bound,true)
   // Unbound, the node leaves 已接入 without its panel holding it in place.
   await nodePanel.waitFor({state:'detached'});await page.getByTestId(`node-card-${second.id}`).waitFor({state:'detached'})
+  await page.getByRole('navigation').getByRole('button',{name:'节点',exact:true}).click()
+  await page.waitForURL('**/admin/nodes')
+  await page.getByRole('navigation').getByRole('button',{name:'服务管理',exact:true}).click()
+  await select('snell');await add.click();await editor.getByLabel('名称（可选）',{exact:true}).fill('导航草稿')
+  await page.getByRole('navigation').getByRole('button',{name:'通知',exact:true}).click()
+  await accept('取消操作');assert(page.url().endsWith('/admin/manage'))
+  assert.equal(await editor.getByLabel('名称（可选）',{exact:true}).inputValue(),'导航草稿')
+  await page.getByRole('navigation').getByRole('button',{name:'通知',exact:true}).click();await decision().waitFor()
+  await page.evaluate(()=>history.back());await page.waitForURL('**/admin/manage')
+  await accept('取消操作');assert(page.url().endsWith('/admin/manage'))
+  assert.equal(await editor.getByLabel('名称（可选）',{exact:true}).inputValue(),'导航草稿')
+  await page.evaluate(()=>history.back());await decision().waitFor();await accept('放弃修改')
+  await page.waitForURL('**/admin/nodes')
+  await page.evaluate(()=>history.forward());await page.waitForURL('**/admin/manage')
+  await select('snell');await add.click();await editor.getByLabel('名称（可选）',{exact:true}).fill('刷新草稿')
+  expectedBeforeUnload=true
+  const reloadDialog=page.waitForEvent('dialog',{predicate:dialog=>dialog.type()==='beforeunload'})
+  await page.evaluate(()=>{setTimeout(()=>location.reload(),0)})
+  await reloadDialog
+  expectedBeforeUnload=false
+  assert.equal(unloadPrompts,1);assert.equal(await editor.getByLabel('名称（可选）',{exact:true}).inputValue(),'刷新草稿')
+  let logoutPosts=0
+  const countLogout=request=>{if(request.url().endsWith('/auth/logout'))logoutPosts++}
+  page.on('request',countLogout)
+  await page.getByTitle('退出登录',{exact:true}).click();await accept('取消操作');assert.equal(logoutPosts,0)
+  page.off('request',countLogout)
+  await page.getByRole('link',{name:'状态面板',exact:true}).click();await accept('取消操作')
+  assert.equal(await editor.getByLabel('名称（可选）',{exact:true}).inputValue(),'刷新草稿')
+  await page.getByRole('navigation').getByRole('button',{name:'通知',exact:true}).click();await accept('放弃修改');await page.waitForURL('**/admin/notify')
+  await page.evaluate(()=>history.back());await page.waitForURL('**/admin/manage');await select('snell')
   await page.setViewportSize({width:375,height:812});await fits();await add.click();await fits();await page.screenshot({path:'/tmp/node-manager-service-form-mobile.png'})
   await editor.getByRole('button',{name:'取消',exact:true}).click();await page.getByTitle('切换主题',{exact:true}).click()
-  await fits();await page.screenshot({path:'/tmp/node-manager-service-overview-mobile-dark.png',fullPage:true})
+  await fits();await page.evaluate(()=>window.scrollTo({top:0,behavior:'instant'}));await page.screenshot({path:'/tmp/node-manager-service-overview-mobile-dark.png',fullPage:true})
   await page.waitForTimeout(300);const idleReads=reads;await page.waitForTimeout(6200);assert.equal(reads,idleReads)
   assert.equal(await page.getByRole('dialog').count(),0);assert.deepEqual(errors,[]);assert.deepEqual(downloads,[])
   console.log('PASS service browser: inline actions and confirmations; instance with PM and PM-first deletion; optional names; compact SB rows and share links; selected-instance configuration/copy; edit toggle and stale draft guards; independent node management; protocol tasks; core controls above instances; mobile layouts and idle reads')

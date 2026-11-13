@@ -49,12 +49,12 @@ cargo test
 shellcheck -S warning install.sh install-hub.sh update-hub.sh nodehelm.sh scripts/*.sh
 cargo build
 python3 management/tests/integration_http.py target/debug/monitor-hub
-for t in management management-lifecycle admin; do node web-admin/tests/$t.browser.mjs target/debug/monitor-hub; done
+for t in management management-ux management-recovery management-lifecycle admin; do node web-admin/tests/$t.browser.mjs target/debug/monitor-hub; done
 (cd agent && cargo build --release --locked)
 scripts/e2e.sh target/debug/monitor-hub agent/target/release/monitor-agent
 ```
 
-`integration_http.py` 用真实后台和管理组件走一遍登录、绑定、上报与回执；三个 `*.browser.mjs` 用 Playwright 在临时后台上走管理界面流程（Playwright 由 `PLAYWRIGHT_PACKAGE` 指向其 `package.json`，CI 在临时目录安装，不进入 `web-admin` 依赖；修改服务页面或管理接口时必跑）；`e2e.sh` 用后台与监控 agent 在回环上核对节点上报和公开字段。
+`integration_http.py` 用真实后台和管理组件走一遍登录、绑定、上报与回执；五个 `*.browser.mjs` 用 Playwright 在临时后台上走管理界面流程（Playwright 由 `PLAYWRIGHT_PACKAGE` 指向其 `package.json`，CI 在临时目录安装，不进入 `web-admin` 依赖；修改服务页面或管理接口时必跑）；`e2e.sh` 用后台与监控 agent 在回环上核对节点上报和公开字段。
 
 `web-admin` 的 `npm test` 使用 Node 直接运行 `api.test.ts` 和服务表单 `model.test.ts`，`web-theme` 的运行格式化与实时指标测试，应使用 CI 同代的 Node（22.18 以下不能直接运行 `.ts`）。它验证请求和辅助数据逻辑，并非浏览器端到端覆盖。Rust 用例主要放在各模块内，分时流量数据库测试通过 `db/mod.rs` 引入 `src/testdata/traffic-period.rs`。
 

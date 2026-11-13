@@ -170,6 +170,66 @@ async fn enrollment_retries_after_expiry_only_for_the_accepted_identity() {
     body(unbind(Admin, f.state(), Path(f.node)).await).await;
     assert_eq!(enroll(f.state(), input(code, &credential)).await.status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn reenrollment_waits_for_a_report_from_the_new_binding() {
+    let f = Fixture::new();
+    let old_credential = f.bind().await;
+    let component = component_digest(FILES);
+    let report = |credential: &str, snapshot| {
+        let mut headers = f.headers(credential);
+        headers.insert("x-node-manager-component", component.parse().unwrap());
+        poll(f.state(), headers, Json(Poll { snapshot, result: None, lifecycle_result: None }))
+    };
+    body(report(&old_credential, snapshot()).await).await;
+    // Full uninstall revokes the old identity but leaves the report in the row.
+    f.app
+        .db
+        .conn()
+        .execute(
+            "UPDATE managed_node SET credential='',enrollment='',expires=0,protocol=0 WHERE node=?1",
+            [f.node],
+        )
+        .unwrap();
+
+    let registration = body(enrollment(Admin, f.state(), Path(f.node)).await).await;
+    let credential = "c".repeat(64);
+    let input = || {
+        Json(Enrollment {
+            enrollment: registration["enrollment"].as_str().unwrap().into(),
+            credential: credential.clone(),
+            boot_id: String::new(),
+        })
+    };
+    body(enroll(f.state(), input()).await).await;
+    let read = || status(Admin, f.state(), Path(f.node));
+    let bound = body(read().await).await;
+    assert_eq!(bound["bound"], true);
+    assert_eq!(bound["online"], false);
+    assert_eq!(bound["last_seen"], 0);
+    assert!(bound["snapshot"].is_null());
+    assert_eq!(bound["compatible"], false);
+    assert_eq!(bound["component_current"], false);
+    assert_eq!(bound["abandonable"], false);
+    assert_eq!(
+        abandon(Admin, f.state(), Path(f.node), Json(Abandon { name: "test".into() })).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    let mut fresh = snapshot();
+    fresh.revision = "c".repeat(64);
+    body(report(&credential, fresh).await).await;
+    let reported = body(read().await).await;
+    assert_eq!(reported["online"], true);
+    assert_eq!(reported["compatible"], true);
+    assert_eq!(reported["component_current"], true);
+    assert_eq!(reported["snapshot"]["revision"], "c".repeat(64));
+
+    assert_eq!(enrollment(Admin, f.state(), Path(f.node)).await.status(), StatusCode::BAD_REQUEST);
+    body(enroll(f.state(), input()).await).await;
+    assert_eq!(body(read().await).await, reported, "accepted registration retries keep the latest report");
+}
+
 impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.directory);
@@ -565,6 +625,70 @@ async fn binding_delivery_receipt_export_and_revocation() {
     body(unbind(Admin, f.state(), Path(f.node)).await).await;
     assert!(identity(&f.app.db, &headers()).is_err());
     assert!(f.app.db.delete_node(f.node).unwrap());
+}
+
+#[tokio::test]
+async fn tcp_check_history_keeps_the_rule_port_through_completion_and_expiry() {
+    let f = Fixture::new();
+    let credential = f.bind().await;
+    let revision = "c".repeat(64);
+    let report = |result| {
+        let mut snapshot = snapshot();
+        snapshot.modules.insert(
+            "fw".into(),
+            serde_json::from_value(json!({
+                "installed":true,"revision":revision,"blocked":false,"resources":[
+                    {"name":"first","port":23456,"target_host":"203.0.113.1","target_port":80},
+                    {"name":"second","port":23457,"target_host":"203.0.113.1","target_port":81}
+                ]
+            }))
+            .unwrap(),
+        );
+        poll(f.state(), f.headers(&credential), Json(Poll { snapshot, result, lifecycle_result: None }))
+    };
+    let read = || status(Admin, f.state(), Path(f.node));
+    body(report(None).await).await;
+    for (id, port, expected_status, expected_message) in [
+        ("1", 23456, "checked", "目标 TCP 可达，UDP 和公网入口需单独验证"),
+        ("2", 23457, "cancelled", "发送前已过期"),
+    ] {
+        let id = id.repeat(32);
+        let operation = Operation {
+            module: "fw".into(),
+            id: id.clone(),
+            action: "check".into(),
+            intent: None,
+            revision: revision.clone(),
+            payload: json!({"port":port}),
+            then: None,
+        };
+        body(submit(Admin, f.state(), Path(f.node), Json(operation)).await).await;
+        let queued = body(read().await).await;
+        assert_eq!(queued["operations"][0]["message"], format!("端口 {port}"));
+        if expected_status == "checked" {
+            assert_eq!(body(report(None).await).await["task"]["request"]["id"], id);
+            let delivered = body(read().await).await;
+            assert_eq!(delivered["operations"][0]["status"], "delivered");
+            assert_eq!(delivered["operations"][0]["message"], format!("端口 {port}"));
+            body(
+                report(Some(Receipt {
+                    id,
+                    status: "checked".into(),
+                    code: None,
+                    message: "untrusted agent text".into(),
+                    revision: String::new(),
+                }))
+                .await,
+            )
+            .await;
+        } else {
+            f.app.db.conn().execute("UPDATE managed_operation SET expires=0 WHERE id=?1", [&id]).unwrap();
+            assert!(body(report(None).await).await["task"].is_null());
+        }
+        let terminal = body(read().await).await;
+        assert_eq!(terminal["operations"][0]["status"], expected_status);
+        assert_eq!(terminal["operations"][0]["message"], format!("端口 {port} · {expected_message}"));
+    }
 }
 #[tokio::test]
 async fn pm_traffic_follows_reports_and_ends_with_the_rule() {

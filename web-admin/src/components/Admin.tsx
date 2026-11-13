@@ -26,6 +26,7 @@ const ADMIN_SECTIONS = [
 export function Admin({
   path,
   go,
+  registerLeaveGuard,
   nodes,
   refresh,
   site,
@@ -34,6 +35,7 @@ export function Admin({
 }: {
   path: string
   go: (to: string) => void
+  registerLeaveGuard: (guard: () => Promise<boolean>) => () => void
   nodes: Node[]
   refresh: () => void
   site: string
@@ -72,7 +74,7 @@ export function Admin({
 
       <div className="min-w-0 flex-1">
         {path === "/admin/manage" ? (
-          <Management nodes={nodes} />
+          <Management nodes={nodes} registerLeaveGuard={registerLeaveGuard} />
         ) : path === "/admin/ping" ? (
           <Ping nodes={nodes} />
         ) : path === "/admin/notify" ? (

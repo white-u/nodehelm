@@ -4,9 +4,9 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Plus } from "lucide-react"
 import { InlinePanel, useServiceConfirmation } from "./ServiceInteractions"
-import { type ApplyIntent, type PmDraft, type PmPolicy, type PmUsage, type RootSnapshot, type Snapshot, pmAlerts, pmTrafficBars, type PmTrafficHour, type PmTrafficBar, gib, pmDraft, newPmDraft, pmPayload, ipThresholds, ipBlock, readManagement } from "./model"
+import { type ApplyIntent, type PmDraft, type PmPolicy, type PmUsage, type RootSnapshot, type Snapshot, type Status, pmAlerts, pmTrafficBars, type PmTrafficHour, type PmTrafficBar, gib, pmDraft, newPmDraft, pmPayload, pmSummary, ipThresholds, ipBlock, readManagement } from "./model"
 
-export function PmPanel({ node, nodeId, snapshot, view, writable, busy, feedback, refreshing, onDirtyChange, run, submit, opening, alerts = true }: {
+export function PmPanel({ node, nodeId, snapshot, view, operations, uncertain, retrying, live, writable, busy, feedback, refreshing, onDirtyChange, run, submit, opening, alerts = true }: {
   node: string
   nodeId: number
   alerts?: boolean
@@ -14,23 +14,28 @@ export function PmPanel({ node, nodeId, snapshot, view, writable, busy, feedback
   opening?: { port: number; draft?: PmDraft; seq: number }
   snapshot?: RootSnapshot
   view?: Snapshot
+  operations?: Status["operations"]
+  uncertain?: string
+  retrying?: boolean
+  live: boolean
   writable: boolean
   busy: boolean
   feedback: ReactNode
   refreshing: boolean
   onDirtyChange: (dirty: boolean) => void
   run: (action: () => Promise<void>) => Promise<void>
-  submit: (action: string, payload: object, revision?: string, intent?: ApplyIntent) => Promise<void>
+  submit: (action: string, payload: object, revision?: string, intent?: ApplyIntent, onTracked?: (id: string, uncertain?: boolean) => void) => Promise<void>
 }) {
-  const { confirm, discard, confirmation } = useServiceConfirmation()
+  const { confirm, discard, confirmation, confirmationFor } = useServiceConfirmation()
   const rules = view?.resources as PmPolicy[] | undefined
-  const candidates = [snapshot, snapshot?.modules?.sb, snapshot?.modules?.fw].flatMap(s =>
-    s?.resources.filter(r => r.port >= 1024 && s.runtime?.[String(r.port)] === "active"
-      && !rules?.some(rule => rule.port === r.port)) ?? [])
+  const eligible = [snapshot, snapshot?.modules?.sb, snapshot?.modules?.fw].flatMap(s =>
+    s?.resources.filter(r => r.port >= 1024 && s.runtime?.[String(r.port)] === "active") ?? [])
+  const candidates = eligible.filter(resource => !rules?.some(rule => rule.port === resource.port))
   function draftFor(item?: PmPolicy, port = candidates[0]?.port, draft?: PmDraft) {
     if (item) return pmDraft(item)
-    if (!candidates.some(candidate => candidate.port === port)) return null
-    return draft ?? newPmDraft(port, candidates.find(c => c.port === port)?.name || "端口监控")
+    if (draft) return draft
+    const candidate = candidates.find(candidate => candidate.port === port)
+    return candidate ? newPmDraft(candidate.port, candidate.name || "端口监控") : null
   }
   // Opened from an instance row: an existing rule is only scrolled to, a missing one starts its form.
   const [start] = useState(() => {
@@ -48,13 +53,31 @@ export function PmPanel({ node, nodeId, snapshot, view, writable, busy, feedback
   const [revision, setRevision] = useState(start.form ? view?.revision ?? "" : "")
   const [editing, setEditing] = useState(start.editing)
   const [ruleDetails, setRuleDetails] = useState<Record<number, boolean>>({})
-  const [initialForm, setInitialForm] = useState(start.form ? JSON.stringify(start.form) : "")
+  const [initialForm, setInitialForm] = useState(start.form && !opening?.draft ? JSON.stringify(start.form) : "")
   const [draftNotice, setDraftNotice] = useState(start.notice)
+  const [pending, setPending] = useState<{ id: string; uncertain?: boolean } | null>(null)
   const formTrigger = useRef<HTMLElement | null>(null)
   const dirty = form !== null && JSON.stringify(form) !== initialForm
   const draftStale = form !== null && revision !== view?.revision
+  const portUnavailable = form !== null && !editing && !candidates.some(candidate => candidate.port === form.port)
+  const formBusy = busy || pending !== null
   useLayoutEffect(() => { onDirtyChange(dirty) }, [dirty, onDirtyChange])
   useEffect(() => () => onDirtyChange(false), [onDirtyChange])
+  useEffect(() => {
+    if (!pending) return
+    const operation = operations?.find(operation => operation.id === pending.id)
+    const finished = operation && !["queued", "delivered"].includes(operation.status)
+    // Recovery can release an unconfirmed request after checking it has no task.
+    const released = !operation && pending.uncertain && !busy && !retrying && uncertain !== pending.id
+    if (!finished && !released) return
+    let cancelled = false
+    queueMicrotask(() => {
+      if (cancelled) return
+      if (operation?.status === "succeeded") setForm(null)
+      setPending(null)
+    })
+    return () => { cancelled = true }
+  }, [pending, operations, uncertain, busy, retrying])
 
   function loadDraft(item?: PmPolicy) {
     const next = draftFor(item)
@@ -65,14 +88,14 @@ export function PmPanel({ node, nodeId, snapshot, view, writable, busy, feedback
   }
 
   async function edit(item?: PmPolicy, trigger?: HTMLElement) {
-    if (busy) return
+    if (formBusy) return
     if (form && editing === !!item && (!item || form.port === item.port)) { await closeForm(); return }
     if (await discard(dirty)) { formTrigger.current = trigger ?? null; loadDraft(item) }
   }
   function restoreFocus() { if (formTrigger.current?.isConnected) formTrigger.current.focus({ preventScroll: true }) }
-  async function closeForm() { if (!busy && await discard(dirty)) { setForm(null); requestAnimationFrame(restoreFocus) } }
+  async function closeForm() { if (!formBusy && await discard(dirty)) { setForm(null); requestAnimationFrame(restoreFocus) } }
   async function reloadDraft() {
-    if (!view || !form || !await confirm("重新载入最新配置将替换当前草稿，是否继续？")) return
+    if (formBusy || !view || !form || !await confirm("重新载入最新配置将替换当前草稿，是否继续？", { label: "重新载入" })) return
     const latest = editing ? rules?.find(item => item.port === form.port) : undefined
     if (editing && !latest) { setForm(null); setDraftNotice("该流量统计规则已被删除，草稿已关闭。") }
     else if (!editing && !candidates.length) { setForm(null); setDraftNotice("暂无可用业务端口，草稿已关闭。") }
@@ -80,29 +103,36 @@ export function PmPanel({ node, nodeId, snapshot, view, writable, busy, feedback
   }
 
   // Placed as in the other modules: a new rule under its button, an edited one in its own card.
-  const editor = form && <InlinePanel title={editing ? `编辑 · ${rules?.find(rule => rule.port === form.port)?.name ?? form.port}` : "新增流量统计规则"} testId="pm-policy-editor" busy={busy} closable={false} embedded={editing} onClose={() => { void closeForm() }} footer={<><Button variant="outline" disabled={busy} onClick={() => { void closeForm() }}>取消</Button><Button type="submit" form="pm-policy-form" disabled={!writable || draftStale || (!editing && !candidates.some(candidate => candidate.port === form.port))}>保存并应用</Button></>}>
-          <form id="pm-policy-form" className="space-y-4" onSubmit={e => {
+  const editor = form && <InlinePanel title={editing ? `编辑 · ${rules?.find(rule => rule.port === form.port)?.name ?? form.port}` : "新增流量统计规则"} testId="pm-policy-editor" busy={formBusy} closable={false} embedded={editing} onClose={() => { void closeForm() }}>
+      <form className="space-y-4" onSubmit={e => {
         e.preventDefault()
+        if (!writable || formBusy || portUnavailable) return
         void run(async () => {
           if (draftStale) throw new Error("配置已更新，请先重新载入最新配置。")
           const payload = pmPayload(form)
-          if (!await confirm(`在 ${node} 应用端口 ${form.port} 的流量统计规则？开启配额、到期或超速策略可能丢弃端口流量。`)) return
-          await submit("apply", payload, revision, editing ? "update" : "create")
-          setForm(null)
+          if (!await confirm(`在 ${node} 应用端口 ${form.port} 的流量统计规则（${pmSummary(payload)}）？`, { label: "应用规则" })) return
+          await submit("apply", payload, revision, editing ? "update" : "create", (id, uncertain) => setPending({ id, uncertain }))
         })
       }}>
-        {draftStale && <div role="alert" className="space-y-2 text-sm"><p>服务器配置已更新，当前草稿已保留。请先重新载入最新配置，再修改并保存。</p><Button type="button" variant="outline" disabled={busy || refreshing || !view || !writable} onClick={() => { void reloadDraft() }}>重新载入最新配置</Button></div>}
-        <fieldset disabled={busy} className="grid gap-3 sm:grid-cols-2">
+        {draftStale && !pending && <div role="alert" className="space-y-2 text-sm"><p>服务器配置已更新，当前草稿已保留。请先重新载入最新配置，再修改并保存。</p><Button type="button" variant="outline" disabled={formBusy || refreshing || !view || !writable} onClick={() => { void reloadDraft() }}>重新载入最新配置</Button></div>}
+        <fieldset disabled={formBusy} className="grid gap-3 sm:grid-cols-2">
           <legend className="mb-2 text-xs font-medium text-muted-foreground">基础</legend>
           <label>业务端口<select aria-label="业务端口" className="block w-full rounded border bg-background p-2" disabled={editing} value={form.port} onChange={e => setForm({ ...form, port: Number(e.target.value) })}>
-            {editing ? <option value={form.port}>{form.port}</option> : candidates.map(candidate => <option key={candidate.port} value={candidate.port}>{candidate.port} · {candidate.name}</option>)}
+            {editing ? <option value={form.port}>{form.port}</option> : <>
+              {portUnavailable && <option value={form.port} disabled>{form.port} · 暂不可用</option>}
+              {candidates.map(candidate => <option key={candidate.port} value={candidate.port}>{candidate.port} · {candidate.name}</option>)}
+            </>}
           </select></label>
           <label>名称／备注<Input required maxLength={48} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></label>
         </fieldset>
-        <PmFields form={form} setForm={setForm} busy={busy} alerts={alerts} />
+        <PmFields form={form} setForm={setForm} busy={formBusy} alerts={alerts} />
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button type="button" variant="outline" className="min-h-11" disabled={formBusy} onClick={() => { void closeForm() }}>取消</Button>
+          <Button type="submit" className="min-h-11" disabled={!writable || formBusy || draftStale || portUnavailable}>保存并应用</Button>
+        </div>
       </form>
-          {confirmation}
-      </InlinePanel>
+      {confirmation}
+    </InlinePanel>
 
   return <div className="space-y-4">
     {feedback}
@@ -112,47 +142,49 @@ export function PmPanel({ node, nodeId, snapshot, view, writable, busy, feedback
       {view?.blocked && <p className="text-sm text-destructive">流量统计状态需要在 VPS 核实。规则表确认已缺失时，可由 root 执行 python3 /opt/node-manager/pm.py repair --confirm-checkpoint-loss，从最近的持久检查点重建。</p>}
       {!view ? <p>此管理组件尚未上报受管流量统计。绑定并升级组件后可配置。</p> :
         !view.installed ? <p className="text-sm text-muted-foreground">请先启用流量统计。</p> : <>
-          <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-xs text-muted-foreground">端口规则 · {rules?.length ?? 0}</span><Button className="min-h-11" disabled={!writable || !candidates.length} aria-expanded={!!form && !editing} onClick={event => { void edit(undefined, event.currentTarget) }}><Plus aria-hidden="true" />新增流量统计规则</Button></div>
+          <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-xs text-muted-foreground">端口规则 · {rules?.length ?? 0}</span><Button className="min-h-11" disabled={!writable || formBusy || !candidates.length} aria-expanded={!!form && !editing} onClick={event => { void edit(undefined, event.currentTarget) }}><Plus aria-hidden="true" />新增流量统计规则</Button></div>
           {form && (!editing || !rules?.some(rule => rule.port === form.port)) && editor}
-          {!candidates.length && <p className="text-sm text-muted-foreground">暂无可用业务端口。请先启动监听 1024–65535 的 Snell、singbox 或 realm 转发实例。</p>}
+          {!candidates.length && <p className="text-sm text-muted-foreground">{eligible.length ? "所有可用端口均已添加流量统计规则。" : "暂无可用业务端口。请先启动监听 1024–65535 的 Snell、singbox 或 realm 转发实例。"}</p>}
           {rules?.map(rule => {
+            const placement = `rule-${rule.port}`
             const usage = view.usage?.[String(rule.port)]
             const used = usage ? (rule.quota_mode === "out_only" ? usage.tx : usage.rx + usage.tx) : 0
             const percent = rule.quota_gb ? used / (rule.quota_gb * 1073741824) * 100 : 0
-            const alert = usage?.alert ?? "normal"
+            const alert = live ? usage?.alert ?? "normal" : undefined
             const tone = alert === "quota_warning" ? "bg-amber-500/10 text-amber-700 dark:text-amber-400" : alert === "quota_reached" || alert === "expired" ? "bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground"
-            const label = pmAlerts[alert] ?? alert
+            const label = alert === undefined ? "待确认" : pmAlerts[alert] ?? alert
             return <div key={rule.port} ref={rule.port === opening?.port ? openedRule : undefined} data-testid={`pm-rule-${rule.port}`} className="min-w-0 space-y-4 rounded-lg border bg-background p-4 text-sm">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1"><strong className="break-all font-medium">{rule.name}</strong>{rule.name !== String(rule.port) && <span className="text-xs text-muted-foreground">端口 {rule.port}</span>}{usage && <span className={`rounded px-2 py-1 text-xs ${tone}`}>{label}</span>}</div>
                 <div className="flex flex-wrap gap-2">
-                  <Button variant="outline" disabled={!writable} aria-expanded={editing && form?.port === rule.port} onClick={event => { void edit(rule, event.currentTarget) }}>{editing && form?.port === rule.port ? "收起编辑" : "编辑"}</Button>
+                  <Button variant="outline" disabled={!writable || formBusy} aria-expanded={editing && form?.port === rule.port} onClick={event => { void edit(rule, event.currentTarget) }}>{editing && form?.port === rule.port ? "收起编辑" : "编辑"}</Button>
                   <Button variant="outline" disabled={!writable} onClick={() => run(async () => {
-                    if (await confirm(`重置 ${node} 上端口 ${rule.port} 的入站和出站用量？重置后按当前规则重新累计。`, { destructive: true })) await submit("reset", { port: rule.port })
+                    if (await confirm(`重置 ${node} 上端口 ${rule.port} 的入站和出站用量？重置后按当前规则重新累计。`, { destructive: true, placement, label: "确认重置用量" })) await submit("reset", { port: rule.port })
                   })}>重置用量</Button>
                   <Button variant="ghost" className="text-muted-foreground hover:text-destructive" disabled={!writable} onClick={() => run(async () => {
-                    if (await confirm(`删除 ${node} 上端口 ${rule.port} 的流量统计规则及计数？`, { destructive: true })) await submit("delete", { port: rule.port })
+                    if (await confirm(`删除 ${node} 上端口 ${rule.port} 的流量统计规则及计数？`, { destructive: true, placement, label: "删除规则" })) await submit("delete", { port: rule.port })
                   })}>删除</Button>
                 </div>
               </div>
+              {confirmationFor(placement)}
               {usage ? <>
                 <div className="space-y-2">
                   <div className="flex flex-wrap items-baseline justify-between gap-2">
                     <p className="tabular-nums"><span className="text-muted-foreground">已用 </span><strong className="font-medium">{gib(used)}</strong><span className="text-muted-foreground">{rule.quota_gb ? ` / ${rule.quota_gb} GiB` : " GiB"}</span></p>
-                    <span className="text-xs text-muted-foreground">{rule.quota_gb ? `${rule.quota_mode === "out_only" ? "仅出站" : "双向"} · ${percent.toFixed(1)}%` : "仅计量"}</span>
+                    <span className="text-xs text-muted-foreground">{rule.quota_gb ? `${rule.quota_mode === "out_only" ? "仅出站" : "双向"} · ${percent.toFixed(1)}%` : "无限额"}</span>
                   </div>
                   {rule.quota_gb > 0 && <div role="progressbar" aria-label={`${rule.name}配额用量`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.min(100, percent)} aria-valuetext={`已用 ${gib(used)} / ${rule.quota_gb} GiB`} className="h-1.5 overflow-hidden rounded-full bg-muted"><div className={`h-full ${alert === "quota_reached" || alert === "expired" ? "bg-destructive" : alert === "quota_warning" ? "bg-amber-500" : "bg-primary"}`} style={{ width: `${Math.min(100, percent)}%` }} /></div>}
                 </div>
                 <div className="flex flex-wrap items-start gap-x-6 gap-y-2 text-xs">
                   <p className="tabular-nums"><span className="text-muted-foreground">入站 </span>{gib(usage.rx)} GiB</p>
                   <p className="tabular-nums"><span className="text-muted-foreground">出站 </span>{gib(usage.tx)} GiB</p>
-                  <OnlineIps usage={usage} />
+                  <OnlineIps usage={usage} live={live} />
                 </div>
               </> : <p className="text-muted-foreground">用量未知，请核实 VPS 上的流量统计服务。</p>}
               <div className="flex flex-wrap items-start gap-x-6 gap-y-2 text-xs">
                 <button type="button" aria-expanded={!!ruleDetails[rule.port]} aria-controls={`pm-rule-details-${rule.port}`} className="cursor-pointer text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring" onClick={() => setRuleDetails(open => ({ ...open, [rule.port]: !open[rule.port] }))}><span aria-hidden="true">{ruleDetails[rule.port] ? "▾" : "▸"}</span> 规则详情</button>
                   <dl id={`pm-rule-details-${rule.port}`} hidden={!ruleDetails[rule.port]} className="order-1 mt-1 grid basis-full grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2">
-                    <dt className="text-muted-foreground">配额</dt><dd>{rule.quota_gb ? `${rule.quota_gb} GiB · ${rule.quota_mode === "out_only" ? "单向-仅出站" : "双向"}` : "仅计量"}</dd>
+                    <dt className="text-muted-foreground">配额</dt><dd>{rule.quota_gb ? `${rule.quota_gb} GiB · ${rule.quota_mode === "out_only" ? "单向-仅出站" : "双向"}` : "无限额"}</dd>
                     <dt className="text-muted-foreground">自动重置</dt><dd>{rule.reset_day ? `每月 ${rule.reset_day} 日` : "未设置"}</dd>
                     {rule.expiry_date && <><dt className="text-muted-foreground">到期日期</dt><dd>{rule.expiry_date}</dd></>}
                     {rule.egress_mbps > 0 && <><dt className="text-muted-foreground">出站限速</dt><dd>{rule.egress_mbps} Mbps</dd></>}
@@ -197,8 +229,9 @@ export function PmFields({ form, setForm, busy, alerts = true }: { form: PmDraft
 }
 
 /** Online TCP addresses, counted for every rule; coloured by level when the rule has a limit. */
-function OnlineIps({ usage }: { usage: PmUsage }) {
+function OnlineIps({ usage, live }: { usage: PmUsage; live: boolean }) {
   if (usage.ip_count == null) return null
+  if (!live) return <p className="text-muted-foreground">TCP 在线 IP 待确认</p>
   const list = usage.ip_list ?? []
   const tone = usage.ip_level === 2 ? "text-destructive" : usage.ip_level === 1 ? "text-amber-600 dark:text-amber-400" : undefined
   const label = `TCP 在线 IP ${usage.ip_count} 个${usage.ip_level === 2 ? " · 报警" : usage.ip_level === 1 ? " · 告警" : ""}`
@@ -246,7 +279,7 @@ function PortTraffic({ node, port }: { node: number; port: number }) {
       {hours !== null && <>
         <TrafficBars key={chosen?.key ?? "days"} items={items} hourly={!!chosen} onSelect={chosen ? undefined : setDay} />
         <p className="tabular-nums text-muted-foreground">{chosen ? "当日已记录" : "近 7 天已记录"} 入站 {bytes(items.reduce((sum, d) => sum + d.rx, 0))} · 出站 {bytes(items.reduce((sum, d) => sum + d.tx, 0))}</p>
-        <details className="text-muted-foreground"><summary className="cursor-pointer">统计口径</summary><p className="mt-2">统计 IPv4 TCP/UDP 流量，默认仅计量；配额、到期和出站超速策略以丢包执行，IPv6 不受影响。</p><p className="mt-2">按 UTC 和后台收到上报的时间归集；离线期间的增量计入恢复上报的小时。仅保留滚动 7 天，不补齐首次记录前的数据；账期切换、计数重置或缺失读数可能丢失部分增量。无记录不代表零用量，图表合计不等于当前账期用量。</p></details>
+        <details className="text-muted-foreground"><summary className="cursor-pointer">统计口径</summary><p className="mt-2">统计 IPv4 TCP/UDP 流量；配额、到期和出站超速策略以丢包执行，IPv6 不受影响。</p><p className="mt-2">按 UTC 和后台收到上报的时间归集；离线期间的增量计入恢复上报的小时。仅保留滚动 7 天，不补齐首次记录前的数据；账期切换、计数重置或缺失读数可能丢失部分增量。无记录不代表零用量，图表合计不等于当前账期用量。</p></details>
       </>}
     </div>
   </>
