@@ -37,12 +37,16 @@ class Controller:
                 'blocked': self.journal.exists() or not consistent,
                 'runtime': self.driver.runtime(state)}
 
-    def refresh(self):
+    def refresh(self, *, rollback=None):
         """Make files match confirmed state under the code now installed. A component
         upgrade calls this: state is the source of truth, so repeating it is safe."""
         with (self.root / 'write.lock').open('a') as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            self.driver.refresh(read(self.state, {'installed': False, 'resources': []}))
+            state = read(self.state, {'installed': False, 'resources': []})
+            if rollback is None:
+                self.driver.refresh(state)
+            else:
+                self.driver.refresh(state, rollback=rollback)
 
     def execute(self, raw, *, local=False):
         # Only this module is accepted: a request for another one is refused here.

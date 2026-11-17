@@ -22,6 +22,7 @@ import fw
 import pm
 import sb
 from core_driver import command
+from integration_helpers import stage_snell_launcher
 from snell import Driver as SnellDriver
 from storage import private_directory
 
@@ -97,6 +98,7 @@ def main():
         assert c.snapshot()['resources'][0]['name']=='edited' and d.running(item['port'])
         return updated
     try:
+        stage_snell_launcher(root)
         c,d=build('snell');execute(c,'install')
         port=free_port();crud(c,d,dict(name='Snell',port=port,host='127.0.0.1',public_port=port,mode='default'))
         execute(c,'delete',{'port':port})

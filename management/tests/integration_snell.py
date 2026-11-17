@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Explicit Linux/root test: isolated paths, units and loopback probes. Never installs manager."""
+import errno
 import pathlib
 import shutil
 import socket
@@ -10,7 +11,22 @@ from controller import Controller
 from modules import SPECS
 from protocol import Rejected
 from core_driver import command
+from integration_helpers import stage_snell_launcher
 from snell import Driver
+
+
+def check_listeners(port):
+    with socket.create_connection(('127.0.0.1', port), timeout=2):
+        pass
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as probe:
+            probe.bind(('::1', 0))
+    except OSError as error:
+        if error.errno not in (errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT, errno.EADDRNOTAVAIL):
+            raise
+        return
+    with socket.create_connection(('::1', port), timeout=2):
+        pass
 
 
 def main():
@@ -35,6 +51,7 @@ def main():
         return controller.execute(dict(id=uuid.uuid4().hex, action=action, revision=controller.snapshot()['revision'], payload=payload))
     clean = True
     try:
+        stage_snell_launcher(root)
         assert execute('install')['status'] == 'succeeded'
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
@@ -43,6 +60,7 @@ def main():
         assert execute('apply', item)['status'] == 'succeeded'
         original = controller.snapshot()['resources'][0]
         assert driver.running(port)
+        check_listeners(port)
         assert execute('apply', {**item, 'name':'edited'})['status'] == 'succeeded'
         assert controller.snapshot()['resources'][0]['psk'] == original['psk']
         driver.fail_verify = True
@@ -103,7 +121,7 @@ def main():
         assert execute('delete', {'port':port})['status'] == 'succeeded'
         assert not driver.running(port)
         assert not controller.snapshot()['resources']
-        print('PASS: fixed-hash install, actual systemd service, CRUD, credential preservation, rollback, drift and systemd ownership, stopped sibling isolation and repair, cleanup')
+        print('PASS: fixed-hash install, actual systemd service and available IP listeners, CRUD, credential preservation, rollback, drift and systemd ownership, stopped sibling isolation and repair, cleanup')
     finally:
         for port in ports:
             command('systemctl', 'stop', driver.unit(port), check=False)

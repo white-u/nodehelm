@@ -9,7 +9,7 @@ import tempfile
 import time
 import types
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 MANAGEMENT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(MANAGEMENT))
@@ -118,6 +118,38 @@ class ComponentLifecycleTests(unittest.TestCase):
         self.assertEqual(refreshed, [self.after_manifest, self.before_manifest])
         self.assertEqual(start.call_count, 1)
         install.check_current(self.before_manifest)
+
+    def test_failed_upgrade_keeps_original_instance_set_until_verified(self):
+        driver = Mock(module='snell')
+        driver.runtime_ports.return_value = [12345]
+        driver.running.return_value = False
+        driver.unit.side_effect = lambda port: f'node-manager-snell-{port}.service'
+        driver.verify.side_effect = OSError('not ready')
+        state = {'resources': [{'port': 12345}, {'port': 12346}]}
+        with patch.object(install, 'managed_states', return_value=[(driver, state)]), \
+                patch.object(install, 'check_agent_unit', return_value={'ActiveState': 'active'}), \
+                patch.object(install, 'pm_info', return_value=({}, False)), \
+                patch.object(install, 'maintenance', return_value={'owned': True}), \
+                patch.object(install, 'stop_runtimes'), patch.object(install, 'start_runtimes') as start, \
+                patch.object(install, 'unit_info', return_value={'LoadState': 'loaded'}), \
+                patch.object(install, 'ctl') as ctl, \
+                patch.object(install, 'refresh_instances', side_effect=[ValueError('bind failed'), None, None]):
+            with self.assertRaisesRegex(ValueError, '升级未完成'):
+                install.change(self.binding, self.before_manifest, self.after_manifest, self.after)
+            record = install.read_json(self.root / install.JOURNAL)
+            self.assertEqual(record['active_instances'], {'snell': [12345]})
+            self.assertEqual(record['phase'], 'starting')
+            start.assert_not_called()
+            driver.verify.side_effect = None
+            install.restore_before(record, self.binding)
+        self.assertEqual([call.args for call in ctl.call_args_list], [
+            (action, 'node-manager-snell-12345.service')
+            for _ in range(2) for action in ('stop', 'reset-failed', 'start')
+        ])
+        driver.verify.assert_called_with({'resources': [{'port': 12345}]}, {'port': 12345})
+        self.assertFalse((self.root / install.JOURNAL).exists())
+        self.assertEqual((self.code / 'install.py').read_bytes(), self.before['install.py'])
+        start.assert_called_once()
 
     def test_manual_instance_edit_stops_the_upgrade_before_anything_changes(self):
         with patch.object(install, 'check_agent_unit', return_value={'ActiveState': 'active'}), \

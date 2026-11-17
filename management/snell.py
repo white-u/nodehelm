@@ -1,7 +1,44 @@
 """Snell 6: accepted fields, instance config and service template.
 Owned Snell services only. Never sources interactive scripts or changes firewall."""
+import errno
+import os
+import pathlib
 import re
 import secrets
+import socket
+import sys
+
+
+def listen_line(port, ipv6=True):
+    return f'listen = 0.0.0.0:{port}' + (f',[::]:{port}' if ipv6 else '') + '\n'
+
+
+def start(binary, credential, port):
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as probe:
+            probe.bind(('::', 0))
+    except OSError as error:
+        if error.errno not in (errno.EAFNOSUPPORT, errno.EPROTONOSUPPORT):
+            raise
+        print(f'IPv6 监听不可用，使用 IPv4 监听：{error}', file=sys.stderr, flush=True)
+        config = pathlib.Path(credential).read_text()
+        if listen_line(port) not in config:
+            sys.exit('配置缺少预期的监听地址，无法回退到 IPv4')
+        config = config.replace(listen_line(port), listen_line(port, ipv6=False), 1)
+        # Keep the runtime credential in memory and let the core inherit its descriptor.
+        with os.fdopen(os.memfd_create('snell-config', flags=0), 'w') as fallback:
+            os.fchmod(fallback.fileno(), 0o600)
+            fallback.write(config)
+            fallback.flush()
+            os.execv(binary, [binary, '-c', f'/proc/self/fd/{fallback.fileno()}'])
+    else:
+        os.execv(binary, [binary, '-c', credential])
+
+
+# systemd runs this file as the launcher: keep that path on the standard library.
+if __name__ == '__main__':
+    start(*sys.argv[1:])
+
 from controller import Controller
 from core_driver import CoreDriver
 from protocol import Rejected, Spec, address, fields, name, port
@@ -40,7 +77,7 @@ class Driver(CoreDriver):
 
     def config(self, item):
         return ('[snell-server]\n'
-                f"listen = 0.0.0.0:{item['port']}\npsk = {item['psk']}\n"
+                f"{listen_line(item['port'])}psk = {item['psk']}\n"
                 f"ipv6 = true\ntfo = true\nmode = {item['mode']}\ndns-ip-preference = default\n")
 
     def service(self, port):
@@ -52,7 +89,7 @@ Wants=network-online.target
 [Service]
 DynamicUser=yes
 {capabilities}LoadCredential=config:{self.configs}/{port}.conf
-ExecStart={self.binary} -c %d/config
+ExecStart=/usr/bin/python3 -B {self.binary.with_name('snell.py')} {self.binary} %d/config {port}
 Restart=on-failure
 RestartSec=3
 NoNewPrivileges=yes

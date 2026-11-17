@@ -89,6 +89,18 @@ def command(*args, check=True):
     return result
 
 
+def wait_listening(port, attempts=30):
+    # A just-started unit may still be inside its launcher, so allow a short window.
+    for attempt in range(attempts):
+        time.sleep(0.1)
+        try:
+            with socket.create_connection(('127.0.0.1', port), timeout=2):
+                return
+        except ConnectionRefusedError:
+            if attempt == attempts - 1:
+                raise
+
+
 def atomic(path, content, mode=0o600):
     path = pathlib.Path(path)
     if path.is_symlink():
@@ -418,8 +430,7 @@ class CoreDriver:
             raise Rejected('核心切换后实例运行状态不一致', 'core_runtime')
         try:
             for port in backup['active']:
-                with socket.create_connection(('127.0.0.1', port), timeout=2):
-                    pass
+                wait_listening(port)
         except OSError:
             raise Rejected('核心切换后实例未正常监听', 'core_runtime') from None
 
@@ -561,25 +572,63 @@ class CoreDriver:
     def check_config(self, item):
         pass
 
-    def refresh(self, state):
+    def refresh(self, state, *, rollback=None):
         stale = []
         for item in state['resources']:
             port = item['port']
             config, unit = self.files(port)
-            if config.read_text() == self.config(item) and unit.read_text() == self.service(port):
+            if config.is_symlink() or unit.is_symlink():
+                raise Rejected('实例配置或服务文件不能是符号链接', 'config_changed')
+            before = (config.read_bytes(), unit.read_bytes())
+            after = (self.config(item).encode(), self.service(port).encode())
+            if before == after:
                 continue
             self.check_config(item)
-            stale.append((port, self.running(port)))
-            atomic(config, self.config(item).encode())
-            atomic(unit, self.service(port).encode(), 0o644)
+            stale.append((port, before, after, self.running(port)))
         if not stale:
             return
-        command('systemctl', 'daemon-reload')
-        # Only what changed restarts; an instance stopped on purpose stays stopped.
-        for port, running in stale:
-            if running:
-                command('systemctl', 'restart', self.unit(port))
-                self.verify(state, {'port': port})
+        written, restarted = [], []
+
+        def restore():
+            # An older installer only refreshes with its old code during
+            # rollback. Restore files and processes while we know what ran.
+            for port, before in written:
+                config, unit = self.files(port)
+                atomic(config, before[0])
+                atomic(unit, before[1], 0o644)
+            command('systemctl', 'daemon-reload')
+            failures = []
+            for port in restarted:
+                unit = self.unit(port)
+                try:
+                    if not self.unit_matches(port, self.unit_metadata([port])[port], True):
+                        raise Rejected('系统加载的服务与原配置不一致', 'config_changed')
+                    command('systemctl', 'stop', unit)
+                    command('systemctl', 'reset-failed', unit)
+                    command('systemctl', 'start', unit)
+                    self.verify_listener(port)
+                except (OSError, Rejected, subprocess.TimeoutExpired) as error:
+                    failures.append((unit, error))
+            if failures:
+                raise Rejected('原实例恢复失败：' + '、'.join(unit for unit, _ in failures)) from failures[0][1]
+
+        with contextlib.ExitStack() as transaction:
+            transaction.callback(restore)
+            for port, before, after, _ in stale:
+                written.append((port, before))
+                config, unit = self.files(port)
+                atomic(config, after[0])
+                atomic(unit, after[1], 0o644)
+            command('systemctl', 'daemon-reload')
+            # Only what changed restarts; an instance stopped on purpose stays stopped.
+            for port, _, _, running in stale:
+                if running:
+                    restarted.append(port)
+                    command('systemctl', 'restart', self.unit(port))
+                    self.verify(state, {'port': port})
+            if rollback is not None:
+                rollback.callback(restore)
+            transaction.pop_all()
 
     def require_platform(self):
         if platform.system() != 'Linux' or not pathlib.Path('/run/systemd/system').is_dir():
@@ -647,11 +696,13 @@ class CoreDriver:
                     or self.running(port)):
                 raise Rejected('删除后仍存在配置或服务')
             return
+        self.verify_listener(port)
+
+    def verify_listener(self, port):
         time.sleep(0.1)
         if not self.running(port):
             raise Rejected('实例未正常运行')
-        with socket.create_connection(('127.0.0.1', port), timeout=2):
-            pass
+        wait_listening(port)
 
     def restore(self, backup):
         if backup['kind'] == 'install':

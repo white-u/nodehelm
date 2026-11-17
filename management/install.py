@@ -486,12 +486,62 @@ def managed_drivers():
     return modules.core_drivers(ROOT, CODE)
 
 
-def check_unmodified():
-    """An upgrade rewrites instance files, so a manual edit must surface first."""
+def managed_states():
     for driver in managed_drivers().values():
         state = read_json(driver.configs.parent / 'state.json', {'installed': False, 'resources': []})
+        yield driver, state
+
+
+def active_instances():
+    return {driver.module: ports for driver, state in managed_states() if (ports := driver.runtime_ports(state))}
+
+
+def check_unmodified():
+    """An upgrade rewrites instance files, so a manual edit must surface first."""
+    for driver, state in managed_states():
         if not driver.configs_match(state):
             raise ValueError('实例配置被手工修改或与确认状态不一致，请先核实，升级未执行')
+
+
+def restore_instances(record):
+    pending = dict(record.get('active_instances', {}))
+    targets = []
+    if pending:
+        for driver, state in managed_states():
+            ports = pending.pop(driver.module, ())
+            items = {item['port']: item for item in state['resources']}
+            if not set(ports) <= items.keys():
+                raise ValueError(f'{driver.title} 原实例已不存在，无法核实实例恢复')
+            for port in ports:
+                unit = driver.unit(port)
+                if unit_info(unit).get('LoadState') != 'loaded':
+                    raise ValueError(f'{unit} 无法核实服务归属')
+                targets.append((driver, state, items[port]))
+    if pending:
+        raise ValueError('找不到升级前的业务模块，无法核实实例恢复')
+    # A previous release may restart changed, still-active units during refresh.
+    # Stop only those whose templates need restoring and start them afterwards.
+    for driver, state, item in targets:
+        if not driver.configs_match({**state, 'resources': [item]}):
+            ctl('stop', driver.unit(item['port']))
+    refresh_instances()
+    failures = []
+    for driver, state, item in targets:
+        port = item['port']
+        unit = driver.unit(port)
+        confirmed = {**state, 'resources': [item]}
+        try:
+            if not driver.configs_match(confirmed):
+                raise ValueError('原配置或服务归属无法核实')
+            if not driver.running(port):
+                ctl('stop', unit)
+                ctl('reset-failed', unit)
+                ctl('start', unit)
+            driver.verify(confirmed, {'port': port})
+        except Exception as error:
+            failures.append((unit, error))
+    if failures:
+        raise ValueError('原实例未恢复监听：' + '、'.join(unit for unit, _ in failures)) from failures[0][1]
 
 
 def finish(record, binding, phase):
@@ -540,7 +590,7 @@ def restore_before(record, binding):
         write_version(before, old)
         record['phase'] = 'starting'
         write_json(ROOT / JOURNAL, record)
-    refresh_instances()
+    restore_instances(record)
     if binding is None:
         start_pm(record)
         close_switch(record)
@@ -592,6 +642,7 @@ def change(binding, before, after, incoming):
             ensure_idle()
             check_current(before)
             check_core_versions(incoming)
+            record['active_instances'] = active_instances()
             record['phase'] = 'switching'
             write_json(ROOT / JOURNAL, record)
             write_version(after, incoming)

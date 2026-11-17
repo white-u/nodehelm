@@ -6,7 +6,7 @@
 
 ## 文件索引
 
-入口文件名被 systemd 单元、`enroll.sh`、清理执行器和 `nodehelm` 命令引用，不要改名：`agent.py`、`install.py`、`lifecycle.py`、`menu.py`、`pm.py`。`install.py` 与 `lifecycle.py` 还会被复制到独立清理目录单独运行，只能依赖标准库和彼此。
+入口文件名被 systemd 单元、`enroll.sh`、清理执行器和 `nodehelm` 命令引用，不要改名：`agent.py`、`install.py`、`lifecycle.py`、`menu.py`、`pm.py`、`snell.py`。`install.py` 与 `lifecycle.py` 还会被复制到独立清理目录单独运行，只能依赖标准库和彼此。
 
 | 文件 | 职责 |
 | --- | --- |
@@ -28,7 +28,7 @@
 
 | 模块 | 文件 | 内容 |
 | --- | --- | --- |
-| Snell | [snell.py](snell.py) | Snell 6 字段、配置与服务模板 |
+| Snell | [snell.py](snell.py) | Snell 6 字段、双栈监听配置与启动时的 IPv4 回退 |
 | singbox（`sb`）：Reality／SS2022 | [sb.py](sb.py) | 字段、sing-box 配置、密钥生成、Reality 目标与配置校验 |
 | realm 转发（`fw`） | [fw.py](fw.py) | 字段、Realm 配置、自环检查与目标连通检查 |
 | 端口流量统计（`pm`） | [pm.py](pm.py) | 字段、计量、配额、重置、到期策略、限速、在线 IP 统计、告警与阻断、定时维护及 `PMController` |

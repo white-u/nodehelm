@@ -390,8 +390,13 @@ def run_action(action, args=None):
     controllers = modules.controllers(ROOT)
     controller = controllers['snell']
     if action == 'refresh':
-        for current in controllers.values():
-            current.refresh()
+        with ExitStack() as rollback:
+            for module, current in controllers.items():
+                if module == 'pm':
+                    current.refresh()
+                else:
+                    current.refresh(rollback=rollback)
+            rollback.pop_all()
         # An upgrade runs the old installer, which reaches the new code only here.
         from install import place_command
         try:

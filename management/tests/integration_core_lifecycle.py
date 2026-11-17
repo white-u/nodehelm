@@ -27,6 +27,7 @@ from protocol import Rejected
 import fw
 import sb
 from core_driver import atomic, command
+from integration_helpers import stage_snell_launcher
 from snell import Driver as SnellDriver
 from storage import private_directory, read, write
 
@@ -202,14 +203,17 @@ def uninstall_and_reinstall(controller, driver, current):
 
 
 def run_snell(root):
+    stage_snell_launcher(root)
     controller, driver = build(root, 'snell')
     current, _ = VERSIONS['snell']
     execute(controller, 'install')
     installed = assert_core(controller, driver, current)
-    # The deployed v6 installation predates persisted core metadata.
+    # A missing core record must block management until trusted metadata is restored.
     state = read(controller.state)
-    del state['core']
+    core = state.pop('core')
     write(controller.state, state)
+    assert controller.snapshot()['blocked']
+    write(controller.state, {**state, 'core': core})
     assert_core(controller, driver, current)
     rejected(controller, 'core_upgrade', {'version': '999.0.0'}, code='core_version')
     rejected(controller, 'core_upgrade', {'version': current}, code='core_version')

@@ -1,11 +1,12 @@
 import base64
+from contextlib import ExitStack
 import hashlib
 import json
 import pathlib
 import sys
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from modules import request
 from protocol import Rejected
@@ -15,7 +16,7 @@ import fw
 import sb
 from core_driver import CoreDriver
 from snell import Driver as SnellDriver
-from core_driver import atomic
+from core_driver import atomic, wait_listening
 from test_controller import Driver as FakeDriver
 
 class TemplateRefreshTests(unittest.TestCase):
@@ -57,6 +58,31 @@ class TemplateRefreshTests(unittest.TestCase):
             command.assert_not_called()
             self.assertEqual((driver.configs / '1.conf').read_text(), 'old 1\n')
 
+    def test_refresh_rollback_restores_files_and_only_restarts_previous_live_units(self):
+        with tempfile.TemporaryDirectory() as directory:
+            driver = self.driver(pathlib.Path(directory), {1: 'new 1\n', 2: 'new 2\n'})
+            driver.running = lambda port: port == 1
+            driver.verify = Mock()
+            driver.verify_listener = Mock()
+            driver.unit_metadata = lambda ports: {
+                port: {'LoadState': 'loaded', 'FragmentPath': str(driver.files(port)[1]), 'DropInPaths': ''}
+                for port in ports
+            }
+            state = {'resources': [{'port': 1}, {'port': 2}]}
+            with patch('core_driver.command') as command, self.assertRaisesRegex(Rejected, 'later module'):
+                with ExitStack() as rollback:
+                    driver.refresh(state, rollback=rollback)
+                    self.assertEqual((driver.configs / '1.conf').read_text(), 'new 1\n')
+                    raise Rejected('later module failed')
+            self.assertEqual((driver.configs / '1.conf').read_text(), 'old 1\n')
+            self.assertEqual((driver.configs / '2.conf').read_text(), 'old 2\n')
+            self.assertEqual([call.args for call in command.call_args_list], [
+                ('systemctl', 'daemon-reload'), ('systemctl', 'restart', driver.unit(1)),
+                ('systemctl', 'daemon-reload'), ('systemctl', 'stop', driver.unit(1)),
+                ('systemctl', 'reset-failed', driver.unit(1)), ('systemctl', 'start', driver.unit(1)),
+            ])
+            driver.verify_listener.assert_called_once_with(1)
+
     def test_state_missing_a_field_the_template_needs_reads_as_drift(self):
         with tempfile.TemporaryDirectory() as directory:
             driver = self.driver(pathlib.Path(directory), {1: 'old 1\n'})
@@ -97,6 +123,19 @@ class ModuleTests(unittest.TestCase):
         self.assertEqual(len(base64.b64decode(first['psk'])),16)
         self.assertEqual(d.complete(dict(item),first)['psk'],first['psk'])
         with self.assertRaises(Rejected):d.complete({'protocol':'reality'},first)
+
+    def test_sb_uses_dual_stack_listen_address_for_both_protocols(self):
+        driver = sb.Driver()
+        resources = (
+            {'protocol': 'reality', 'port': 12345, 'uuid': '11111111-1111-4111-8111-111111111111',
+             'sni': 'example.com', 'private_key': 'key', 'short_id': '12345678'},
+            {'protocol': 'ss2022', 'port': 12346, 'psk': base64.b64encode(b'a' * 16).decode()},
+        )
+        for item in resources:
+            with self.subTest(protocol=item['protocol']):
+                inbound, = json.loads(driver.config(item))['inbounds']
+                self.assertEqual((inbound['listen'], inbound['listen_port']), ('::', item['port']))
+
     def test_configs_do_not_enable_remote_management_or_change_system_routing(self):
         d=sb.Driver()
         text=d.config({'protocol':'ss2022','port':12345,'psk':base64.b64encode(b'a'*16).decode()})
@@ -132,6 +171,16 @@ class ModuleTests(unittest.TestCase):
                 sb.Driver.check_reality('bad.example')
             self.assertEqual(failure.exception.code, 'target_dns')
             self.assertNotIn('sensitive text', str(failure.exception))
+
+    def test_listener_check_waits_for_a_launcher_still_starting_the_core(self):
+        with patch('core_driver.socket.create_connection',
+                   side_effect=[ConnectionRefusedError, ConnectionRefusedError, MagicMock()]) as connect, \
+                patch('core_driver.time.sleep'):
+            wait_listening(12345)
+        self.assertEqual(connect.call_count, 3)
+        with patch('core_driver.socket.create_connection', side_effect=ConnectionRefusedError), \
+                patch('core_driver.time.sleep'), self.assertRaises(ConnectionRefusedError):
+            wait_listening(12345, attempts=2)
 
     def test_verify_scopes_health_but_checks_all_config_ownership(self):
         with tempfile.TemporaryDirectory() as root:

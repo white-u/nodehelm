@@ -71,7 +71,7 @@ class Driver(CoreDriver):
         return item
 
     def config(self, item):
-        inbound = {'listen':'0.0.0.0', 'listen_port':item['port']}
+        inbound = {'listen':'::', 'listen_port':item['port']}
         if item['protocol'] == 'ss2022':
             inbound.update(type='shadowsocks', method='2022-blake3-aes-128-gcm', password=item['psk'])
         else:
