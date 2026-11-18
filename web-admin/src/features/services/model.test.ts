@@ -1,6 +1,6 @@
 /// <reference types="node" />
 import assert from "node:assert/strict"
-import { requestObserved, serviceFeedbackClass, pmTrafficBars, editable, instancePayload, newPmDraft, newResource, pmBlocked, pmDraft, pmPayload, pmSummary, pmWarnChange, ipThresholds, type PmPolicy, type RootSnapshot } from "./model.ts"
+import { requestObserved, serviceFeedbackClass, pmTrafficBars, editable, instancePayload, newPmDraft, newResource, pmBlocked, pmDraft, pmPayload, pmSummary, pmAlarmChange, pmWarnChange, ipThresholds, type PmPolicy, type RootSnapshot } from "./model.ts"
 
 const draft = newResource("snell", "example.com")
 assert.equal(draft.name, "")
@@ -49,19 +49,22 @@ assert.deepEqual(pmDraft({ ...pm, ip_limit: pmPayload(customSteps).ip_limit }).b
 const steppedWarn = [5, 6, 7].reduce(pmWarnChange, customSteps)
 assert.deepEqual([steppedWarn.alarm_ips, steppedWarn.block_ips], [8, 12], "chosen counts stay however the warning count is stepped")
 assert.equal("block_ips" in pmPayload({ ...customSteps, block: false }).ip_limit!, false, "no block count without blocking")
+assert.deepEqual(pmAlarmChange(customSteps, 15).block_ips, 16, "an alarm count past the block count raises it")
+assert.deepEqual(pmAlarmChange(customSteps, 9).block_ips, 12, "a lower one leaves it")
+assert.equal(pmDraft({ ...pm, ip_limit: { max_ips: 2, alarm_ips: 7, cooldown_min: 30, whitelist: [] } }).block_ips, 8, "turning blocking on offers a count above the alarm")
 assert.throws(() => pmPayload({ ...customSteps, alarm_ips: 3 }), /报警阈值/)
 assert.throws(() => pmPayload({ ...customSteps, block_ips: 7 }), /阻断阈值/)
 assert.throws(() => pmPayload({ ...customSteps, block_ips: 8 }), /阻断阈值须大于报警阈值/)
 assert.throws(() => pmPayload({ ...customSteps, block_ips: 4096 }), /最大 4095/)
-assert.equal(ipThresholds({ max_ips: 4, alarm_ips: 8, block_ips: 12, block: true }), ">4 告警 · >8 报警 · >12 阻断后续连接")
-assert.equal(ipThresholds({ max_ips: 3, block: true }), ">3 告警 · >5 报警 · >6 阻断后续连接")
+assert.equal(ipThresholds({ max_ips: 4, alarm_ips: 8, block_ips: 12, block: true }), ">4 告警 · >8 报警 · >12 阻断新增 IP")
+assert.equal(ipThresholds({ max_ips: 3, block: true }), ">3 告警 · >5 报警 · >6 阻断新增 IP")
 assert.doesNotThrow(() => pmPayload({ ...limitedDraft, whitelist: "203.0.113.0/24 2001:db8::/64" }))
 assert.throws(() => pmPayload({ ...limitedDraft, whitelist: "fe80::1%eth0" }))
 assert.throws(() => pmPayload({ ...limitedDraft, whitelist: "256.1.1.1" }))
 assert.throws(() => pmPayload({ ...limitedDraft, whitelist: Array.from({ length: 33 }, (_, n) => `192.0.2.${n}`).join(",") }), /32/)
 assert.doesNotThrow(() => pmPayload({ ...limitedDraft, whitelist: "::ffff:192.0.2.1 2001:DB8::1" }))
 assert.equal(pmSummary({ ...pm, quota_gb: 100, reset_day: 1, ip_limit: { max_ips: 3, cooldown_min: 30, whitelist: [] } }), "配额 100 GiB／每月 1 日重置／IP >3 告警 · >5 报警")
-assert.equal(pmSummary({ ...pm, ip_limit: { max_ips: 2, cooldown_min: 30, whitelist: [], block: true } }), "无限额／IP >2 告警 · >4 报警 · >5 阻断后续连接")
+assert.equal(pmSummary({ ...pm, ip_limit: { max_ips: 2, cooldown_min: 30, whitelist: [], block: true } }), "无限额／IP >2 告警 · >4 报警 · >5 阻断新增 IP")
 const empty = { installed: true, blocked: false, revision: "", resources: [] }
 const root = (rules: number[] = []): RootSnapshot => ({ ...empty, modules: { pm: { ...empty, resources: rules.map(port => ({ ...pm, port })) } } })
 assert.equal(pmBlocked(root(), 23456), "")

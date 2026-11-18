@@ -94,7 +94,8 @@ const ipAlarmDefault = (max: number) => max + 2
 const ipBlockDefault = (max: number) => max + 3
 export function pmDraft({ ip_limit, ...rule }: PmPolicy): PmDraft {
   const max = ip_limit?.max_ips ?? 3
-  return { ...rule, max_ips: ip_limit?.max_ips ?? 0, alarm_ips: ip_limit?.alarm_ips ?? ipAlarmDefault(max), block_ips: ip_limit?.block_ips ?? ipBlockDefault(max), cooldown_min: ip_limit?.cooldown_min ?? 30, whitelist: ip_limit?.whitelist.join("\n") ?? "", block: !!ip_limit?.block }
+  const alarm_ips = ip_limit?.alarm_ips ?? ipAlarmDefault(max)
+  return { ...rule, max_ips: ip_limit?.max_ips ?? 0, alarm_ips, block_ips: ip_limit?.block_ips ?? Math.max(ipBlockDefault(max), alarm_ips + 1), cooldown_min: ip_limit?.cooldown_min ?? 30, whitelist: ip_limit?.whitelist.join("\n") ?? "", block: !!ip_limit?.block }
 }
 /** No quota by default. Warn above 3 IPs, alarm above 5, and block above 6. */
 export function newPmDraft(port: number, name: string): PmDraft {
@@ -106,10 +107,13 @@ function ipAddress(value: string) {
   if (!value.includes(":") || !/^[0-9a-fA-F:.]+$/.test(value)) return false
   try { new URL(`http://[${value}]/`); return true } catch { return false }
 }
+/** A new alarm count, raising the block count only when it passes it. */
+export function pmAlarmChange(form: PmDraft, alarm_ips: number): PmDraft {
+  return { ...form, alarm_ips, block_ips: Math.max(form.block_ips, alarm_ips + 1) }
+}
 /** A new warning count, raising the alarm and block counts only when it passes them. */
 export function pmWarnChange(form: PmDraft, max: number): PmDraft {
-  const alarm_ips = Math.max(form.alarm_ips, max)
-  return { ...form, max_ips: max, alarm_ips, block_ips: Math.max(form.block_ips, alarm_ips + 1) }
+  return pmAlarmChange({ ...form, max_ips: max }, Math.max(form.alarm_ips, max))
 }
 /** An IP limit of 0 is left out, so the rule keeps the shape older components
  *  accept. The whitelist is checked here, before anything is submitted: the
@@ -133,7 +137,7 @@ export function pmPayload({ max_ips, alarm_ips, block_ips, cooldown_min, whiteli
 export function ipThresholds({ max_ips, alarm_ips, block_ips, block }: { max_ips: number; alarm_ips?: number; block_ips?: number; block?: boolean }) {
   return `>${max_ips} 告警 · >${alarm_ips ?? ipAlarmDefault(max_ips)} 报警${block ? ` · ${ipBlock(block_ips ?? ipBlockDefault(max_ips))}` : ""}`
 }
-export function ipBlock(count: number) { return `>${count} 阻断后续连接` }
+function ipBlock(count: number) { return `>${count} 阻断新增 IP` }
 export function pmSummary(rule: PmPolicy) {
   return [rule.quota_gb ? `配额 ${rule.quota_gb} GiB` : "无限额", rule.reset_day ? `每月 ${rule.reset_day} 日重置` : "", rule.expiry_date ? `${rule.expiry_date} 到期` : "",
     rule.egress_mbps ? `出站超速 ${rule.egress_mbps} Mbps 丢包` : "", rule.ip_limit ? `IP ${ipThresholds(rule.ip_limit)}` : ""].filter(Boolean).join("／")

@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Plus } from "lucide-react"
 import { InlinePanel, useServiceConfirmation } from "./ServiceInteractions"
-import { type ApplyIntent, type PmDraft, type PmPolicy, type PmUsage, type RootSnapshot, type Snapshot, type Status, pmAlerts, pmTrafficBars, type PmTrafficHour, type PmTrafficBar, gib, pmDraft, newPmDraft, pmPayload, pmSummary, pmWarnChange, ipThresholdMax, ipThresholds, ipBlock, readManagement } from "./model"
+import { type ApplyIntent, type PmDraft, type PmPolicy, type PmUsage, type RootSnapshot, type Snapshot, type Status, pmAlerts, pmTrafficBars, type PmTrafficHour, type PmTrafficBar, gib, pmDraft, newPmDraft, pmPayload, pmSummary, pmAlarmChange, pmWarnChange, ipThresholdMax, ipThresholds, readManagement } from "./model"
 
 export function PmPanel({ node, nodeId, snapshot, view, operations, uncertain, retrying, live, writable, busy, feedback, refreshing, onDirtyChange, run, submit, opening, alerts = true }: {
   node: string
@@ -203,6 +203,8 @@ export function PmPanel({ node, nodeId, snapshot, view, operations, uncertain, r
 
 /** The PM policy fields, shared by the PM form and the new-instance form. */
 export function PmFields({ form, setForm, busy, alerts = true }: { form: PmDraft; setForm: (form: PmDraft) => void; busy: boolean; alerts?: boolean }) {
+  // Only the first value opens it: clearing the warning count to retype it must not fold the group.
+  const [ipOpen, setIpOpen] = useState(form.max_ips > 0)
   return <>
     <fieldset disabled={busy} className="grid gap-3 sm:grid-cols-2">
       <legend className="mb-2 text-xs font-medium text-muted-foreground">配额与周期</legend>
@@ -213,18 +215,23 @@ export function PmFields({ form, setForm, busy, alerts = true }: { form: PmDraft
       <label>出站超速丢包（Mbps，0 关闭）<Input className="block sm:max-w-48" type="number" required min={0} max={10000} value={form.egress_mbps} onChange={e => setForm({ ...form, egress_mbps: Number(e.target.value) })} /></label>
       <p className="text-xs text-muted-foreground sm:col-span-2">重置按 UTC，每月不足指定日时取月末。到期日 UTC 结束后开始阻断。定时任务约每分钟保存用量，异常重启可能丢失最近一次保存后的用量。</p>
     </fieldset>
-    <details className="text-sm" open={form.max_ips > 0}>
+    <details className="text-sm" open={ipOpen} onToggle={e => setIpOpen(e.currentTarget.open)}>
       <summary className="cursor-pointer text-xs font-medium text-muted-foreground">IP 告警与阻断</summary>
       <fieldset disabled={busy} className="mt-3 grid gap-3 sm:grid-cols-2">
-        <label>告警阈值（IP 数，0 关闭）<Input className="block sm:max-w-48" aria-label="告警阈值（IP 数，0 关闭）" type="number" required min={0} max={ipThresholdMax} value={form.max_ips} onChange={e => setForm(pmWarnChange(form, Number(e.target.value)))} />{form.max_ips > 0 && <span className="text-xs text-muted-foreground">{ipThresholds(form)}</span>}</label>
-        <label>报警阈值（IP 数）<Input className="block sm:max-w-48" aria-label="报警阈值（IP 数）" type="number" required min={Math.max(1, form.max_ips)} max={ipThresholdMax} disabled={!form.max_ips} value={form.alarm_ips} onChange={e => setForm({ ...form, alarm_ips: Number(e.target.value) })} /></label>
-        <label>阻断阈值（IP 数）<Input className="block sm:max-w-48" aria-label="阻断阈值（IP 数）" type="number" required min={form.alarm_ips + 1} max={ipThresholdMax} disabled={!form.max_ips || !form.block} value={form.block_ips} onChange={e => setForm({ ...form, block_ips: Number(e.target.value) })} /></label>
+        <label>告警：在线 IP 超过（0 关闭）<Input className="block sm:max-w-48" aria-label="告警：在线 IP 超过（0 关闭）" type="number" required min={0} max={ipThresholdMax} value={form.max_ips} onChange={e => setForm(pmWarnChange(form, Number(e.target.value)))} /></label>
+        <label>报警：在线 IP 超过<Input className="block sm:max-w-48" aria-label="报警：在线 IP 超过" type="number" required min={Math.max(1, form.max_ips)} max={ipThresholdMax} disabled={!form.max_ips} value={form.alarm_ips} onChange={e => setForm(pmAlarmChange(form, Number(e.target.value)))} /></label>
         <label>重复提醒间隔（分钟）<Input className="block sm:max-w-48" type="number" required min={1} max={525600} disabled={!form.max_ips} value={form.cooldown_min} onChange={e => setForm({ ...form, cooldown_min: Number(e.target.value) })} /></label>
-        <label className="flex items-center gap-2 sm:col-span-2"><input type="checkbox" className="size-4" aria-label={form.max_ips > 0 ? ipBlock(form.block_ips) : "阻断后续连接"} disabled={!form.max_ips} checked={form.block} onChange={e => setForm({ ...form, block: e.target.checked })} />{form.max_ips > 0 ? ipBlock(form.block_ips) : "阻断后续连接"}</label>
+        <p className="text-xs text-muted-foreground sm:col-span-2">告警和报警只发送提醒，不影响连接；报警是更高一级。</p>
+        <div className="grid gap-2 rounded-md border p-3 sm:col-span-2">
+          <label className="flex items-center gap-2"><input type="checkbox" className="size-4" disabled={!form.max_ips} checked={form.max_ips > 0 && form.block} onChange={e => setForm({ ...form, block: e.target.checked })} />超过阈值时阻断新增 IP</label>
+          <p className="text-xs text-muted-foreground">{form.max_ips > 0 ? "开启后保留最早在线的 IP，超出的新增 IP 30 分钟内无法连接此端口（TCP 和 UDP），到期自动解除。" : "请先设置告警阈值。"}</p>
+          {form.max_ips > 0 && form.block && <label>阻断：在线 IP 超过<Input className="block sm:max-w-48" aria-label="阻断：在线 IP 超过" type="number" required min={form.alarm_ips + 1} max={ipThresholdMax} value={form.block_ips} onChange={e => setForm({ ...form, block_ips: Number(e.target.value) })} /></label>}
+        </div>
+        {form.max_ips > 0 && <p className="text-xs text-muted-foreground sm:col-span-2">{ipThresholds(form)}</p>}
         <label className="sm:col-span-2">白名单 IP / 网段（可选，最多 32 项）<textarea aria-label="白名单 IP / 网段（可选，最多 32 项）" className="block min-h-20 w-full rounded border bg-background p-2" disabled={!form.max_ips} placeholder="例如：203.0.113.7、203.0.113.0/24、2001:db8::/64；每行或逗号分隔" value={form.whitelist} onChange={e => setForm({ ...form, whitelist: e.target.value })} /></label>
       </fieldset>
       <p className="mt-2 text-xs text-muted-foreground">白名单内的 IP 和网段不计数、不阻断。</p>
-      <details className="mt-2 text-xs text-muted-foreground"><summary className="cursor-pointer">统计与阻断说明</summary><p className="mt-2">每分钟检查，连续两次在线才计数；扫描和 Reality 验证失败不计入。超过阈值后按提醒间隔推送。阻断保留最早在线的 IP，新增 IP 拒绝 30 分钟；白名单或数量变更后下一分钟重新判断。</p></details>
+      <details className="mt-2 text-xs text-muted-foreground"><summary className="cursor-pointer">统计与阻断说明</summary><p className="mt-2">每分钟检查，IP 连续两次在线才计数，所以新增 IP 被阻断前可能有 1–2 分钟可用；扫描和 Reality 验证失败不计入。超过阈值后按重复提醒间隔推送。修改白名单、告警或阻断阈值后，下一分钟重新判断；节点重启后阻断清空。</p></details>
     </details>
     {!alerts && (form.quota_gb > 0 || form.max_ips > 0) && <p role="status" className="text-xs text-amber-700 dark:text-amber-400">提醒推送未启用，可在“通知”页配置。</p>}
   </>
