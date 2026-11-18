@@ -203,9 +203,12 @@ for line in sys.stdin:
                     assert task(controller, 'reset', {'port': port}, 10)['status'] == 'succeeded'
                     traffic(100, blocked=True)
                     assert driver.status(read(controller.state))[1][str(port)]['alert'] == 'expired'
+                    assert driver.inspect()['values'][str(port)] == {'rx': 0, 'tx': 0}, 'dropped traffic is not metered'
                     assert task(controller, 'apply', quota_rule, 11)['status'] == 'succeeded'
-                    assert driver.status(read(controller.state))[1][str(port)]['alert'] == 'quota_reached'
+                    assert driver.status(read(controller.state))[1][str(port)]['alert'] == 'normal'
                     traffic(100, blocked=True)
+                    assert driver.status(read(controller.state))[1][str(port)]['alert'] == 'quota_reached'
+                    assert driver.inspect()['values'][str(port)] == {'rx': 0, 'tx': 0}, 'nor is traffic over the quota'
 
                     # Detect an external quota reset even though rule structure and counters are unchanged.
                     driver.maintain()
@@ -220,6 +223,7 @@ for line in sys.stdin:
                         raise AssertionError('existing PM table must be left intact')
                     nft('delete', 'table', *TABLE.split())
                     driver.repair_missing()
+                    assert driver.status(read(controller.state))[1][str(port)]['alert'] == 'quota_reached', 'a rebuild keeps a reached quota'
                     traffic(100, blocked=True)
                 with patch('pm.GIB', 20):
                     out_only = {**rule, 'quota_gb': 1, 'quota_mode': 'out_only'}
@@ -229,7 +233,16 @@ for line in sys.stdin:
                     assert driver.status(read(controller.state))[1][str(port)]['alert'] == 'quota_reached'
                 with patch('pm.BYTES_PER_MEGABIT', 1):
                     assert task(controller, 'apply', {**rule, 'egress_mbps': 1}, 14)['status'] == 'succeeded'
+                    before = driver.inspect()['values'][str(port)]['tx']
                     traffic(100, reply_blocked=True)
+                    assert driver.inspect()['values'][str(port)]['tx'] == before, 'nor is traffic over the rate'
+
+                # Rules of the earlier layout are rebuilt once, keeping their counters.
+                usage = driver.inspect()
+                write(driver.checkpoint, {key: value for key, value in read(driver.checkpoint).items() if key != 'layout'})
+                driver.reconcile(read(controller.state))
+                assert driver.inspect()['epoch'] != usage['epoch'] and driver.inspect()['values'] == usage['values']
+                assert read(driver.checkpoint)['layout'] == pm.LAYOUT
                 assert task(controller, 'delete', {'port': port}, 15)['status'] == 'succeeded'
                 traffic(100)
                 driver.disable_empty()

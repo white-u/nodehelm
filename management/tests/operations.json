@@ -958,5 +958,257 @@
    }
   },
   "valid": false
+ },
+ {
+  "module": "pm",
+  "action": "apply",
+  "payload": {
+   "port": 8443,
+   "name": "quota",
+   "quota_gb": 100,
+   "quota_mode": "in_out",
+   "reset_day": 1,
+   "expiry_date": "",
+   "egress_mbps": 0,
+   "ip_limit": {
+    "max_ips": 3,
+    "cooldown_min": 30,
+    "whitelist": [
+     "203.0.113.7",
+     "2001:db8::1",
+     "::ffff:198.51.100.2"
+    ],
+    "block": true,
+    "alarm_ips": 8,
+    "block_ips": 12
+   }
+  },
+  "valid": true
+ },
+ {
+  "module": "pm",
+  "action": "apply",
+  "payload": {
+   "port": 8443,
+   "name": "quota",
+   "quota_gb": 100,
+   "quota_mode": "in_out",
+   "reset_day": 1,
+   "expiry_date": "",
+   "egress_mbps": 0,
+   "ip_limit": {
+    "max_ips": 3,
+    "cooldown_min": 30,
+    "whitelist": [
+     "203.0.113.7",
+     "2001:db8::1",
+     "::ffff:198.51.100.2"
+    ],
+    "block": true,
+    "alarm_ips": 3,
+    "block_ips": 4
+   }
+  },
+  "valid": true
+ },
+ {
+  "module": "pm",
+  "action": "apply",
+  "payload": {
+   "port": 8443,
+   "name": "quota",
+   "quota_gb": 100,
+   "quota_mode": "in_out",
+   "reset_day": 1,
+   "expiry_date": "",
+   "egress_mbps": 0,
+   "ip_limit": {
+    "max_ips": 3,
+    "cooldown_min": 30,
+    "whitelist": [
+     "203.0.113.7",
+     "2001:db8::1",
+     "::ffff:198.51.100.2"
+    ],
+    "alarm_ips": 9
+   }
+  },
+  "valid": true
+ },
+ {
+  "module": "pm",
+  "action": "apply",
+  "payload": {
+   "port": 8443,
+   "name": "quota",
+   "quota_gb": 100,
+   "quota_mode": "in_out",
+   "reset_day": 1,
+   "expiry_date": "",
+   "egress_mbps": 0,
+   "ip_limit": {
+    "max_ips": 3,
+    "cooldown_min": 30,
+    "whitelist": [
+     "203.0.113.7",
+     "2001:db8::1",
+     "::ffff:198.51.100.2"
+    ],
+    "block_ips": 9
+   }
+  },
+  "valid": false
+ },
+ {
+  "module": "pm",
+  "action": "apply",
+  "payload": {
+   "port": 8443,
+   "name": "quota",
+   "quota_gb": 100,
+   "quota_mode": "in_out",
+   "reset_day": 1,
+   "expiry_date": "",
+   "egress_mbps": 0,
+   "ip_limit": {
+    "max_ips": 3,
+    "cooldown_min": 30,
+    "whitelist": [
+     "203.0.113.7",
+     "2001:db8::1",
+     "::ffff:198.51.100.2"
+    ],
+    "block": true,
+    "alarm_ips": 2
+   }
+  },
+  "valid": false
+ },
+ {
+  "module": "pm",
+  "action": "apply",
+  "payload": {
+   "port": 8443,
+   "name": "quota",
+   "quota_gb": 100,
+   "quota_mode": "in_out",
+   "reset_day": 1,
+   "expiry_date": "",
+   "egress_mbps": 0,
+   "ip_limit": {
+    "max_ips": 3,
+    "cooldown_min": 30,
+    "whitelist": [
+     "203.0.113.7",
+     "2001:db8::1",
+     "::ffff:198.51.100.2"
+    ],
+    "block": true,
+    "alarm_ips": 8
+   }
+  },
+  "valid": false
+ },
+ {
+  "module": "pm",
+  "action": "apply",
+  "payload": {
+   "port": 8443,
+   "name": "quota",
+   "quota_gb": 100,
+   "quota_mode": "in_out",
+   "reset_day": 1,
+   "expiry_date": "",
+   "egress_mbps": 0,
+   "ip_limit": {
+    "max_ips": 3,
+    "cooldown_min": 30,
+    "whitelist": [
+     "203.0.113.7",
+     "2001:db8::1",
+     "::ffff:198.51.100.2"
+    ],
+    "block": true,
+    "alarm_ips": 8,
+    "block_ips": 7
+   }
+  },
+  "valid": false
+ },
+ {
+  "module": "pm",
+  "action": "apply",
+  "payload": {
+   "port": 8443,
+   "name": "quota",
+   "quota_gb": 100,
+   "quota_mode": "in_out",
+   "reset_day": 1,
+   "expiry_date": "",
+   "egress_mbps": 0,
+   "ip_limit": {
+    "max_ips": 3,
+    "cooldown_min": 30,
+    "whitelist": [
+     "203.0.113.7",
+     "2001:db8::1",
+     "::ffff:198.51.100.2"
+    ],
+    "block": true,
+    "block_ips": 4096
+   }
+  },
+  "valid": false
+ },
+ {
+  "module": "pm",
+  "action": "apply",
+  "payload": {
+   "port": 8443,
+   "name": "quota",
+   "quota_gb": 100,
+   "quota_mode": "in_out",
+   "reset_day": 1,
+   "expiry_date": "",
+   "egress_mbps": 0,
+   "ip_limit": {
+    "max_ips": 3,
+    "cooldown_min": 30,
+    "whitelist": [
+     "203.0.113.7",
+     "2001:db8::1",
+     "::ffff:198.51.100.2"
+    ],
+    "block": true,
+    "alarm_ips": true
+   }
+  },
+  "valid": false
+ },
+ {
+  "module": "pm",
+  "action": "apply",
+  "payload": {
+   "port": 8443,
+   "name": "quota",
+   "quota_gb": 100,
+   "quota_mode": "in_out",
+   "reset_day": 1,
+   "expiry_date": "",
+   "egress_mbps": 0,
+   "ip_limit": {
+    "max_ips": 3,
+    "cooldown_min": 30,
+    "whitelist": [
+     "203.0.113.7",
+     "2001:db8::1",
+     "::ffff:198.51.100.2"
+    ],
+    "block": true,
+    "alarm_ips": 8,
+    "block_ips": 8
+   }
+  },
+  "valid": false
  }
 ]

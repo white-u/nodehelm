@@ -9,11 +9,46 @@ use serde_json::{json, Value};
 use crate::notify;
 
 const KEEP: i64 = 7 * 86_400;
+/// Beside a stored report's usage: the readings it could not give, for the next
+/// report to be compared with. Never sent to the page.
+pub(super) const LAST_USAGE: &str = "last_usage";
 
 pub(super) const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS managed_port_traffic (
   node INTEGER NOT NULL REFERENCES managed_node(node) ON DELETE CASCADE,
   port INTEGER NOT NULL, hour INTEGER NOT NULL, rx INTEGER NOT NULL, tx INTEGER NOT NULL,
   PRIMARY KEY (node, port, hour)) WITHOUT ROWID;";
+
+/// The stored report as the next one is compared with it: readings it lacked are
+/// those of the last report that had them.
+pub(super) fn recalled(mut old: Value) -> Value {
+    let Some(pm) = old.get_mut("modules").and_then(|m| m.get_mut("pm")).and_then(Value::as_object_mut) else {
+        return old;
+    };
+    let Some(Value::Object(last)) = pm.remove(LAST_USAGE) else { return old };
+    if let Some(usage) = pm.entry("usage").or_insert_with(|| json!({})).as_object_mut() {
+        usage.extend(last);
+    }
+    old
+}
+
+/// The report to store: `new`, keeping from the recalled `old` the reading of each
+/// rule it has none for. A failed read then neither repeats an alert nor loses the
+/// traffic it spans.
+pub(super) fn remember(old: &Value, new: &Value) -> Value {
+    let mut last = serde_json::Map::new();
+    for rule in new["modules"]["pm"]["resources"].as_array().into_iter().flatten() {
+        let Some(port) = rule["port"].as_u64().map(|port| port.to_string()) else { continue };
+        let (was, now) = (&old["modules"]["pm"]["usage"][&port], &new["modules"]["pm"]["usage"][&port]);
+        if now.is_null() && !was.is_null() {
+            last.insert(port, was.clone());
+        }
+    }
+    let mut stored = new.clone();
+    if !last.is_empty() {
+        stored["modules"]["pm"][LAST_USAGE] = Value::Object(last);
+    }
+    stored
+}
 
 /// What each port carried since the previous report, added to the current hour.
 /// Only a port in both reports, in the same billing period, with neither counter
@@ -100,12 +135,16 @@ pub(super) fn events(old: &Value, new: &Value, thresholds: &[u64]) -> (Vec<Strin
         }
         let level = state["ip_level"].as_u64().unwrap_or(0);
         if level > 0 && state["ip_alert"] != before["ip_alert"] {
+            let limit = &rule["ip_limit"];
+            let max = limit["max_ips"].as_u64().unwrap_or(0);
             ips.push(notify::IpAlert {
                 port: port.clone(),
                 name: rule["name"].as_str().unwrap_or_default().to_owned(),
                 count: state["ip_count"].as_u64().unwrap_or(0),
-                max: rule["ip_limit"]["max_ips"].as_u64().unwrap_or(0),
-                block: rule["ip_limit"]["block"] == true,
+                max,
+                alarm: limit["alarm_ips"].as_u64().unwrap_or(max + 2),
+                block_at: limit["block_ips"].as_u64().unwrap_or(max + 3),
+                block: limit["block"] == true,
                 level,
                 ips: state["ip_list"]
                     .as_array()
@@ -198,6 +237,69 @@ mod tests {
         }
         assert_eq!(hours(&c, 1000), json!([[9 * 3_600, 70, 20]]));
         assert_eq!(hours(&c, 2000), json!([]));
+    }
+
+    /// A rule with a limit and the reading of its port, or none for a failed read.
+    fn reported(reading: Option<Value>) -> Value {
+        let usage = reading.map_or_else(|| json!({}), |reading| json!({ "1000": reading }));
+        json!({"modules":{"pm":{"usage":usage,"resources":[{"port":1000,"name":"PM","quota_gb":1,
+            "quota_mode":"in_out","ip_limit":{"max_ips":1,"cooldown_min":30,"whitelist":[]}}]}}})
+    }
+
+    /// Passes reports through what `poll` stores, returning the alerts of each.
+    fn alerts(c: &Connection, reports: &[Value]) -> Vec<usize> {
+        let mut stored = reports[0].clone();
+        reports[1..]
+            .iter()
+            .map(|new| {
+                let old = recalled(stored.clone());
+                record(c, 1, &old, new, 9 * 3_600).unwrap();
+                stored = remember(&old, new);
+                let (notes, ips) = events(&old, new, &[50, 80, 100]);
+                notes.len() + ips.len()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn failed_reads_repeat_no_alert_and_lose_no_traffic() {
+        let c = conn();
+        let gib = 1i64 << 30;
+        let reading = |rx: i64, alert: &str, seq: u64| json!({"rx":rx,"tx":0,"period_start":"","alert":alert,"ip_level":2,"ip_alert":seq,"ip_count":4});
+        for state in [("quota_warning", gib * 85 / 100), ("quota_reached", gib), ("expired", gib / 10)] {
+            let (alert, rx) = state;
+            let good = reported(Some(reading(rx, alert, 7)));
+            let failed = reported(None);
+            let reports = [good.clone(), failed.clone(), failed, good];
+            assert_eq!(alerts(&c, &reports), [0, 0, 0], "{alert}");
+        }
+        // What really changed during the failure is still told, once.
+        let reports = [
+            reported(Some(reading(gib / 10, "normal", 7))),
+            reported(None),
+            reported(Some(reading(gib / 10, "normal", 8))),
+            reported(Some(reading(gib / 10, "normal", 8))),
+        ];
+        assert_eq!(alerts(&c, &reports), [0, 1, 0]);
+
+        let c = conn();
+        let reports = [
+            reported(Some(reading(100, "normal", 7))),
+            reported(None),
+            reported(Some(reading(160, "normal", 7))),
+        ];
+        alerts(&c, &reports);
+        assert_eq!(hours(&c, 1000), json!([[9 * 3_600, 60, 0]]));
+    }
+
+    #[test]
+    fn only_a_rule_still_reported_is_remembered() {
+        let old = reported(Some(json!({"rx":1,"tx":1,"period_start":"","alert":"normal"})));
+        let mut removed = reported(None);
+        removed["modules"]["pm"]["resources"] = json!([]);
+        assert!(remember(&old, &removed)["modules"]["pm"].get(LAST_USAGE).is_none());
+        assert!(remember(&old, &old)["modules"]["pm"].get(LAST_USAGE).is_none());
+        assert!(remember(&old, &reported(None))["modules"]["pm"].get(LAST_USAGE).is_some());
     }
 
     #[test]

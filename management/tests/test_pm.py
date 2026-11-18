@@ -179,6 +179,43 @@ class PmBlockTests(unittest.TestCase):
                       {'23456': {'203.0.113.6', '203.0.113.7'}})['23456']
         self.assertEqual((after['count'], 'block' in after), (5, False))
 
+    def test_chosen_alarm_and_block_counts_replace_the_defaults(self):
+        rule = policy(ip_limit={'max_ips': 1, 'alarm_ips': 3, 'block_ips': 4, 'cooldown_min': 30, 'whitelist': [], 'block': True})
+        self.assertEqual(pm.resource(rule)['ip_limit'], rule['ip_limit'])
+        levels = {}
+        for hosts in (2, 3, 4, 5, 6):
+            state = watch([rule], online(*range(1, hosts + 1)), {}, 1000)
+            levels[hosts] = watch([rule], online(*range(1, hosts + 1)), state, 1060)['23456']
+        self.assertEqual({hosts: entry['level'] for hosts, entry in levels.items()}, {2: 1, 3: 1, 4: 2, 5: 2, 6: 2})
+        self.assertNotIn('block', levels[4])
+        self.assertEqual(levels[6]['block'], ['203.0.113.5', '203.0.113.6'])
+
+    def test_alarm_and_block_counts_must_rise_with_the_warning_count(self):
+        limit = {'max_ips': 4, 'cooldown_min': 30, 'whitelist': [], 'block': True}
+        for good in ({'alarm_ips': 4, 'block_ips': 5}, {'alarm_ips': 6}, {'block_ips': 4095}):
+            pm.resource(policy(ip_limit=limit | good))
+        for bad in ({'alarm_ips': 3}, {'alarm_ips': 8}, {'alarm_ips': 8, 'block_ips': 7}, {'alarm_ips': 8, 'block_ips': 8},
+                    {'block_ips': 6}, {'block_ips': 4096}, {'alarm_ips': True}, {'block_ips': '9'}):
+            with self.assertRaises(Rejected, msg=bad):
+                pm.resource(policy(ip_limit=limit | bad))
+        off = {key: value for key, value in limit.items() if key != 'block'}
+        pm.resource(policy(ip_limit=off | {'alarm_ips': 9}))
+        with self.assertRaises(Rejected):
+            pm.resource(policy(ip_limit=off | {'block_ips': 9}))
+
+    def test_a_changed_block_count_is_judged_again_and_an_upgrade_is_not_a_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            driver = Driver(directory)
+            rule = blocking(max_ips=1)
+            rule['ip_limit']['block_ips'] = 9
+            base = {'seen': {}, 'count': 0, 'level': 0, 'ips': [], 'seq': 0, 'last': 0, 'max_ips': 1}
+            for previous, released in (({**base, 'block_at': 4}, True), (base, False), ({**base, 'block_at': 9}, False)):
+                write(driver.ip_watch, {'sampled_at': 1, 'ports': {'23456': previous}})
+                with patch('pm.connections', return_value=''), patch('pm.reality_probes', return_value={}), \
+                        patch.object(driver, 'blocked', return_value={('203.0.113.9', '23456')}), patch('pm.nft') as nft:
+                    driver.watch_ips({'installed': True, 'resources': [rule]})
+                self.assertEqual(nft.called, released, previous)
+
     def test_no_block_without_the_switch_or_for_whitelisted_addresses(self):
         hosts = online(*range(1, 9))
         state = watch([limited(max_ips=2)], hosts, {}, 1000)
@@ -359,6 +396,65 @@ class PmTests(unittest.TestCase):
         renewed = batch(name, epoch, expired, active, values, (), 'c' * 16)
         self.assertNotIn('add counter', renewed)
         self.assertIn(f'over {GIB} bytes used {GIB} bytes', renewed)
+
+    def test_drops_come_before_quota_use_and_metering(self):
+        today = dt.date(2026, 4, 1)
+        name, epoch = 'node-manager/pm/' + 'a' * 32, 'b' * 16
+        values = {'23456': {'rx': 0, 'tx': 0}}
+
+        def rules(**change):
+            script = batch(name, epoch, {}, plan({'resources': [policy(**change)]}, today), values, (), None)
+            return [line for line in script.splitlines() if line.startswith('add rule') and ' output ' in line]
+
+        limited = rules(egress_mbps=10)
+        self.assertEqual(len(limited), 3)
+        self.assertIn('limit rate over', limited[0])
+        self.assertIn('quota name "quota_23456" drop', limited[1])
+        self.assertTrue(limited[2].endswith('counter name "tx_23456"'))
+        expired = rules(expiry_date='2026-03-31', egress_mbps=10)
+        self.assertEqual(len(expired), 1)
+        self.assertTrue(expired[0].endswith(' drop'))
+        self.assertNotIn('counter', expired[0])
+
+    def test_rules_of_an_earlier_layout_are_rebuilt_keeping_their_counters(self):
+        state = {'installed': True, 'resources': [policy()]}
+        target = plan(state, dt.date(2026, 4, 1))
+        live = {'epoch': 'b' * 16}
+        saved = {'plan': target, 'values': {'23456': {'rx': 5, 'tx': 6}}, 'boot': 'boot'}
+        with tempfile.TemporaryDirectory() as directory:
+            driver = Driver(pathlib.Path(directory))
+            driver.boot_id = pathlib.Path(directory) / 'boot-id'
+            driver.boot_id.write_text('boot')
+            with patch.object(driver, 'inspect', return_value=live), patch.object(driver, 'settle', return_value=saved), \
+                    patch.object(driver, 'sample', side_effect=lambda _live, current: current), \
+                    patch.object(driver, 'expected_plan', return_value=target), \
+                    patch.object(driver, 'replace') as replace:
+                driver.reconcile(state)
+                replace.assert_called_once_with(live, saved, target, set(), set())
+                replace.reset_mock()
+                saved['layout'] = pm.LAYOUT
+                driver.reconcile(state)
+                replace.assert_not_called()
+
+    def test_a_reached_quota_survives_a_rebuild_unless_reset_or_changed(self):
+        today = dt.date(2026, 4, 1)
+        target = plan({'resources': [policy()]}, today)
+        saved = {'plan': target, 'values': {'23456': {'rx': GIB - 1400, 'tx': 0}}, 'quotas': {'23456': GIB}}
+
+        def rebuilt(new, zero=()):
+            with tempfile.TemporaryDirectory() as directory:
+                driver = Driver(pathlib.Path(directory))
+                driver.owner = 'node-manager/pm/' + 'a' * 32
+                driver.boot_id = pathlib.Path(directory) / 'boot-id'
+                driver.boot_id.write_text('boot')
+                with patch('pm.nft') as nft, patch('pm.secrets.token_hex', return_value='e' * 16), \
+                        patch.object(driver, 'inspect', return_value={'epoch': 'e' * 16}), patch.object(driver, 'settle'):
+                    driver.replace(None, saved, new, zero, zero)
+            return next(line for line in nft.call_args.kwargs['script'].splitlines() if 'add quota' in line)
+
+        self.assertIn(f'used {GIB} bytes', rebuilt(target))
+        self.assertIn('used 0 bytes', rebuilt(target, {'23456'}))
+        self.assertIn(f'used {GIB - 1400} bytes', rebuilt(plan({'resources': [policy(quota_gb=2)]}, today)))
 
     def test_retry_does_not_add_already_restored_usage_again(self):
         with tempfile.TemporaryDirectory() as directory:

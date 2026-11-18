@@ -47,6 +47,7 @@ fn node_status(app: &crate::App, node: i64) -> Result<Value> {
                 "lifecycle":lifecycle::latest(&c,node)?,"abandonable":lifecycle::active(&c,node)?}));
     };
     let mut snapshot = if snapshot.is_empty() { Value::Null } else { open(&key(&app.db)?, node, &snapshot)? };
+    snapshot.as_object_mut().map(|o| o.remove(HELD_BLOCKED));
     if let Some(items) = snapshot.get_mut("resources").and_then(Value::as_array_mut) {
         for item in items {
             item.as_object_mut().map(|o| o.remove("psk"));
@@ -54,6 +55,7 @@ fn node_status(app: &crate::App, node: i64) -> Result<Value> {
     }
     if let Some(modules) = snapshot.get_mut("modules").and_then(Value::as_object_mut) {
         for state in modules.values_mut() {
+            state.as_object_mut().map(|o| o.remove(pm::LAST_USAGE));
             if let Some(resources) = state["resources"].as_array_mut() {
                 for item in resources {
                     if let Some(map) = item.as_object_mut() {
@@ -584,7 +586,6 @@ pub async fn poll(State(app): State<Shared>, headers: HeaderMap, Json(input): Js
         input.snapshot.validate()?;
         let bytes = key(&app.db)?;
         let plain = serde_json::to_value(&input.snapshot)?;
-        let snapshot = seal(&bytes, node, &plain)?;
         let component = reported_component(&headers);
         let is_enabled = app.db.get("management_enabled").as_deref() == Some("on")
             && app.db.get("hub_lifecycle_maintenance").as_deref() != Some("on");
@@ -603,7 +604,19 @@ pub async fn poll(State(app): State<Shared>, headers: HeaderMap, Json(input): Js
             tx.query_row("SELECT snapshot FROM managed_node WHERE node=?1", [node], |r| r.get(0))?;
         // The first report after binding has nothing to compare against, and an
         // unreadable one must not cost the poll that replaces it.
-        let old = if previous.is_empty() { None } else { open(&bytes, node, &previous).ok() };
+        let old =
+            if previous.is_empty() { None } else { open(&bytes, node, &previous).ok() }.map(pm::recalled);
+        let maintaining: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM managed_maintenance WHERE node=?1 AND expires>?2)",
+            params![node, now()],
+            |r| r.get(0),
+        )?;
+        let (old, held) = held_back(old, &plain, maintaining);
+        let mut stored = old.as_ref().map_or_else(|| plain.clone(), |old| pm::remember(old, &plain));
+        if held {
+            stored[HELD_BLOCKED] = json!(true);
+        }
+        let snapshot = seal(&bytes, node, &stored)?;
         let (mut notes, ip_alerts) =
             old.as_ref().map_or_else(Default::default, |old| snapshot_events(old, &plain, &thresholds));
         if let Some(old) = &old {
@@ -743,12 +756,7 @@ pub async fn poll(State(app): State<Shared>, headers: HeaderMap, Json(input): Js
             [],
             |r| r.get(0),
         )?;
-        let maintenance_active: bool = tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM managed_maintenance WHERE node=?1 AND expires>?2)",
-            params![node, now()],
-            |r| r.get(0),
-        )?;
-        let job:Option<(String,String,i64)>=tx.query_row("SELECT id,payload,expires FROM managed_operation WHERE node=?1 AND (status='delivered' OR (status='queued' AND ?2)) ORDER BY created LIMIT 1",params![node,is_enabled && !maintenance_active && !hub_maintenance && !lifecycle_active],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
+        let job:Option<(String,String,i64)>=tx.query_row("SELECT id,payload,expires FROM managed_operation WHERE node=?1 AND (status='delivered' OR (status='queued' AND ?2)) ORDER BY created LIMIT 1",params![node,is_enabled && !maintaining && !hub_maintenance && !lifecycle_active],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
         let mut task = Value::Null;
         if let Some((id, payload, expires)) = job.filter(|_| !lifecycle_active) {
             let request = open(&bytes, node, &payload)?;
@@ -756,13 +764,27 @@ pub async fn poll(State(app): State<Shared>, headers: HeaderMap, Json(input): Js
             task = json!({"request":request,"expires":expires});
         }
         let lifecycle =
-            lifecycle::delivery(&tx, &bytes, node, is_enabled && !maintenance_active && !hub_maintenance)?;
+            lifecycle::delivery(&tx, &bytes, node, is_enabled && !maintaining && !hub_maintenance)?;
         tx.commit()?;
         // Naming the node reads the database, so the writer lock goes first.
         drop(c);
         notify::management(&app, node, notes, ip_alerts);
         Ok(json!({"task":task,"enabled":is_enabled,"lifecycle":lifecycle,"lifecycle_ack":lifecycle_ack}))
     })())
+}
+/// Beside a stored report: its `blocked` is not announced yet. Never sent to the page.
+pub(super) const HELD_BLOCKED: &str = "held_blocked";
+/// A component upgrade stops the node's timers and reports through the pause, so
+/// `blocked` under a maintenance lease says nothing yet: it is held back, and told
+/// by the first report after the lease that still has it. Returns the stored report
+/// as events should compare with it, and whether `new` is to be held.
+pub(super) fn held_back(mut old: Option<Value>, new: &Value, maintaining: bool) -> (Option<Value>, bool) {
+    let held = old.as_mut().and_then(Value::as_object_mut).is_some_and(|o| o.remove(HELD_BLOCKED).is_some());
+    let announced = !held && old.as_ref().is_some_and(|o| o["blocked"] == true);
+    if let Some(old) = &mut old {
+        old["blocked"] = json!(maintaining || announced);
+    }
+    (old, maintaining && new["blocked"] == true && !announced)
 }
 /// What became worth telling an administrator between two reports. The page reads
 /// on demand, so nobody is looking when a quota runs out. Fixed wording, ports and

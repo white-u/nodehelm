@@ -55,20 +55,38 @@ REALITY_PROBE = re.compile(r'process connection from \[?([0-9A-Fa-f:.]+?)\]?:\d+
 GIB = 1073741824
 BYTES_PER_MEGABIT = 125000
 MAX_COUNTER = (1 << 63) - 1
+# The rule layout `batch` writes. A checkpoint of another layout has its rules rebuilt.
+LAYOUT = 2
 # Addresses kept per port for the next minute's comparison.
 IP_SEEN = 4096
 
 
+def alarm_at(limit):
+    return limit.get('alarm_ips', limit['max_ips'] + 2)
+
+
+def block_at(limit):
+    return limit.get('block_ips', limit['max_ips'] + 3)
+
+
 def ip_limit(value):
     """Present only when on: rules without it keep their earlier revision, and
-    so does `block`, present only as true."""
-    if (not isinstance(value, dict) or set(value) - {'block'} != {'max_ips', 'cooldown_min', 'whitelist'}
-            or value.get('block', True) is not True):
+    so does `block`, present only as true. `alarm_ips` and `block_ips` are present
+    only when they differ from the defaults of `alarm_at` and `block_at`."""
+    if (not isinstance(value, dict)
+            or set(value) - {'block', 'alarm_ips', 'block_ips'} != {'max_ips', 'cooldown_min', 'whitelist'}
+            or value.get('block', True) is not True or ('block_ips' in value and 'block' not in value)):
         raise Rejected('IP 告警设置格式错误')
     limit, cooldown, allowed = value['max_ips'], value['cooldown_min'], value['whitelist']
     if (type(limit) is not int or not 1 <= limit <= 65535 or type(cooldown) is not int
             or not 1 <= cooldown <= 525600 or not isinstance(allowed, list) or len(allowed) > 32):
         raise Rejected('IP 上限须为 1–65535，冷却 1–525600 分钟，白名单最多 32 个')
+    alarm, blocked = alarm_at(value), block_at(value)
+    # Blocked addresses leave the count, which must stay over the alarm or the level
+    # would fall and rise again, alerting each time. At most IP_SEEN are ever counted.
+    if (any(key in value and (type(value[key]) is not int or value[key] >= IP_SEEN) for key in ('alarm_ips', 'block_ips'))
+            or alarm < limit or ('block' in value and blocked <= alarm)):
+        raise Rejected(f'IP 阈值最大 {IP_SEEN - 1}，且须满足告警 ≤ 报警 < 阻断')
     try:
         if any(not isinstance(item, str) or '%' in item for item in allowed):
             raise ValueError()
@@ -87,7 +105,8 @@ def ip_limit(value):
     # A single address (or /32, /128) is written bare, keeping earlier revisions.
     whitelist = [str(n.network_address) if n.prefixlen == n.max_prefixlen else str(n)
                  for n in sorted(entries, key=lambda n: (n.version, n.network_address, n.prefixlen))]
-    return dict(max_ips=limit, cooldown_min=cooldown, whitelist=whitelist, **({'block': True} if 'block' in value else {}))
+    return dict(max_ips=limit, cooldown_min=cooldown, whitelist=whitelist,
+                **{key: value[key] for key in ('alarm_ips', 'block_ips', 'block') if key in value})
 
 
 def resource(value):
@@ -184,8 +203,8 @@ def watch(rules, output, previous, now, excluded=None):
     in two consecutive minutes, so a port scan or a single short visit does not;
     `excluded` (blocked, or failed authentication) does not count at all.
     A rule with an IP limit adds the original PM's check: level 1 over the
-    limit, 2 over limit + 2; an alert on a rise or after the cooldown, a silent
-    reset at or under the limit. With `block`, the addresses past limit + 3 that
+    limit, 2 over `alarm_at`; an alert on a rise or after the cooldown, a silent
+    reset at or under the limit. With `block`, the addresses past `block_at` that
     came online last are returned in `block`, the earliest keep their place."""
     current = peers(output, {str(rule['port']) for rule in rules})
     result = {}
@@ -203,14 +222,14 @@ def watch(rules, output, previous, now, excluded=None):
         seen = dict(list(seen.items())[:IP_SEEN])
         online = [ip for ip in seen if ip in before]
         count = len(online)
-        level = 0 if not limit else 2 if count > limit['max_ips'] + 2 else 1 if count > limit['max_ips'] else 0
+        level = 0 if not limit else 2 if count > alarm_at(limit) else 1 if count > limit['max_ips'] else 0
         entry = {'seen': seen, 'count': count, 'level': level, 'ips': online[:15],
                  'seq': old.get('seq', 0), 'last': old.get('last', 0) if level else 0}
         if limit:
-            entry['max_ips'] = limit['max_ips']
-        if limit and limit.get('block') and count > limit['max_ips'] + 3:
+            entry.update(max_ips=limit['max_ips'], block_at=block_at(limit))
+        if limit and limit.get('block') and count > block_at(limit):
             order = sorted(online, key=lambda ip: (seen[ip], address_order(ip)))
-            entry['block'] = order[limit['max_ips'] + 3:]
+            entry['block'] = order[block_at(limit):]
         if level and (level > old.get('level', 0) or now - entry['last'] >= limit['cooldown_min'] * 60):
             entry.update(seq=entry['seq'] + 1, last=now)
         result[port] = entry
@@ -301,8 +320,9 @@ def entries(*args):
         raise Rejected('无法识别 nftables 状态', 'pm_nft') from None
 
 
-def batch(owner, generation, old, new, values, reset_ports, exists):
-    """Keep counters and unchanged quota objects in place across rule edits."""
+def batch(owner, generation, old, new, values, reset_ports, exists, quotas=()):
+    """Keep counters and unchanged quota objects in place across rule edits. A
+    quota created anew starts from its counters or, if higher, its use in `quotas`."""
     lines = []
     if exists:
         lines.extend(f'flush chain {TABLE} {direction}' for direction in ('input', 'output'))
@@ -332,21 +352,22 @@ def batch(owner, generation, old, new, values, reset_ports, exists):
             for kind in ('rx', 'tx'):
                 lines.append(f'add counter {TABLE} {kind}_{port} {{ packets 0 bytes {value[kind]}; }}')
         if new_quota and not keep_quota:
-            used = min(new_quota, counted(value, current['mode']))
+            used = min(new_quota, max(counted(value, current['mode']), dict(quotas).get(port, 0)))
             lines.append(f'add quota {TABLE} quota_{port} {{ over {new_quota} bytes used {used} bytes; }}')
         for chain, iface, direction, field, counter in (
             ('input', 'iifname', 'original', 'dport', 'rx'),
             ('output', 'oifname', 'reply', 'sport', 'tx'),
         ):
             match = f'{iface} != "lo" ct direction {direction} meta l4proto {{ tcp, udp }} th {field} {port}'
-            rule = f'add rule {TABLE} {chain} {match} counter name "{counter}_{port}"'
+            # Every drop comes first: what is dropped uses no quota and is not metered.
             if current['expired']:
-                rule += ' drop'
-            elif new_quota and (counter == 'tx' or current['mode'] == 'in_out'):
-                rule += f' quota name "quota_{port}" drop'
-            lines.append(rule)
-            if counter == 'tx' and current['rate'] and not current['expired']:
+                lines.append(f'add rule {TABLE} {chain} {match} drop')
+                continue
+            if counter == 'tx' and current['rate']:
                 lines.append(f'add rule {TABLE} {chain} {match} limit rate over {current["rate"]} bytes/second drop')
+            if new_quota and (counter == 'tx' or current['mode'] == 'in_out'):
+                lines.append(f'add rule {TABLE} {chain} {match} quota name "quota_{port}" drop')
+            lines.append(f'add rule {TABLE} {chain} {match} counter name "{counter}_{port}"')
     return '\n'.join(lines) + '\n'
 
 
@@ -431,7 +452,7 @@ class Driver:
             remove(self.transition)
         return saved
 
-    def replace(self, live, saved, target, rebuild=(), zero=(), rollback_of=None):
+    def replace(self, live, saved, target, rebuild=(), zero=(), rollback_of=None, quotas=None):
         if not isinstance(self.owner, str) or not re.fullmatch(r'node-manager/pm/[0-9a-f]{32}', self.owner):
             raise Rejected('PM 表的本机所有权记录缺失或损坏', 'pm_drift')
         old = saved['plan'] if live else {}
@@ -440,10 +461,16 @@ class Driver:
             (saved['values'].get(port, {'rx': 0, 'tx': 0}) if saved else {'rx': 0, 'tx': 0})
             for port in target
         }
+        if quotas is None:
+            # The packet that reached a quota was dropped, so counters stop just short of it.
+            before = saved['plan'] if saved else {}
+            quotas = {port: used for port, used in (saved or {}).get('quotas', {}).items()
+                      if port in target and port in before and port not in zero
+                      and all(before[port][key] == target[port][key] for key in ('quota_bytes', 'mode'))}
         generation = secrets.token_hex(8)
-        script = batch(self.owner, generation, old, target, values, rebuild, live and live['epoch'])
+        script = batch(self.owner, generation, old, target, values, rebuild, live and live['epoch'], quotas)
         nft('-c', '-f', '-', script=script)
-        write(self.transition, {'epoch': generation, 'plan': target, 'values': values,
+        write(self.transition, {'epoch': generation, 'plan': target, 'values': values, 'layout': LAYOUT,
                                 'boot': self.boot_id.read_text().strip(), 'rollback_of': rollback_of})
         nft('-f', '-', script=script)
         applied = self.inspect()
@@ -471,7 +498,7 @@ class Driver:
         }
         if reset_port is not None:
             resets.add(str(reset_port))
-        if not live or previous != target or resets:
+        if not live or previous != target or resets or saved.get('layout') != LAYOUT:
             return self.replace(live, saved, target, resets, resets)
         write(self.checkpoint, saved)
         return saved
@@ -668,7 +695,7 @@ class Driver:
                 merged[port] = {key: max(merged[port][key], value[key]) for key in ('rx', 'tx')}
                 changed.add(port)
         self.replace(live, {'plan': saved['plan'] if saved else {}, 'values': merged}, target, changed,
-                     rollback_of=prior['epoch'])
+                     rollback_of=prior['epoch'], quotas=prior.get('quotas', {}))
         self.verify(backup['state'], {})
 
     def restore_empty_runtime(self, live, saved, prior):
@@ -874,7 +901,8 @@ class Driver:
                     for rule in rules if rule.get('ip_limit', {}).get('block')}
         # A changed limit is judged again from scratch: raising it frees the port at once.
         changed = {port for port, entry in ports.items()
-                   if entry.get('max_ips') != previous.get(port, {}).get('max_ips')}
+                   if entry.get('max_ips') != previous.get(port, {}).get('max_ips')
+                   or entry.get('block_at') != previous.get(port, {}).get('block_at', entry.get('block_at'))}
         drop = {(ip, port) for ip, port in current or ()
                 if port not in blocking or whitelisted(ip, blocking[port]) or port in changed}
         add = {(ip, port) for port, ips in changes.items() if port in blocking for ip in ips}

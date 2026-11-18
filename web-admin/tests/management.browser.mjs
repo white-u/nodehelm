@@ -282,11 +282,16 @@ try {
   task=await submit(instances.getByRole('button',{name:'重置用量',exact:true}));assert.equal(task.request.action,'reset');await finish(task)
   await instances.getByRole('button',{name:'编辑',exact:true}).click();await pmEditor.locator('summary').filter({hasText:'IP 告警'}).click()
   await pmEditor.getByLabel('告警阈值（IP 数，0 关闭）',{exact:true}).fill('2');await pmEditor.getByLabel('白名单 IP / 网段（可选，最多 32 项）',{exact:true}).fill('203.0.113.9, 2001:db8::9')
+  // The alarm and block counts are the operator's; the block count waits for blocking to be on.
+  const blockAt=pmEditor.getByLabel('阻断阈值（IP 数）',{exact:true});assert(await blockAt.isDisabled());assert.equal(await pmEditor.getByLabel('报警阈值（IP 数）',{exact:true}).inputValue(),'5')
+  await pmEditor.getByLabel('报警阈值（IP 数）',{exact:true}).fill('7');await pmEditor.getByLabel('>6 阻断后续连接',{exact:true}).check();await blockAt.fill('9')
+  await pmEditor.getByText('>2 告警 · >7 报警 · >9 阻断后续连接',{exact:true}).waitFor()
+  await pmEditor.getByLabel('>9 阻断后续连接',{exact:true}).uncheck()
   task=await submit(pmEditor.getByRole('button',{name:'保存并应用',exact:true}))
-  assert.deepEqual(task.request.payload.ip_limit,{max_ips:2,cooldown_min:30,whitelist:['203.0.113.9','2001:db8::9']})
+  assert.deepEqual(task.request.payload.ip_limit,{max_ips:2,alarm_ips:7,cooldown_min:30,whitelist:['203.0.113.9','2001:db8::9']})
   snapshot.modules.pm.resources=[task.request.payload];snapshot.modules.pm.revision='d'.repeat(64)
   snapshot.modules.pm.usage={'23456':{rx:0,tx:0,sampled_at:Math.floor(Date.now()/1000),period_start:'',alert:'normal',ip_count:4,ip_level:1,ip_alert:1,ip_list:['198.51.100.1','198.51.100.2','198.51.100.3','198.51.100.4']}}
-  await finish(task);await instances.getByRole('button',{name:'规则详情'}).click();await instances.getByText(/>2 告警 · >4 报警/).waitFor()
+  await finish(task);await instances.getByRole('button',{name:'规则详情'}).click();await instances.getByText(/>2 告警 · >7 报警/).waitFor()
   const online=instances.locator('details').filter({hasText:'TCP 在线 IP 4 个 · 告警'})
   assert.match(await online.getAttribute('class'),/text-amber/)
   await online.locator('summary').click();await online.getByText('198.51.100.1、198.51.100.2、198.51.100.3、198.51.100.4',{exact:true}).waitFor()

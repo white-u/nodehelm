@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Plus } from "lucide-react"
 import { InlinePanel, useServiceConfirmation } from "./ServiceInteractions"
-import { type ApplyIntent, type PmDraft, type PmPolicy, type PmUsage, type RootSnapshot, type Snapshot, type Status, pmAlerts, pmTrafficBars, type PmTrafficHour, type PmTrafficBar, gib, pmDraft, newPmDraft, pmPayload, pmSummary, ipThresholds, ipBlock, readManagement } from "./model"
+import { type ApplyIntent, type PmDraft, type PmPolicy, type PmUsage, type RootSnapshot, type Snapshot, type Status, pmAlerts, pmTrafficBars, type PmTrafficHour, type PmTrafficBar, gib, pmDraft, newPmDraft, pmPayload, pmSummary, pmWarnChange, ipThresholdMax, ipThresholds, ipBlock, readManagement } from "./model"
 
 export function PmPanel({ node, nodeId, snapshot, view, operations, uncertain, retrying, live, writable, busy, feedback, refreshing, onDirtyChange, run, submit, opening, alerts = true }: {
   node: string
@@ -188,7 +188,7 @@ export function PmPanel({ node, nodeId, snapshot, view, operations, uncertain, r
                     <dt className="text-muted-foreground">自动重置</dt><dd>{rule.reset_day ? `每月 ${rule.reset_day} 日` : "未设置"}</dd>
                     {rule.expiry_date && <><dt className="text-muted-foreground">到期日期</dt><dd>{rule.expiry_date}</dd></>}
                     {rule.egress_mbps > 0 && <><dt className="text-muted-foreground">出站限速</dt><dd>{rule.egress_mbps} Mbps</dd></>}
-                    {rule.ip_limit && <><dt className="text-muted-foreground">IP 告警</dt><dd>{ipThresholds(rule.ip_limit.max_ips, rule.ip_limit.block)}</dd></>}
+                    {rule.ip_limit && <><dt className="text-muted-foreground">IP 告警</dt><dd>{ipThresholds(rule.ip_limit)}</dd></>}
                     {usage && <><dt className="text-muted-foreground">更新时间</dt><dd>{new Date(usage.sampled_at * 1000).toLocaleString()}</dd>{usage.period_start && <><dt className="text-muted-foreground">账期起始</dt><dd>{usage.period_start} UTC</dd></>}</>}
                   </dl>
                 <PortTraffic key={`${nodeId}:${rule.port}`} node={nodeId} port={rule.port} />
@@ -216,9 +216,11 @@ export function PmFields({ form, setForm, busy, alerts = true }: { form: PmDraft
     <details className="text-sm" open={form.max_ips > 0}>
       <summary className="cursor-pointer text-xs font-medium text-muted-foreground">IP 告警与阻断</summary>
       <fieldset disabled={busy} className="mt-3 grid gap-3 sm:grid-cols-2">
-        <label>告警阈值（IP 数，0 关闭）<Input className="block sm:max-w-48" aria-label="告警阈值（IP 数，0 关闭）" type="number" required min={0} max={65535} value={form.max_ips} onChange={e => setForm({ ...form, max_ips: Number(e.target.value) })} />{form.max_ips > 0 && <span className="text-xs text-muted-foreground">{ipThresholds(form.max_ips, form.block)}</span>}</label>
+        <label>告警阈值（IP 数，0 关闭）<Input className="block sm:max-w-48" aria-label="告警阈值（IP 数，0 关闭）" type="number" required min={0} max={ipThresholdMax} value={form.max_ips} onChange={e => setForm(pmWarnChange(form, Number(e.target.value)))} />{form.max_ips > 0 && <span className="text-xs text-muted-foreground">{ipThresholds(form)}</span>}</label>
+        <label>报警阈值（IP 数）<Input className="block sm:max-w-48" aria-label="报警阈值（IP 数）" type="number" required min={Math.max(1, form.max_ips)} max={ipThresholdMax} disabled={!form.max_ips} value={form.alarm_ips} onChange={e => setForm({ ...form, alarm_ips: Number(e.target.value) })} /></label>
+        <label>阻断阈值（IP 数）<Input className="block sm:max-w-48" aria-label="阻断阈值（IP 数）" type="number" required min={form.alarm_ips + 1} max={ipThresholdMax} disabled={!form.max_ips || !form.block} value={form.block_ips} onChange={e => setForm({ ...form, block_ips: Number(e.target.value) })} /></label>
         <label>重复提醒间隔（分钟）<Input className="block sm:max-w-48" type="number" required min={1} max={525600} disabled={!form.max_ips} value={form.cooldown_min} onChange={e => setForm({ ...form, cooldown_min: Number(e.target.value) })} /></label>
-        <label className="flex items-center gap-2 sm:col-span-2"><input type="checkbox" className="size-4" aria-label={form.max_ips > 0 ? ipBlock(form.max_ips) : "阻断后续连接"} disabled={!form.max_ips} checked={form.block} onChange={e => setForm({ ...form, block: e.target.checked })} />{form.max_ips > 0 ? ipBlock(form.max_ips) : "阻断后续连接"}</label>
+        <label className="flex items-center gap-2 sm:col-span-2"><input type="checkbox" className="size-4" aria-label={form.max_ips > 0 ? ipBlock(form.block_ips) : "阻断后续连接"} disabled={!form.max_ips} checked={form.block} onChange={e => setForm({ ...form, block: e.target.checked })} />{form.max_ips > 0 ? ipBlock(form.block_ips) : "阻断后续连接"}</label>
         <label className="sm:col-span-2">白名单 IP / 网段（可选，最多 32 项）<textarea aria-label="白名单 IP / 网段（可选，最多 32 项）" className="block min-h-20 w-full rounded border bg-background p-2" disabled={!form.max_ips} placeholder="例如：203.0.113.7、203.0.113.0/24、2001:db8::/64；每行或逗号分隔" value={form.whitelist} onChange={e => setForm({ ...form, whitelist: e.target.value })} /></label>
       </fieldset>
       <p className="mt-2 text-xs text-muted-foreground">白名单内的 IP 和网段不计数、不阻断。</p>
@@ -279,7 +281,7 @@ function PortTraffic({ node, port }: { node: number; port: number }) {
       {hours !== null && <>
         <TrafficBars key={chosen?.key ?? "days"} items={items} hourly={!!chosen} onSelect={chosen ? undefined : setDay} />
         <p className="tabular-nums text-muted-foreground">{chosen ? "当日已记录" : "近 7 天已记录"} 入站 {bytes(items.reduce((sum, d) => sum + d.rx, 0))} · 出站 {bytes(items.reduce((sum, d) => sum + d.tx, 0))}</p>
-        <details className="text-muted-foreground"><summary className="cursor-pointer">统计口径</summary><p className="mt-2">统计 IPv4 TCP/UDP 流量；配额、到期和出站超速策略以丢包执行，IPv6 不受影响。</p><p className="mt-2">按 UTC 和后台收到上报的时间归集；离线期间的增量计入恢复上报的小时。仅保留滚动 7 天，不补齐首次记录前的数据；账期切换、计数重置或缺失读数可能丢失部分增量。无记录不代表零用量，图表合计不等于当前账期用量。</p></details>
+        <details className="text-muted-foreground"><summary className="cursor-pointer">统计口径</summary><p className="mt-2">统计 IPv4 TCP/UDP 流量；配额、到期和出站超速策略以丢包执行，被丢弃的流量不计入用量和配额，IPv6 不受影响。</p><p className="mt-2">按 UTC 和后台收到上报的时间归集；离线期间的增量计入恢复上报的小时。仅保留滚动 7 天，不补齐首次记录前的数据；账期切换或计数重置可能丢失部分增量。无记录不代表零用量，图表合计不等于当前账期用量。</p></details>
       </>}
     </div>
   </>

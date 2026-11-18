@@ -406,6 +406,33 @@ fn snapshot_events_report_transitions_once_and_no_secrets() {
     assert!(events(&state(true, "expired"), &state(true, "expired")).is_empty());
 }
 #[test]
+fn blocked_under_a_lease_is_told_only_if_it_outlasts_the_lease() {
+    let run = |steps: &[(bool, bool)]| {
+        let mut stored = json!({"blocked":false});
+        steps
+            .iter()
+            .map(|&(blocked, maintaining)| {
+                let new = json!({ "blocked": blocked });
+                let (old, held) = held_back(Some(stored.clone()), &new, maintaining);
+                let events = snapshot_events(&old.unwrap(), &new, &[]).0.len();
+                stored = new;
+                if held {
+                    stored[HELD_BLOCKED] = json!(true);
+                }
+                events
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(run(&[(true, true), (true, true), (false, true), (false, false)]), [0, 0, 0, 0], "an upgrade");
+    assert_eq!(run(&[(true, true), (true, false), (true, false)]), [0, 1, 0], "still blocked after it");
+    assert_eq!(run(&[(true, false), (true, true), (true, false)]), [1, 0, 0], "already told before it");
+    assert_eq!(
+        run(&[(false, false), (true, false), (false, false), (true, false)]),
+        [0, 1, 0, 1],
+        "no lease"
+    );
+}
+#[test]
 fn quota_thresholds_sound_once_per_period_and_merge_with_the_quota() {
     let gib = 1u64 << 30;
     let state = |rx: u64, tx: u64, alert: &str, period: &str, mode: &str| {
@@ -988,4 +1015,74 @@ async fn all_statuses_match_each_node_and_isolate_failures() {
     let all = body(statuses(Admin, f.state()).await).await;
     assert!(all[f.node.to_string()]["error"].as_str().is_some_and(|e| !e.is_empty()));
     assert_eq!(all[other.to_string()]["bound"], false);
+}
+#[tokio::test]
+async fn a_failed_pm_reading_stays_off_the_page_and_costs_no_traffic() {
+    let f = Fixture::new();
+    let credential = f.bind().await;
+    let module = |installed: bool, resources: Value, usage: Value| json!({"installed":installed,"resources":resources,"revision":"b".repeat(64),"blocked":false,"usage":usage});
+    let report = |usage: Value| {
+        let rule = json!([{"port":23456,"name":"PM","quota_gb":0,"quota_mode":"in_out","reset_day":0,
+            "expiry_date":"","egress_mbps":0}]);
+        let empty = module(false, json!([]), json!({}));
+        json!({"snapshot":{"installed":false,"resources":[],"revision":"b".repeat(64),"blocked":false,
+            "modules":{"sb":empty,"fw":empty,"pm":module(true, rule, usage)}},
+            "result":null,"lifecycle_result":null})
+    };
+    let reading =
+        |rx: u64| json!({"23456":{"rx":rx,"tx":0,"sampled_at":1,"period_start":"","alert":"normal"}});
+    let send = |usage: Value| {
+        poll(f.state(), f.headers(&credential), Json(serde_json::from_value(report(usage)).unwrap()))
+    };
+    let stored = || {
+        let cipher: String = f
+            .app
+            .db
+            .conn()
+            .query_row("SELECT snapshot FROM managed_node WHERE node=?1", [f.node], |r| r.get(0))
+            .unwrap();
+        open(&key(&f.app.db).unwrap(), f.node, &cipher).unwrap()
+    };
+
+    body(send(reading(100)).await).await;
+    body(send(json!({})).await).await;
+    assert_eq!(stored()["modules"]["pm"][pm::LAST_USAGE]["23456"]["rx"], 100);
+    let page = body(status(Admin, f.state(), Path(f.node)).await).await;
+    assert!(page["snapshot"]["modules"]["pm"].get(pm::LAST_USAGE).is_none());
+
+    body(send(reading(160)).await).await;
+    assert!(stored()["modules"]["pm"].get(pm::LAST_USAGE).is_none());
+    let rx: i64 = f
+        .app
+        .db
+        .conn()
+        .query_row("SELECT sum(rx) FROM managed_port_traffic WHERE node=?1", [f.node], |r| r.get(0))
+        .unwrap();
+    assert_eq!(rx, 60);
+}
+#[tokio::test]
+async fn a_report_held_under_a_lease_stays_off_the_page() {
+    let f = Fixture::new();
+    let credential = f.bind().await;
+    let mut report = json!({"installed":false,"resources":[],"revision":"b".repeat(64),"blocked":true});
+    let module = json!({"installed":false,"resources":[],"revision":"b".repeat(64),"blocked":false});
+    report["modules"] = json!({"sb":module,"fw":module,"pm":module});
+    f.app
+        .db
+        .conn()
+        .execute("INSERT INTO managed_maintenance VALUES(?1,'lease',?2)", params![f.node, now() + 60])
+        .unwrap();
+    let input =
+        serde_json::from_value(json!({"snapshot":report,"result":null,"lifecycle_result":null})).unwrap();
+    body(poll(f.state(), f.headers(&credential), Json(input)).await).await;
+    let cipher: String = f
+        .app
+        .db
+        .conn()
+        .query_row("SELECT snapshot FROM managed_node WHERE node=?1", [f.node], |r| r.get(0))
+        .unwrap();
+    assert_eq!(open(&key(&f.app.db).unwrap(), f.node, &cipher).unwrap()[HELD_BLOCKED], true);
+    let page = body(status(Admin, f.state(), Path(f.node)).await).await;
+    assert!(page["snapshot"].get(HELD_BLOCKED).is_none());
+    assert_eq!(page["snapshot"]["blocked"], true);
 }

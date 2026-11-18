@@ -1,6 +1,6 @@
 /// <reference types="node" />
 import assert from "node:assert/strict"
-import { requestObserved, serviceFeedbackClass, pmTrafficBars, editable, instancePayload, newPmDraft, newResource, pmBlocked, pmDraft, pmPayload, pmSummary, type PmPolicy, type RootSnapshot } from "./model.ts"
+import { requestObserved, serviceFeedbackClass, pmTrafficBars, editable, instancePayload, newPmDraft, newResource, pmBlocked, pmDraft, pmPayload, pmSummary, pmWarnChange, ipThresholds, type PmPolicy, type RootSnapshot } from "./model.ts"
 
 const draft = newResource("snell", "example.com")
 assert.equal(draft.name, "")
@@ -27,17 +27,34 @@ console.log("service name defaults, hidden configuration preservation and SB fie
 const pm: PmPolicy = { port: 23456, name: "PM", quota_gb: 0, quota_mode: "in_out", reset_day: 0, expiry_date: "", egress_mbps: 0 }
 assert.deepEqual(pmPayload(pmDraft(pm)), pm, "a rule without an IP limit keeps its earlier shape")
 // The form asks for the count that warns; the rule keeps the original PM's limit below it.
-const limitedDraft = { ...pmDraft(pm), max_ips: 3, whitelist: " 203.0.113.7,2001:db8::1\n\n198.51.100.2，" }
+const limitedDraft = { ...pmWarnChange(pmDraft(pm), 3), whitelist: " 203.0.113.7,2001:db8::1\n\n198.51.100.2，" }
 assert.deepEqual(pmPayload(limitedDraft).ip_limit, { max_ips: 3, cooldown_min: 30, whitelist: ["203.0.113.7", "2001:db8::1", "198.51.100.2"] })
 assert.deepEqual(pmPayload(pmDraft(pmPayload(limitedDraft))), pmPayload(limitedDraft))
 assert.deepEqual(pmPayload({ ...limitedDraft, block: true }).ip_limit?.block, true)
 assert.deepEqual(pmPayload(pmDraft(pmPayload({ ...limitedDraft, block: true }))), pmPayload({ ...limitedDraft, block: true }))
 assert.equal("block" in pmPayload(limitedDraft).ip_limit!, false, "off is left out")
 assert.equal("ip_limit" in pmPayload({ ...limitedDraft, max_ips: 0 }), false, "0 turns the check off")
-assert.throws(() => pmPayload({ ...limitedDraft, max_ips: 65536 }), /1–65535/)
+assert.throws(() => pmPayload({ ...limitedDraft, max_ips: 4096 }), /1–4095/)
 const fresh = newPmDraft(40001, "新实例")
 assert.deepEqual([fresh.max_ips, fresh.block, fresh.quota_gb], [3, true, 0], "new rules warn over 3, alarm over 5 and block over 6")
 assert.deepEqual(pmPayload(fresh).ip_limit, { max_ips: 3, cooldown_min: 30, whitelist: [], block: true })
+assert.deepEqual([fresh.alarm_ips, fresh.block_ips], [5, 6])
+const raisedWarn = pmWarnChange(fresh, 10)
+assert.deepEqual([raisedWarn.alarm_ips, raisedWarn.block_ips], [10, 11], "a warning count past the others raises them")
+assert.deepEqual([pmWarnChange(fresh, 2).alarm_ips, pmWarnChange(fresh, 2).block_ips], [5, 6], "a lower one leaves them")
+assert.deepEqual([pmDraft(pm).alarm_ips, pmDraft(pm).block_ips], [5, 6], "a rule without a limit offers the defaults")
+const customSteps = { ...fresh, max_ips: 4, alarm_ips: 8, block_ips: 12 }
+assert.deepEqual(pmPayload(customSteps).ip_limit, { max_ips: 4, alarm_ips: 8, block_ips: 12, cooldown_min: 30, whitelist: [], block: true })
+assert.deepEqual(pmDraft({ ...pm, ip_limit: pmPayload(customSteps).ip_limit }).block_ips, 12, "chosen counts come back to the form")
+const steppedWarn = [5, 6, 7].reduce(pmWarnChange, customSteps)
+assert.deepEqual([steppedWarn.alarm_ips, steppedWarn.block_ips], [8, 12], "chosen counts stay however the warning count is stepped")
+assert.equal("block_ips" in pmPayload({ ...customSteps, block: false }).ip_limit!, false, "no block count without blocking")
+assert.throws(() => pmPayload({ ...customSteps, alarm_ips: 3 }), /报警阈值/)
+assert.throws(() => pmPayload({ ...customSteps, block_ips: 7 }), /阻断阈值/)
+assert.throws(() => pmPayload({ ...customSteps, block_ips: 8 }), /阻断阈值须大于报警阈值/)
+assert.throws(() => pmPayload({ ...customSteps, block_ips: 4096 }), /最大 4095/)
+assert.equal(ipThresholds({ max_ips: 4, alarm_ips: 8, block_ips: 12, block: true }), ">4 告警 · >8 报警 · >12 阻断后续连接")
+assert.equal(ipThresholds({ max_ips: 3, block: true }), ">3 告警 · >5 报警 · >6 阻断后续连接")
 assert.doesNotThrow(() => pmPayload({ ...limitedDraft, whitelist: "203.0.113.0/24 2001:db8::/64" }))
 assert.throws(() => pmPayload({ ...limitedDraft, whitelist: "fe80::1%eth0" }))
 assert.throws(() => pmPayload({ ...limitedDraft, whitelist: "256.1.1.1" }))

@@ -3,13 +3,14 @@ import { api, type Node } from "../../lib/api.ts"
 export type Module = "snell" | "sb" | "fw" | "pm"
 export type ApplyIntent = "create" | "update"
 export type Resource = { name: string; port: number; host?: string; public_port?: number; mode?: string; psk?: string; protocol?: string; sni?: string; target_host?: string; target_port?: number }
-/** The original PM's limit: over `max_ips` warns, over + 2 alarms, past + 3 blocks with `block`. */
-export type IpLimit = { max_ips: number; cooldown_min: number; whitelist: string[]; block?: true }
+/** Over `max_ips` warns, over `alarm_ips` alarms and past `block_ips` blocks with `block`; the
+ *  last two are left out at their defaults, `max_ips` + 2 and + 3. */
+export type IpLimit = { max_ips: number; alarm_ips?: number; block_ips?: number; cooldown_min: number; whitelist: string[]; block?: true }
 export type PmPolicy = Resource & { quota_gb: number; quota_mode: "in_out" | "out_only"; reset_day: number; expiry_date: string; egress_mbps: number; ip_limit?: IpLimit }
 export type PmUsage = { rx: number; tx: number; sampled_at: number; period_start: string; alert: string; ip_count?: number; ip_level?: number; ip_list?: string[] }
 /** The PM form: the IP limit flattened as the count that warns (the limit + 1),
  *  0 meaning off, and the whitelist as typed. */
-export type PmDraft = Omit<PmPolicy, "ip_limit"> & { max_ips: number; cooldown_min: number; whitelist: string; block: boolean }
+export type PmDraft = Omit<PmPolicy, "ip_limit"> & { max_ips: number; alarm_ips: number; block_ips: number; cooldown_min: number; whitelist: string; block: boolean }
 export type CoreAction = "core_upgrade" | "core_rollback" | "core_uninstall"
 export type Core = { version: string | null; sha256: string | null; previous_version: string | null; candidates: string[] }
 export type Snapshot = { core?: Core; usage?: Record<string, PmUsage>; runtime?: Record<string, string>; installed: boolean; blocked: boolean; revision: string; resources: Resource[] }
@@ -87,8 +88,13 @@ export function serviceFeedbackClass(status: string, action = "") {
   return "text-blue-700 dark:text-blue-400"
 }
 export const modules = Object.keys(names) as Module[]
+/** The component counts at most 4096 addresses a port, so a higher threshold never fires. */
+export const ipThresholdMax = 4095
+const ipAlarmDefault = (max: number) => max + 2
+const ipBlockDefault = (max: number) => max + 3
 export function pmDraft({ ip_limit, ...rule }: PmPolicy): PmDraft {
-  return { ...rule, max_ips: ip_limit?.max_ips ?? 0, cooldown_min: ip_limit?.cooldown_min ?? 30, whitelist: ip_limit?.whitelist.join("\n") ?? "", block: !!ip_limit?.block }
+  const max = ip_limit?.max_ips ?? 3
+  return { ...rule, max_ips: ip_limit?.max_ips ?? 0, alarm_ips: ip_limit?.alarm_ips ?? ipAlarmDefault(max), block_ips: ip_limit?.block_ips ?? ipBlockDefault(max), cooldown_min: ip_limit?.cooldown_min ?? 30, whitelist: ip_limit?.whitelist.join("\n") ?? "", block: !!ip_limit?.block }
 }
 /** No quota by default. Warn above 3 IPs, alarm above 5, and block above 6. */
 export function newPmDraft(port: number, name: string): PmDraft {
@@ -100,12 +106,19 @@ function ipAddress(value: string) {
   if (!value.includes(":") || !/^[0-9a-fA-F:.]+$/.test(value)) return false
   try { new URL(`http://[${value}]/`); return true } catch { return false }
 }
+/** A new warning count, raising the alarm and block counts only when it passes them. */
+export function pmWarnChange(form: PmDraft, max: number): PmDraft {
+  const alarm_ips = Math.max(form.alarm_ips, max)
+  return { ...form, max_ips: max, alarm_ips, block_ips: Math.max(form.block_ips, alarm_ips + 1) }
+}
 /** An IP limit of 0 is left out, so the rule keeps the shape older components
  *  accept. The whitelist is checked here, before anything is submitted: the
  *  instance form applies it only after the instance exists. */
-export function pmPayload({ max_ips, cooldown_min, whitelist, block, ...rule }: PmDraft): PmPolicy {
+export function pmPayload({ max_ips, alarm_ips, block_ips, cooldown_min, whitelist, block, ...rule }: PmDraft): PmPolicy {
   if (!max_ips) return rule
-  if (!Number.isInteger(max_ips) || max_ips < 1 || max_ips > 65535) throw new Error("告警阈值须为 1–65535，0 关闭")
+  if (!Number.isInteger(max_ips) || max_ips < 1 || max_ips > ipThresholdMax) throw new Error(`告警阈值须为 1–${ipThresholdMax}，0 关闭`)
+  if (!Number.isInteger(alarm_ips) || alarm_ips < max_ips || alarm_ips > ipThresholdMax) throw new Error(`报警阈值不能小于告警阈值，最大 ${ipThresholdMax}`)
+  if (block && (!Number.isInteger(block_ips) || block_ips <= alarm_ips || block_ips > ipThresholdMax)) throw new Error(`阻断阈值须大于报警阈值，最大 ${ipThresholdMax}`)
   const ips = whitelist.split(/[\s,，]+/).filter(Boolean)
   const invalid = ips.find(item => {
     const [ip, prefix, extra] = item.split("/")
@@ -114,16 +127,16 @@ export function pmPayload({ max_ips, cooldown_min, whitelist, block, ...rule }: 
   })
   if (invalid) throw new Error(`IP 白名单中的 ${invalid} 不是有效的 IP 地址或 CIDR 网段`)
   if (ips.length > 32) throw new Error("IP 白名单最多 32 个")
-  return { ...rule, ip_limit: { max_ips, cooldown_min, whitelist: ips, ...(block ? { block: true as const } : {}) } }
+  return { ...rule, ip_limit: { max_ips, ...(alarm_ips !== ipAlarmDefault(max_ips) ? { alarm_ips } : {}), ...(block && block_ips !== ipBlockDefault(max_ips) ? { block_ips } : {}),
+    cooldown_min, whitelist: ips, ...(block ? { block: true as const } : {}) } }
 }
-/** The original PM levels by count: over the limit warns, over limit + 2 alarms, over limit + 3 blocks. */
-export function ipThresholds(max: number, block?: boolean) {
-  return `>${max} 告警 · >${max + 2} 报警${block ? ` · ${ipBlock(max)}` : ""}`
+export function ipThresholds({ max_ips, alarm_ips, block_ips, block }: { max_ips: number; alarm_ips?: number; block_ips?: number; block?: boolean }) {
+  return `>${max_ips} 告警 · >${alarm_ips ?? ipAlarmDefault(max_ips)} 报警${block ? ` · ${ipBlock(block_ips ?? ipBlockDefault(max_ips))}` : ""}`
 }
-export function ipBlock(max: number) { return `>${max + 3} 阻断后续连接` }
+export function ipBlock(count: number) { return `>${count} 阻断后续连接` }
 export function pmSummary(rule: PmPolicy) {
   return [rule.quota_gb ? `配额 ${rule.quota_gb} GiB` : "无限额", rule.reset_day ? `每月 ${rule.reset_day} 日重置` : "", rule.expiry_date ? `${rule.expiry_date} 到期` : "",
-    rule.egress_mbps ? `出站超速 ${rule.egress_mbps} Mbps 丢包` : "", rule.ip_limit ? `IP ${ipThresholds(rule.ip_limit.max_ips, rule.ip_limit.block)}` : ""].filter(Boolean).join("／")
+    rule.egress_mbps ? `出站超速 ${rule.egress_mbps} Mbps 丢包` : "", rule.ip_limit ? `IP ${ipThresholds(rule.ip_limit)}` : ""].filter(Boolean).join("／")
 }
 /** Why a port cannot take a managed PM rule now, or "" when it can. */
 export function pmBlocked(snapshot: RootSnapshot | undefined, port: number) {

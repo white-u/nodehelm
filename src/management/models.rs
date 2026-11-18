@@ -146,6 +146,9 @@ fn pm(value: &Value, _snapshot: bool) -> Result<()> {
     Ok(())
 }
 
+/// The component counts at most 4096 addresses a port, so a higher step never fires.
+const IP_STEP_MAX: u64 = 4095;
+
 fn valid_ip_or_network(value: &str) -> bool {
     let (address, prefix) = value.split_once('/').map_or((value, None), |(ip, prefix)| (ip, Some(prefix)));
     let Ok(ip) = address.parse::<std::net::IpAddr>() else { return false };
@@ -157,13 +160,29 @@ fn valid_ip_or_network(value: &str) -> bool {
 }
 
 /// Present only when on, so a rule without it keeps the revision older components
-/// computed; `block` likewise appears only as true. The component stores the
-/// whitelist normalized.
+/// computed; `block` likewise appears only as true. `alarm_ips` and `block_ips`
+/// appear only when they differ from limit + 2 and limit + 3. The component stores
+/// the whitelist normalized.
 fn ip_limit(value: &Value) -> Result<()> {
     let Some(map) = value.as_object() else { refuse!("IP 告警设置格式错误") };
     let whitelist = value["whitelist"].as_array();
     let block = map.get("block");
-    if map.len() != 3 + usize::from(block.is_some())
+    let limit = value["max_ips"].as_u64().unwrap_or(0);
+    let step = |key: &str, default: u64| match map.get(key) {
+        Some(n) => n.as_u64().filter(|n| *n <= IP_STEP_MAX),
+        None => Some(default),
+    };
+    let (alarm, blocked) =
+        (step("alarm_ips", limit.saturating_add(2)), step("block_ips", limit.saturating_add(3)));
+    if alarm.is_none_or(|n| n < limit)
+        || blocked.is_none()
+        || (block.is_some() && blocked <= alarm)
+        || (map.contains_key("block_ips") && block.is_none())
+    {
+        refuse!("IP 阈值最大 4095，且须满足告警 ≤ 报警 < 阻断");
+    }
+    let optional = ["block", "alarm_ips", "block_ips"].iter().filter(|key| map.contains_key(**key)).count();
+    if map.len() != 3 + optional
         || block.is_some_and(|b| b != true)
         || value["max_ips"].as_u64().is_none_or(|n| !(1..=65535).contains(&n))
         || value["cooldown_min"].as_u64().is_none_or(|n| !(1..=525600).contains(&n))
@@ -419,6 +438,8 @@ mod tests {
             name: "PM".into(),
             count: 17,
             max: 3,
+            alarm: 5,
+            block_at: 6,
             block: true,
             level: 2,
             ips: (1..=15).map(|n| format!("203.0.113.{n}")).collect(),
@@ -428,6 +449,9 @@ mod tests {
         assert_eq!(note.title, "🔴 异常接入报警 · hk");
         assert!(note.message.contains("在线 17 IP · 等级 报警（>5）"));
         assert!(note.message.contains("已开启阻断：>6 的后续连接阻断 30 分钟"));
+        let custom = crate::notify::IpAlert { alarm: 8, block_at: 12, ..alert.clone() };
+        let message = crate::notify::ip_note("hk", &custom, &places).message;
+        assert!(message.contains("等级 报警（>8）") && message.contains("已开启阻断：>12 的后续连接"));
         let warning = crate::notify::IpAlert { level: 1, ips: vec![], block: false, ..alert.clone() };
         let message = crate::notify::ip_note("hk", &warning, &places).message;
         assert!(message.contains("等级 告警（>3）") && message.contains("未开启阻断，只提醒"));

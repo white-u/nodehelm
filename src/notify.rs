@@ -470,6 +470,10 @@ pub struct IpAlert {
     pub name: String,
     pub count: u64,
     pub max: u64,
+    /// The address count above which the rule alarms.
+    pub alarm: u64,
+    /// The address count above which newcomers are blocked, if `block`.
+    pub block_at: u64,
     /// The rule blocks newcomers past an alarm.
     pub block: bool,
     pub level: u64,
@@ -544,10 +548,10 @@ fn internal(ip: &str) -> bool {
 }
 
 /// The original PM tool's layout, in plain text like every other alert. The
-/// levels are named as on the panel: over the limit warns, over limit + 2 alarms.
+/// levels are named as on the panel: over the limit warns, over `alarm` alarms.
 pub(crate) fn ip_note(node: &str, alert: &IpAlert, places: &HashMap<String, String>) -> Note {
     let (title, level) = if alert.level >= 2 {
-        ("🔴 异常接入报警", format!("报警（>{}）", alert.max + 2))
+        ("🔴 异常接入报警", format!("报警（>{}）", alert.alarm))
     } else {
         ("🚨 异常接入告警", format!("告警（>{}）", alert.max))
     };
@@ -559,7 +563,7 @@ pub(crate) fn ip_note(node: &str, alert: &IpAlert, places: &HashMap<String, Stri
         ),
         format!("在线 {} IP · 等级 {level}", alert.count),
         if alert.block {
-            format!("已开启阻断：>{} 的后续连接阻断 30 分钟", alert.max + 3)
+            format!("已开启阻断：>{} 的后续连接阻断 30 分钟", alert.block_at)
         } else {
             "未开启阻断，只提醒".to_owned()
         },
