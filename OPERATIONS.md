@@ -24,7 +24,7 @@
 | --- | --- |
 | 监控 Agent | `/opt/monitor/monitor-agent`、`/opt/monitor/agent.env`，服务 `monitor-agent`（systemd 或 OpenRC） |
 | 管理组件 | `/opt/node-manager`，状态 `/var/lib/node-manager`，服务 `node-manager-agent`，本机命令 `nodehelm` |
-| 端口流量统计 | `node-manager-pm.service`、`node-manager-pm.timer`，nftables 表 `ip node_manager_pm` |
+| 端口流量统计 | `node-manager-pm.service`、`node-manager-pm.timer`，nftables 表 `inet node_manager_pm`（旧节点升级完成后由 `ip node_manager_pm` 自动迁移） |
 | 整节点卸载收尾 | `node-manager-cleanup.service`，材料 `/var/lib/node-manager-cleanup` |
 
 hub、监控 Agent 与管理组件可在同机共存，服务、凭据和卸载入口各自独立，不能通过删除整个 `/opt` 目录处理。

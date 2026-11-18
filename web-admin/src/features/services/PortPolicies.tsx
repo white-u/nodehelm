@@ -281,7 +281,7 @@ function PortTraffic({ node, port }: { node: number; port: number }) {
       {hours !== null && <>
         <TrafficBars key={chosen?.key ?? "days"} items={items} hourly={!!chosen} onSelect={chosen ? undefined : setDay} />
         <p className="tabular-nums text-muted-foreground">{chosen ? "当日已记录" : "近 7 天已记录"} 入站 {bytes(items.reduce((sum, d) => sum + d.rx, 0))} · 出站 {bytes(items.reduce((sum, d) => sum + d.tx, 0))}</p>
-        <details className="text-muted-foreground"><summary className="cursor-pointer">统计口径</summary><p className="mt-2">统计 IPv4 TCP/UDP 流量；配额、到期和出站超速策略以丢包执行，被丢弃的流量不计入用量和配额，IPv6 不受影响。</p><p className="mt-2">按 UTC 和后台收到上报的时间归集；离线期间的增量计入恢复上报的小时。仅保留滚动 7 天，不补齐首次记录前的数据；账期切换或计数重置可能丢失部分增量。无记录不代表零用量，图表合计不等于当前账期用量。</p></details>
+        <details className="text-muted-foreground"><summary className="cursor-pointer">统计口径</summary><p className="mt-2">统计 IPv4 和 IPv6 的 TCP/UDP 流量；配额、到期和出站超速策略以丢包执行，被丢弃的流量不计入用量和配额。</p><p className="mt-2">按 UTC 和后台收到上报的时间归集；离线期间的增量计入恢复上报的小时。仅保留滚动 7 天，不补齐首次记录前的数据；账期切换或计数重置可能丢失部分增量。无记录不代表零用量，图表合计不等于当前账期用量。</p></details>
       </>}
     </div>
   </>

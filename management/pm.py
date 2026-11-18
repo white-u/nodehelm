@@ -1,4 +1,4 @@
-"""Owned IPv4 port policies, with nftables transactions and reboot checkpoints."""
+"""Owned port policies, with nftables transactions and reboot checkpoints."""
 import calendar
 from contextlib import ExitStack, contextmanager
 import datetime as dt
@@ -45,7 +45,9 @@ Unit=node-manager-pm.service
 [Install]
 WantedBy=timers.target
 """
-TABLE = 'ip node_manager_pm'
+TABLE = 'inet node_manager_pm'
+# Rules from before IPv6 was covered, moved to `TABLE` once an upgrade is final.
+LEGACY_TABLE = 'ip node_manager_pm'
 # Blocked client addresses per port, in a table of their own: its elements come
 # and go every minute, which the PM table's fingerprint must not see.
 BLOCK_TABLE = 'inet node_manager_pm_block'
@@ -320,18 +322,23 @@ def entries(*args):
         raise Rejected('无法识别 nftables 状态', 'pm_nft') from None
 
 
-def batch(owner, generation, old, new, values, reset_ports, exists, quotas=()):
+def teardown(live):
+    # The epoch must still exist in the same atomic transaction.
+    return f'delete chain {live["table"]} epoch_{live["epoch"]}\ndelete table {live["table"]}\n'
+
+
+def batch(owner, generation, old, new, values, reset_ports, exists, quotas=(), table=TABLE):
     """Keep counters and unchanged quota objects in place across rule edits. A
     quota created anew starts from its counters or, if higher, its use in `quotas`."""
     lines = []
     if exists:
-        lines.extend(f'flush chain {TABLE} {direction}' for direction in ('input', 'output'))
-        lines.append(f'delete chain {TABLE} epoch_{exists}')
+        lines.extend(f'flush chain {table} {direction}' for direction in ('input', 'output'))
+        lines.append(f'delete chain {table} epoch_{exists}')
     else:
-        lines.append(f'create table {TABLE} {{ comment "{owner}"; }}')
+        lines.append(f'create table {table} {{ comment "{owner}"; }}')
         for direction in ('input', 'output'):
-            lines.append(f'add chain {TABLE} {direction} {{ type filter hook {direction} priority 10; policy accept; }}')
-    lines.append(f'add chain {TABLE} epoch_{generation}')
+            lines.append(f'add chain {table} {direction} {{ type filter hook {direction} priority 10; policy accept; }}')
+    lines.append(f'add chain {table} epoch_{generation}')
     for port in sorted(set(old) | set(new), key=int):
         previous, current = old.get(port), new.get(port)
         reset = port in reset_ports
@@ -342,18 +349,18 @@ def batch(owner, generation, old, new, values, reset_ports, exists, quotas=()):
         ) and (not previous['expired'] or current['expired'])
         if previous and (not current or reset):
             for kind in ('rx', 'tx'):
-                lines.append(f'delete counter {TABLE} {kind}_{port}')
+                lines.append(f'delete counter {table} {kind}_{port}')
         if old_quota and not keep_quota:
-            lines.append(f'delete quota {TABLE} quota_{port}')
+            lines.append(f'delete quota {table} quota_{port}')
         if not current:
             continue
         value = values[port]
         if not previous or reset:
             for kind in ('rx', 'tx'):
-                lines.append(f'add counter {TABLE} {kind}_{port} {{ packets 0 bytes {value[kind]}; }}')
+                lines.append(f'add counter {table} {kind}_{port} {{ packets 0 bytes {value[kind]}; }}')
         if new_quota and not keep_quota:
             used = min(new_quota, max(counted(value, current['mode']), dict(quotas).get(port, 0)))
-            lines.append(f'add quota {TABLE} quota_{port} {{ over {new_quota} bytes used {used} bytes; }}')
+            lines.append(f'add quota {table} quota_{port} {{ over {new_quota} bytes used {used} bytes; }}')
         for chain, iface, direction, field, counter in (
             ('input', 'iifname', 'original', 'dport', 'rx'),
             ('output', 'oifname', 'reply', 'sport', 'tx'),
@@ -361,13 +368,13 @@ def batch(owner, generation, old, new, values, reset_ports, exists, quotas=()):
             match = f'{iface} != "lo" ct direction {direction} meta l4proto {{ tcp, udp }} th {field} {port}'
             # Every drop comes first: what is dropped uses no quota and is not metered.
             if current['expired']:
-                lines.append(f'add rule {TABLE} {chain} {match} drop')
+                lines.append(f'add rule {table} {chain} {match} drop')
                 continue
             if counter == 'tx' and current['rate']:
-                lines.append(f'add rule {TABLE} {chain} {match} limit rate over {current["rate"]} bytes/second drop')
+                lines.append(f'add rule {table} {chain} {match} limit rate over {current["rate"]} bytes/second drop')
             if new_quota and (counter == 'tx' or current['mode'] == 'in_out'):
-                lines.append(f'add rule {TABLE} {chain} {match} quota name "quota_{port}" drop')
-            lines.append(f'add rule {TABLE} {chain} {match} counter name "{counter}_{port}"')
+                lines.append(f'add rule {table} {chain} {match} quota name "quota_{port}" drop')
+            lines.append(f'add rule {table} {chain} {match} counter name "{counter}_{port}"')
     return '\n'.join(lines) + '\n'
 
 
@@ -385,13 +392,16 @@ class Driver:
         return ((self.units / SERVICE_NAME, SERVICE_UNIT), (self.units / TIMER_NAME, TIMER_UNIT))
 
     def inspect(self):
-        tables = entries('list', 'tables')
-        if not any(row.get('table', {}).get('family') == 'ip' and
-                   row['table'].get('name') == 'node_manager_pm' for row in tables):
+        tables = {(row['table'].get('family'), row['table'].get('name'))
+                  for row in entries('list', 'tables') if 'table' in row}
+        found = [table for table in (TABLE, LEGACY_TABLE) if tuple(table.split()) in tables]
+        if not found:
             return None
+        if len(found) > 1:
+            raise Rejected('存在无法确认归属的 nftables 表，已拒绝修改', 'pm_conflict')
         fingerprint, values, quotas, epochs = [], {}, {}, []
         owned = False
-        for row in entries('list', 'table', *TABLE.split()):
+        for row in entries('list', 'table', *found[0].split()):
             kind, value = next(iter(row.items()))
             if kind == 'metainfo':
                 continue
@@ -415,7 +425,14 @@ class Driver:
             fingerprint.append({kind: {key: v for key, v in value.items() if key not in ignored}})
         if not owned or len(epochs) != 1:
             raise Rejected('存在无法确认归属的 nftables 表，已拒绝修改', 'pm_conflict')
-        return {'fingerprint': revision(fingerprint), 'epoch': epochs[0], 'values': values, 'quotas': quotas}
+        return {'table': found[0], 'fingerprint': revision(fingerprint), 'epoch': epochs[0], 'values': values, 'quotas': quotas}
+
+    def table(self, live):
+        """Where rules belong now. A failed upgrade rolls back to code that may know
+        only the legacy table, so rules move there only after the upgrade is final."""
+        if not (self.root.parent / 'component-recovery.json').exists():
+            return TABLE
+        return live['table'] if live else LEGACY_TABLE
 
     def sample(self, live, checkpoint):
         if not live or not checkpoint or live['fingerprint'] != checkpoint['fingerprint']:
@@ -455,7 +472,9 @@ class Driver:
     def replace(self, live, saved, target, rebuild=(), zero=(), rollback_of=None, quotas=None):
         if not isinstance(self.owner, str) or not re.fullmatch(r'node-manager/pm/[0-9a-f]{32}', self.owner):
             raise Rejected('PM 表的本机所有权记录缺失或损坏', 'pm_drift')
-        old = saved['plan'] if live else {}
+        table = self.table(live)
+        moved = live and live['table'] != table
+        old = saved['plan'] if live and not moved else {}
         values = {
             port: {'rx': 0, 'tx': 0} if port in zero else
             (saved['values'].get(port, {'rx': 0, 'tx': 0}) if saved else {'rx': 0, 'tx': 0})
@@ -468,7 +487,8 @@ class Driver:
                       if port in target and port in before and port not in zero
                       and all(before[port][key] == target[port][key] for key in ('quota_bytes', 'mode'))}
         generation = secrets.token_hex(8)
-        script = batch(self.owner, generation, old, target, values, rebuild, live and live['epoch'], quotas)
+        script = (teardown(live) if moved else '') + batch(
+            self.owner, generation, old, target, values, rebuild, None if moved else live and live['epoch'], quotas, table)
         nft('-c', '-f', '-', script=script)
         write(self.transition, {'epoch': generation, 'plan': target, 'values': values, 'layout': LAYOUT,
                                 'boot': self.boot_id.read_text().strip(), 'rollback_of': rollback_of})
@@ -498,7 +518,8 @@ class Driver:
         }
         if reset_port is not None:
             resets.add(str(reset_port))
-        if not live or previous != target or resets or saved.get('layout') != LAYOUT:
+        if (not live or previous != target or resets or saved.get('layout') != LAYOUT
+                or live['table'] != self.table(live)):
             return self.replace(live, saved, target, resets, resets)
         write(self.checkpoint, saved)
         return saved
@@ -650,8 +671,7 @@ class Driver:
                 remove(path)
             command('systemctl', 'daemon-reload')
             if live:
-                # The epoch must still exist in the same atomic teardown transaction.
-                nft('-f', '-', script=f'delete chain {TABLE} epoch_{live["epoch"]}\ndelete table {TABLE}\n')
+                nft('-f', '-', script=teardown(live))
             # Unlike the minute's check, uninstall fails rather than leave it behind.
             if self.blocked() is not None:
                 nft('-f', '-', script=block_script(self.owner, True, (), (), False))

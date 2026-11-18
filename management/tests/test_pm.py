@@ -419,7 +419,7 @@ class PmTests(unittest.TestCase):
     def test_rules_of_an_earlier_layout_are_rebuilt_keeping_their_counters(self):
         state = {'installed': True, 'resources': [policy()]}
         target = plan(state, dt.date(2026, 4, 1))
-        live = {'epoch': 'b' * 16}
+        live = {'table': pm.TABLE, 'epoch': 'b' * 16}
         saved = {'plan': target, 'values': {'23456': {'rx': 5, 'tx': 6}}, 'boot': 'boot'}
         with tempfile.TemporaryDirectory() as directory:
             driver = Driver(pathlib.Path(directory))
@@ -435,6 +435,60 @@ class PmTests(unittest.TestCase):
                 saved['layout'] = pm.LAYOUT
                 driver.reconcile(state)
                 replace.assert_not_called()
+
+    def test_legacy_rules_move_with_their_usage_only_after_an_upgrade_is_final(self):
+        state = {'installed': True, 'resources': [policy()]}
+        target = plan(state, dt.date(2026, 4, 1))
+        live = {'table': pm.LEGACY_TABLE, 'epoch': 'b' * 16}
+        saved = {'plan': target, 'layout': pm.LAYOUT, 'boot': 'boot',
+                 'values': {'23456': {'rx': 5, 'tx': 6}}, 'quotas': {'23456': 900}}
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            driver = Driver(root / 'pm')
+            driver.owner = 'node-manager/pm/' + 'a' * 32
+            driver.boot_id = root / 'boot-id'
+            driver.boot_id.write_text('boot')
+            journal = root / 'component-recovery.json'
+            journal.write_text('{}')
+            with patch('pm.nft') as nft, patch('pm.secrets.token_hex', return_value='e' * 16), \
+                    patch.object(driver, 'inspect', return_value=live), patch.object(driver, 'settle', return_value=saved), \
+                    patch.object(driver, 'sample', side_effect=lambda _live, current: current), \
+                    patch.object(driver, 'expected_plan', return_value=target):
+                driver.reconcile(state)
+                nft.assert_not_called()
+                # An edit during the upgrade stays in the table a rollback can read.
+                with patch.object(driver, 'inspect', return_value={'epoch': 'e' * 16}):
+                    driver.replace(live, saved, target)
+                script = nft.call_args.kwargs['script']
+                self.assertIn(f'flush chain {pm.LEGACY_TABLE} input', script)
+                self.assertNotIn(pm.TABLE, script)
+                nft.reset_mock()
+                journal.unlink()
+                with patch.object(driver, 'inspect', side_effect=[live, {'epoch': 'e' * 16}]):
+                    driver.reconcile(state)
+            script = nft.call_args.kwargs['script'].splitlines()
+            self.assertEqual(script[:3], [f'delete chain {pm.LEGACY_TABLE} epoch_{"b" * 16}', f'delete table {pm.LEGACY_TABLE}',
+                                          f'create table {pm.TABLE} {{ comment "{driver.owner}"; }}'])
+            self.assertIn(f'add counter {pm.TABLE} rx_23456 {{ packets 0 bytes 5; }}', script)
+            self.assertIn(f'add counter {pm.TABLE} tx_23456 {{ packets 0 bytes 6; }}', script)
+            self.assertIn(f'add quota {pm.TABLE} quota_23456 {{ over {GIB} bytes used 900 bytes; }}', script)
+            self.assertFalse([line for line in script[2:] if pm.LEGACY_TABLE in line])
+
+    def test_new_rules_wait_in_the_legacy_table_during_an_upgrade(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            driver = Driver(root / 'pm')
+            self.assertEqual(driver.table(None), pm.TABLE)
+            (root / 'component-recovery.json').write_text('{}')
+            self.assertEqual(driver.table(None), pm.LEGACY_TABLE)
+            self.assertEqual(driver.table({'table': pm.TABLE}), pm.TABLE)
+
+    def test_both_tables_at_once_are_refused(self):
+        tables = [{'table': {'family': family, 'name': 'node_manager_pm'}} for family in ('ip', 'inet')]
+        with tempfile.TemporaryDirectory() as directory, patch('pm.entries', return_value=tables):
+            with self.assertRaises(Rejected) as refused:
+                Driver(pathlib.Path(directory)).inspect()
+        self.assertEqual(refused.exception.code, 'pm_conflict')
 
     def test_a_reached_quota_survives_a_rebuild_unless_reset_or_changed(self):
         today = dt.date(2026, 4, 1)

@@ -229,9 +229,10 @@ class ComponentLifecycleTests(unittest.TestCase):
                 patch.object(install.subprocess, 'run', return_value=nft) as command:
             with self.assertRaisesRegex(ValueError, '仍存在受管 PM 表'):
                 install.uninstall(args)
-            nft.stdout = json.dumps({'nftables': [{'table': {'family': 'inet', 'name': 'node_manager_pm_block'}}]})
-            with self.assertRaisesRegex(ValueError, '仍存在受管 PM 表'):
-                install.uninstall(args)
+            for name in ('node_manager_pm', 'node_manager_pm_block'):
+                nft.stdout = json.dumps({'nftables': [{'table': {'family': 'inet', 'name': name}}]})
+                with self.assertRaisesRegex(ValueError, '仍存在受管 PM 表'):
+                    install.uninstall(args)
             self.assertFalse(self.purge_journal.exists())
             self.assertTrue((self.code / 'agent.py').exists())
             nft.stdout = json.dumps(absent_pm)

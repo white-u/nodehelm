@@ -13,7 +13,7 @@ from controller import Controller
 from modules import SPECS
 from protocol import Rejected, revision
 import pm
-from pm import Driver, TABLE, entries, nft, plan
+from pm import Driver, LEGACY_TABLE, TABLE, batch, entries, nft, plan, teardown
 from storage import read, write
 
 
@@ -38,9 +38,10 @@ def main():
 import socket, sys
 print('ready')
 for line in sys.stdin:
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+    size, host = line.split()
+    with socket.socket(socket.AF_INET6 if ':' in host else socket.AF_INET, socket.SOCK_DGRAM) as client:
         client.settimeout(1)
-        client.sendto(b'x' * int(line), ('192.0.2.1', 23456))
+        client.sendto(b'x' * int(size), (host, 23456))
         try: print(client.recv(1024).decode())
         except socket.timeout: print('timeout')
 """], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
@@ -49,13 +50,16 @@ for line in sys.stdin:
         ip('link', 'add', 'pm-host', 'type', 'veth', 'peer', 'name', 'pm-peer')
         ip('link', 'set', 'pm-peer', 'netns', str(peer.pid))
         ip('addr', 'add', '192.0.2.1/24', 'dev', 'pm-host')
+        ip('addr', 'add', '2001:db8::1/64', 'dev', 'pm-host', 'nodad')
         ip('link', 'set', 'pm-host', 'up')
         ip('addr', 'add', '192.0.2.2/24', 'dev', 'pm-peer', pid=peer.pid)
+        ip('addr', 'add', '2001:db8::2/64', 'dev', 'pm-peer', 'nodad', pid=peer.pid)
         ip('link', 'set', 'pm-peer', 'up', pid=peer.pid)
         nft('add', 'table', 'inet', 'port_monitor')
         nft('add', 'counter', 'inet', 'port_monitor', 'original')
         legacy = entries('list', 'table', 'inet', 'port_monitor')[1:]
-        with tempfile.TemporaryDirectory() as temporary, socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server:
+        with tempfile.TemporaryDirectory() as temporary, socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server, \
+                socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as server6:
             root = pathlib.Path(temporary)
             units = root / 'units'
             units.mkdir()
@@ -63,15 +67,18 @@ for line in sys.stdin:
             controller = Controller(root / 'pm', driver, SPECS['pm'])
             server.bind(('192.0.2.1', port))
             server.settimeout(0.3)
+            server6.bind(('2001:db8::1', port))
+            server6.settimeout(0.3)
 
-            def traffic(size, blocked=False, reply_blocked=False):
-                peer.stdin.write(f'{size}\n')
+            def traffic(size, blocked=False, reply_blocked=False, ipv6=False):
+                receiver = server6 if ipv6 else server
+                peer.stdin.write(f'{size} {"2001:db8::1" if ipv6 else "192.0.2.1"}\n')
                 peer.stdin.flush()
                 try:
-                    data, address = server.recvfrom(2048)
+                    data, address = receiver.recvfrom(2048)
                     assert not blocked and len(data) == size
                     try:
-                        server.sendto(b'ok', address)
+                        receiver.sendto(b'ok', address)
                     except PermissionError:
                         assert reply_blocked, 'unexpected egress policy rejection'
                 except socket.timeout:
@@ -243,13 +250,52 @@ for line in sys.stdin:
                 driver.reconcile(read(controller.state))
                 assert driver.inspect()['epoch'] != usage['epoch'] and driver.inspect()['values'] == usage['values']
                 assert read(driver.checkpoint)['layout'] == pm.LAYOUT
+
+                # IPv6 shares the counters and the quota of IPv4.
+                assert task(controller, 'apply', {**rule, 'quota_gb': 1}, 16)['status'] == 'succeeded'
+                before = driver.inspect()
+                traffic(100, ipv6=True)
+                after = driver.inspect()
+                assert after['values'][str(port)]['rx'] >= before['values'][str(port)]['rx'] + 100
+                assert after['values'][str(port)]['tx'] > before['values'][str(port)]['tx']
+                assert after['quotas'][str(port)] > before['quotas'][str(port)]
+                with patch('pm.GIB', after['quotas'][str(port)] + 100):
+                    assert task(controller, 'apply', {**rule, 'quota_gb': 1}, 17)['status'] == 'succeeded'
+                    traffic(100, blocked=True, ipv6=True)
+                    assert driver.status(read(controller.state))[1][str(port)]['alert'] == 'quota_reached'
+                assert task(controller, 'apply', {**rule, 'quota_gb': 1}, 18)['status'] == 'succeeded'
+                assert task(controller, 'reset', {'port': port}, 19)['status'] == 'succeeded'
+
+                # A node upgraded from IPv4-only rules keeps them until the upgrade is final.
+                traffic(100)
+                live, saved = driver.inspect(), read(driver.checkpoint)
+                nft('-f', '-', script=teardown(live) + batch(driver.owner, 'a' * 16, {}, saved['plan'], live['values'], (),
+                                                             None, live['quotas'], LEGACY_TABLE))
+                write(driver.checkpoint, {**saved, **driver.inspect()})
+                usage = driver.inspect()
+                assert usage['table'] == LEGACY_TABLE and usage['values'] == live['values']
+                journal = root / 'component-recovery.json'
+                write(journal, {'phase': 'starting'})
+                driver.reconcile(read(controller.state))
+                assert driver.inspect()['epoch'] == usage['epoch'], 'a rollback must find the rules it knows'
+                traffic(100, ipv6=True)
+                assert driver.inspect()['values'] == usage['values'], 'the legacy table does not see IPv6'
+                journal.unlink()
+                driver.maintain()
+                moved = driver.inspect()
+                assert moved['table'] == TABLE and moved['values'] == usage['values'] and moved['quotas'] == usage['quotas']
+                assert ('ip', 'node_manager_pm') not in {(row['table']['family'], row['table']['name'])
+                                                         for row in entries('list', 'tables') if 'table' in row}
+                driver.sample(driver.inspect(), read(driver.checkpoint))
+                traffic(100, ipv6=True)
+                assert driver.inspect()['values'][str(port)]['rx'] >= usage['values'][str(port)]['rx'] + 100
                 assert task(controller, 'delete', {'port': port}, 15)['status'] == 'succeeded'
                 traffic(100)
                 driver.disable_empty()
                 assert driver.inspect() is None
                 assert not read(controller.state)['installed']
         assert entries('list', 'table', 'inet', 'port_monitor')[1:] == legacy
-        print('PASS isolated Linux PM: install, counters, counter continuity, blocking (drop before metering, whitelist release, table removal), bidirectional/outbound quota, outbound policing, reset, rollback retry, reboot, expiry/renewal, legacy coexistence and cleanup')
+        print('PASS isolated Linux PM: install, counters, counter continuity, blocking (drop before metering, whitelist release, table removal), bidirectional/outbound quota, outbound policing, IPv6 metering and quota, legacy table move, reset, rollback retry, reboot, expiry/renewal, legacy coexistence and cleanup')
     finally:
         peer.kill()
         peer.wait()

@@ -805,7 +805,7 @@ def check_no_pm_table():
     except (ValueError, KeyError, TypeError):
         raise ValueError('无法识别 nftables 表清单') from None
     if any((row.get('table', {}).get('family'), row.get('table', {}).get('name'))
-           in (('ip', 'node_manager_pm'), ('inet', 'node_manager_pm_block')) for row in tables):
+           in (('ip', 'node_manager_pm'), ('inet', 'node_manager_pm'), ('inet', 'node_manager_pm_block')) for row in tables):
         raise ValueError('仍存在受管 PM 表，请先执行 pm.py disable-empty')
 
 

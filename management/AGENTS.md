@@ -51,4 +51,4 @@
 
 `state.json` 表示模块状态，`recovery.json` 记录事务，`receipts/` 保存模块回执；`lifecycle-job.json` 保存节点卸载进度及本地确认，独立收尾材料位于 `/var/lib/node-manager-cleanup`。
 
-端口流量统计仅管理当前受管业务端口，不读取旧脚本配置；IP 白名单支持单个地址与 IPv4／IPv6 CIDR 网段，匹配来源不计数、不阻断。
+端口流量统计仅管理当前受管业务端口，不读取旧脚本配置；IPv4 与 IPv6 合并计量，旧节点的 IPv4 规则表在组件升级完成后由定时维护迁移；IP 白名单支持单个地址与 IPv4／IPv6 CIDR 网段，匹配来源不计数、不阻断。
