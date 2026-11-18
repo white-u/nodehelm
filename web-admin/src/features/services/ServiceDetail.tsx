@@ -338,7 +338,7 @@ function OperationHistory({ status }: { status?: Status }) {
   </details>
 }
 
-export function NodeManagement({ node: target, record, notice, enabled, settingsError, onSubmitted, onUncertain, onClose, restoreFocus, reload, read }: { node: Node; record?: NodeStatus; notice?: string; enabled: boolean | null; settingsError: string; onSubmitted: (operation: string) => void; onUncertain: (request: UncertainRequest) => void; onClose: () => void; restoreFocus: () => void; reload: (manual?: boolean) => Promise<void>; read: (id: number) => Promise<void> }) {
+export function NodeManagement({ node: target, record, notice, enabled, settingsError, onSubmitted, onUncertain, onClose, onEnrolled, restoreFocus, reload, read }: { node: Node; record?: NodeStatus; notice?: string; enabled: boolean | null; settingsError: string; onSubmitted: (operation: string) => void; onUncertain: (request: UncertainRequest) => void; onClose: () => void; onEnrolled: (id: number) => void; restoreFocus: () => void; reload: (manual?: boolean) => Promise<void>; read: (id: number) => Promise<void> }) {
   const { confirm, confirmation, confirmationFor } = useServiceConfirmation()
   const node = target.id
   const selectedName = target.name
@@ -394,6 +394,13 @@ export function NodeManagement({ node: target, record, notice, enabled, settings
     const timer = setInterval(() => { if (Date.now() < deadline) void read(node); else { setExpired(true); clearInterval(timer) } }, 5000)
     return () => clearInterval(timer)
   }, [command, reported, expired, deadline, node, read])
+  // Once per command: the list may be switched back by hand while this panel stays open.
+  const enrolledBy = useRef("")
+  useEffect(() => {
+    if (!command || !reported || enrolledBy.current === command) return
+    enrolledBy.current = command
+    onEnrolled(node)
+  }, [command, reported, node, onEnrolled])
   async function enroll() {
     const started = Date.now()
     const data = await api<{ site: string; node: number; enrollment: string }>(`/management/${node}/enrollment`, { method: "POST" })

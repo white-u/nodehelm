@@ -53,6 +53,8 @@ try {
   await enrollmentPanel.waitFor({state:'detached'})
   assert(!await page.getByTestId('node-detail').isVisible(),'closing enrollment must not reveal Snell for an unbound node')
   // With the command shown, the binding is picked up without a manual refresh.
+  const statusFilter=name=>page.getByRole('group',{name:'按接入状态筛选'}).getByRole('button',{name:new RegExp('^'+name)})
+  await statusFilter('未接入').click()
   await unboundCard.getByRole('button',{name:'接入管理',exact:true}).click()
   await enrollmentPanel.getByRole('button',{name:'安装并接入此节点',exact:true}).click();await enrollmentPanel.locator('pre').waitFor()
   const enrollment=await api(`/api/management/${id}/enrollment`,{})
@@ -64,8 +66,13 @@ try {
     const response=await context.request.post(base+'/api/management-agent/v1/poll',{data:{snapshot,result},headers:{Authorization:'Bearer '+credential,'X-Node-Manager-Protocol':'1'}})
     assert(response.ok(),`poll: HTTP ${response.status()} ${await response.text()}`);return response.json()
   }
+  await page.evaluate(()=>{const scroll=Element.prototype.scrollIntoView;Element.prototype.scrollIntoView=function(...options){window.followedNode={row:this.id,filter:document.querySelector('[aria-label="按接入状态筛选"] button[aria-pressed="true"]')?.textContent};return scroll.apply(this,options)}})
   await poll()
   await page.getByTestId(`node-module-${id}-snell`).waitFor({timeout:12000});await enrollmentPanel.locator('pre').waitFor({state:'detached'})
+  // Enrolling moves the list to 已接入 once; choosing 未接入 afterwards is left alone.
+  await page.waitForFunction(()=>document.querySelector('[aria-label="按接入状态筛选"] button[aria-pressed="true"]')?.textContent.startsWith('已接入'))
+  await page.waitForFunction(row=>window.followedNode?.row===row&&window.followedNode.filter.startsWith('已接入'),`node-row-${id}`,{timeout:3000})
+  await statusFilter('未接入').click();await page.waitForTimeout(2500);assert.equal(await statusFilter('未接入').getAttribute('aria-pressed'),'true')
   await page.reload()
   const instances=page.getByTestId('instance-config'),detail=page.getByTestId('node-detail')
   const editor=page.getByTestId('service-instance-editor'),pmEditor=page.getByTestId('pm-policy-editor')

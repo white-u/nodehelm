@@ -7,6 +7,10 @@ import { ManagementDetail, NodeManagement } from "./ServiceDetail"
 import { useServiceConfirmation } from "./ServiceInteractions"
 import { type UncertainRequest, type FollowUp, type Module, type PmDraft, type Status, type NodeStatus, names, modules, moduleView, lifecycleActive, lifecycleLabels, defaultHost, readManagement, feedbackSeconds, requestObserved } from "./model"
 
+function scrollToNode(id: number) {
+  document.getElementById(`node-row-${id}`)?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth", block: "start" })
+}
+
 export function Management({ nodes, registerLeaveGuard }: { nodes: Node[]; registerLeaveGuard: (guard: () => Promise<boolean>) => () => void }) {
   const { discard, confirmation } = useServiceConfirmation()
   const [selectedNode, setNode] = useState(0)
@@ -17,6 +21,8 @@ export function Management({ nodes, registerLeaveGuard }: { nodes: Node[]; regis
   const [open, setOpen] = useState(false)
   // A node row to bring into view once the expanded configuration has rendered.
   const reveal = useRef(0)
+  // A node enrolled from 未接入, to bring into view once 已接入 is showing.
+  const enrolledNode = useRef(0)
   const [chosenFilter, setFilter] = useState<"bound" | "unbound" | "all">()
   const [managedNode, setManagedNode] = useState(0)
   const nodeManagementTrigger = useRef<HTMLElement | null>(null)
@@ -276,8 +282,15 @@ export function Management({ nodes, registerLeaveGuard }: { nodes: Node[]; regis
     if (!id) return
     reveal.current = 0
     detail.current?.focus({ preventScroll: true })
-    document.getElementById(`node-row-${id}`)?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth", block: "start" })
+    scrollToNode(id)
   })
+  // Keyed on the filter: the card only has its place in 已接入 once that list has rendered.
+  useEffect(() => {
+    const id = enrolledNode.current
+    if (!id || chosenFilter !== "bound") return
+    enrolledNode.current = 0
+    scrollToNode(id)
+  }, [chosenFilter])
   const query = search.trim().toLocaleLowerCase()
   const bound = nodes.filter(n => records[n.id]?.status?.bound).length
   const loaded = nodes.every(n => records[n.id]?.status || records[n.id]?.error)
@@ -297,6 +310,12 @@ export function Management({ nodes, registerLeaveGuard }: { nodes: Node[]; regis
     setPmOpening({ node, port, draft: keptDrafts.current.get(key), seq: Date.now() })
     keptDrafts.current.delete(key)
   }
+  // A node just enrolled from 未接入 no longer belongs there; follow it to 已接入.
+  const enrolled = useCallback((id: number) => {
+    if (chosenFilter !== "unbound") return
+    enrolledNode.current = id
+    setFilter("bound")
+  }, [chosenFilter])
   function openNodeManagement(id: number, trigger: HTMLElement) {
     // The entry toggles, as the module entries do.
     if (managedNode === id) { setManagedNode(0); return }
@@ -305,7 +324,7 @@ export function Management({ nodes, registerLeaveGuard }: { nodes: Node[]; regis
     void refreshNode(id)
   }
 
-  const nodeManagement = managementTarget && <NodeManagement key={managementTarget.id} node={managementTarget} record={records[managementTarget.id]} notice={notices[managementTarget.id]} enabled={enabled} settingsError={settingsError} onSubmitted={operation => submitted(managementTarget.id, operation)} onUncertain={request => rememberUncertain(managementTarget.id, request)} onClose={() => setManagedNode(0)} restoreFocus={() => {
+  const nodeManagement = managementTarget && <NodeManagement key={managementTarget.id} node={managementTarget} record={records[managementTarget.id]} notice={notices[managementTarget.id]} enabled={enabled} settingsError={settingsError} onSubmitted={operation => submitted(managementTarget.id, operation)} onUncertain={request => rememberUncertain(managementTarget.id, request)} onClose={() => setManagedNode(0)} onEnrolled={enrolled} restoreFocus={() => {
       if (nodeManagementTrigger.current?.isConnected) nodeManagementTrigger.current.focus()
       else {
         const trigger = document.getElementById(`node-manage-${managementTarget.id}`)
