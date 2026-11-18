@@ -316,10 +316,10 @@ pub async fn db_vacuum(_: Admin, State(app): State<Shared>) -> Response {
 
 /// How long a release lookup stands before the panel asks GitHub again, and how
 /// long a failed one does. The short retry keeps one unreachable moment from
-/// hiding an update for the rest of the day; the long one keeps a panel left
-/// open on a screen to four lookups a day, well inside the 60 per hour an
+/// hiding an update for the rest of the hour; the long one shows a release
+/// within the hour at one lookup an hour, well inside the 60 per hour an
 /// unauthenticated caller is allowed.
-const RELEASES_FRESH: i64 = 6 * 3600;
+const RELEASES_FRESH: i64 = 3600;
 const RELEASES_RETRY: i64 = 600;
 
 /// What is running here, and what is published. The agent's own version travels
@@ -357,7 +357,7 @@ pub async fn versions(_: Admin, State(app): State<Shared>) -> Json<Value> {
 
 /// Whether the cached lookup still answers. One that returned nothing is held
 /// for [`RELEASES_RETRY`] instead, so a single unreachable moment does not hide
-/// an update for the rest of the day.
+/// an update for the rest of the hour.
 pub(super) fn fresh_enough(cached: &crate::Releases, now: i64) -> bool {
     let holds = if cached.hub.is_empty() { RELEASES_RETRY } else { RELEASES_FRESH };
     // A negative age is a clock set back since the lookup, not a fresh one.

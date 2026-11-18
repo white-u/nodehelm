@@ -17,8 +17,8 @@ type Versions = { hub: string; hub_latest: string; agent_latest: string; notice:
 
 /**
  * What is running and what is published. Read once per panel load: the hub holds
- * the answer for six hours, so this costs a GitHub lookup a few times a day at
- * most, and nothing at all while nobody opens the panel.
+ * the answer for an hour, so this costs one GitHub lookup an hour at most, and
+ * nothing at all while nobody opens the panel.
  *
  * A hub that cannot reach github.com answers with empty latest fields, which
  * render as no update rather than as an error.

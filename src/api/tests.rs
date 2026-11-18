@@ -89,15 +89,15 @@ fn peer() -> ConnectInfo<std::net::SocketAddr> {
 /// 503. Tokio's mutex, since the guard is held across awaits.
 static HISTORY_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// A lookup nobody can refresh must not hide an update all day, and a panel
-/// left open on a screen must not ask GitHub on every load.
+/// A lookup nobody can refresh must not hide an update for long, and a panel
+/// reloaded on a screen must not ask GitHub on every load.
 #[test]
-fn a_release_lookup_is_held_for_six_hours_and_a_failed_one_for_ten_minutes() {
+fn a_release_lookup_is_held_for_an_hour_and_a_failed_one_for_ten_minutes() {
     let now = Utc::now().timestamp();
     let read = |read_at, hub: &str| crate::Releases { read_at, hub: hub.into() };
     assert!(!fresh_enough(&crate::Releases::default(), now), "nothing has been read yet");
-    assert!(fresh_enough(&read(now - 5 * 3600, "1.2.0"), now));
-    assert!(!fresh_enough(&read(now - 7 * 3600, "1.2.0"), now));
+    assert!(fresh_enough(&read(now - 3599, "1.2.0"), now));
+    assert!(!fresh_enough(&read(now - 3600, "1.2.0"), now));
     assert!(fresh_enough(&read(now - 300, ""), now), "a failure is held briefly");
     assert!(!fresh_enough(&read(now - 1200, ""), now), "and only briefly");
     assert!(!fresh_enough(&read(now + 3600, "1.2.0"), now), "read before the clock was set back");
