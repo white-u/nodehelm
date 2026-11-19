@@ -609,3 +609,28 @@ class PmTests(unittest.TestCase):
             }}
             self.assertEqual(execute_module_task(controllers, delete)['code'], 'pm_dependency')
             self.assertEqual(read(snell.state), snell_state)
+
+    def test_agent_keeps_existing_rules_editable_while_their_service_is_down(self):
+        class Stopped(FakeDriver):
+            def runtime(self, state):
+                return {str(r['port']): 'inactive' for r in state['resources']}
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            snell = Controller(root / 'snell', Stopped(), SPECS['snell'])
+            pm = Controller(root / 'pm', FakeDriver(), SPECS['pm'])
+            write(snell.state, {'installed': True, 'resources': [{'port': 23456}]})
+            pm_state = {'installed': True, 'resources': []}
+            write(pm.state, pm_state)
+            controllers = {'snell': snell, 'pm': pm}
+            apply = {'expires': time.time() + 60, 'request': {
+                'id': 'a' * 32, 'module': 'pm', 'action': 'apply',
+                'payload': policy(), 'revision': revision(pm_state),
+            }}
+            self.assertEqual(execute_module_task(controllers, apply)['code'], 'pm_port')
+            write(pm.state, {'installed': True, 'resources': [policy()]})
+            with patch('agent.execute_task', return_value={'status': 'succeeded'}) as execute:
+                self.assertEqual(execute_module_task(controllers, apply)['status'], 'succeeded')
+                execute.assert_called_once_with(pm, apply)
+            write(snell.state, {'installed': True, 'resources': []})
+            self.assertEqual(execute_module_task(controllers, apply)['code'], 'pm_port')

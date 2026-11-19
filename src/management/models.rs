@@ -130,7 +130,7 @@ fn fw(value: &Value, _snapshot: bool) -> Result<()> {
     Ok(())
 }
 
-fn pm(value: &Value, _snapshot: bool) -> Result<()> {
+fn pm(value: &Value, snapshot: bool) -> Result<()> {
     if value["port"].as_u64().is_none_or(|n| n < 1024)
         || value["quota_gb"].as_u64().is_none_or(|n| n > 8589934591)
         || value["reset_day"].as_u64().is_none_or(|n| n > 31)
@@ -142,6 +142,10 @@ fn pm(value: &Value, _snapshot: bool) -> Result<()> {
     }
     if let Some(limit) = value.get("ip_limit") {
         ip_limit(limit)?;
+        // A rule saved with a higher limit must not stop its node from reporting.
+        if !snapshot && limit["max_ips"].as_u64().is_some_and(|n| n > IP_STEP_MAX) {
+            refuse!("IP 阈值最大 4095，且须满足告警 ≤ 报警 < 阻断");
+        }
     }
     Ok(())
 }
@@ -190,7 +194,7 @@ fn ip_limit(value: &Value) -> Result<()> {
             ips.len() > 32 || ips.iter().any(|ip| ip.as_str().is_none_or(|s| !valid_ip_or_network(s)))
         })
     {
-        refuse!("IP 上限须为 1–65535，冷却 1–525600 分钟，白名单最多 32 项 IP 地址或 CIDR 网段");
+        refuse!("IP 上限须为 1–4095，冷却 1–525600 分钟，白名单最多 32 项 IP 地址或 CIDR 网段");
     }
     Ok(())
 }
@@ -418,6 +422,10 @@ mod tests {
         let mut limited = policy.clone();
         limited["ip_limit"] = json!({"max_ips":3,"cooldown_min":30,"whitelist":["203.0.113.7"]});
         assert!(resource("pm", &limited, true).is_ok());
+        let mut uncounted = limited.clone();
+        uncounted["ip_limit"]["max_ips"] = json!(4096);
+        assert!(resource("pm", &uncounted, false).is_err());
+        assert!(resource("pm", &uncounted, true).is_ok(), "a saved rule keeps reporting");
         let usage = |list: Value| {
             serde_json::from_value::<ModuleSnapshot>(json!({
                 "installed":true,"blocked":false,"revision":"a".repeat(64),"resources":[limited.clone()],
@@ -448,10 +456,10 @@ mod tests {
         let note = crate::notify::ip_note("hk", &alert, &places);
         assert_eq!(note.title, "🔴 异常接入报警 · hk");
         assert!(note.message.contains("在线 17 IP · 等级 报警（>5）"));
-        assert!(note.message.contains("已开启阻断：>6 的后续连接阻断 30 分钟"));
+        assert!(note.message.contains("已开启阻断：>6 阻断新增 IP 30 分钟"));
         let custom = crate::notify::IpAlert { alarm: 8, block_at: 12, ..alert.clone() };
         let message = crate::notify::ip_note("hk", &custom, &places).message;
-        assert!(message.contains("等级 报警（>8）") && message.contains("已开启阻断：>12 的后续连接"));
+        assert!(message.contains("等级 报警（>8）") && message.contains("已开启阻断：>12 阻断新增 IP"));
         let warning = crate::notify::IpAlert { level: 1, ips: vec![], block: false, ..alert.clone() };
         let message = crate::notify::ip_note("hk", &warning, &places).message;
         assert!(message.contains("等级 告警（>3）") && message.contains("未开启阻断，只提醒"));

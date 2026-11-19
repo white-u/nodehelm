@@ -149,8 +149,10 @@ def execute_module_task(controllers, task):
         return reject_module(controllers[name], req, 'config_changed', '其他模块有未恢复状态')
     owners = {module for module, state in related.items() if any(r['port'] == port for r in state['resources'])}
     if name == 'pm' and action == 'apply':
-        if not any(related[module]['runtime'].get(str(port)) == 'active' for module in owners):
-            return reject_module(controllers[name], req, 'pm_port', 'PM 只允许管理仍在运行的受管业务端口')
+        # A rule already in place stays editable while its service is down.
+        ruled = any(r['port'] == port for r in read(controller.state, {}).get('resources', ()))
+        if not owners or not (ruled or any(related[module]['runtime'].get(str(port)) == 'active' for module in owners)):
+            return reject_module(controllers[name], req, 'pm_port', 'PM 只允许管理受管业务端口，新规则需业务正在运行')
     if name != 'pm' and action == 'apply' and owners - {'pm'}:
         return reject_module(controllers[name], req, 'port_in_use', '监听端口已被其他模块保留')
     if name != 'pm' and action in ('delete', 'core_uninstall'):
@@ -490,7 +492,8 @@ def run_action(action, args=None):
             elif reply.get('task'):
                 result = execute_module_task(controllers, reply['task'])
                 write(ROOT / 'pending-result.json', result)
-                executed = True
+                # The Hub sends a failed recovery again until it is resolved on the node.
+                executed = result['status'] != 'recovery_failed'
         except urllib.error.HTTPError as error:
             if error.code == 409:
                 # Nothing was exchanged, so pending results survive until both sides match.

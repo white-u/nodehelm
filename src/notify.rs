@@ -563,7 +563,7 @@ pub(crate) fn ip_note(node: &str, alert: &IpAlert, places: &HashMap<String, Stri
         ),
         format!("在线 {} IP · 等级 {level}", alert.count),
         if alert.block {
-            format!("已开启阻断：>{} 的后续连接阻断 30 分钟", alert.block_at)
+            format!("已开启阻断：>{} 阻断新增 IP 30 分钟", alert.block_at)
         } else {
             "未开启阻断，只提醒".to_owned()
         },

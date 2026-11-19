@@ -1,8 +1,10 @@
 import base64
 from contextlib import ExitStack
+import errno
 import hashlib
 import json
 import pathlib
+import socket
 import sys
 import tempfile
 import unittest
@@ -16,7 +18,7 @@ import fw
 import sb
 from core_driver import CoreDriver
 from snell import Driver as SnellDriver
-from core_driver import atomic, wait_listening
+from core_driver import atomic, occupied, wait_listening
 from test_controller import Driver as FakeDriver
 
 class TemplateRefreshTests(unittest.TestCase):
@@ -181,6 +183,33 @@ class ModuleTests(unittest.TestCase):
         with patch('core_driver.socket.create_connection', side_effect=ConnectionRefusedError), \
                 patch('core_driver.time.sleep'), self.assertRaises(ConnectionRefusedError):
             wait_listening(12345, attempts=2)
+
+    def test_port_check_covers_ipv6_only_for_cores_listening_there(self):
+        try:
+            holder = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+            holder.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            holder.bind(('::', 0))
+        except OSError:
+            self.skipTest('IPv6 unavailable')
+        with holder:
+            holder.listen()
+            port = holder.getsockname()[1]
+            self.assertTrue(occupied(port, True))
+            self.assertFalse(occupied(port, False))
+        self.assertFalse(fw.Driver.dual_stack)
+        self.assertTrue(SnellDriver.dual_stack and sb.Driver.dual_stack)
+
+    def test_port_check_passes_on_a_host_without_ipv6(self):
+        real = socket.socket
+        def without_ipv6(family, kind):
+            if family == socket.AF_INET6:
+                raise OSError(errno.EAFNOSUPPORT, 'unsupported')
+            return real(family, kind)
+        with real() as free:
+            free.bind(('127.0.0.1', 0))
+            port = free.getsockname()[1]
+        with patch('core_driver.socket.socket', side_effect=without_ipv6):
+            self.assertFalse(occupied(port, True))
 
     def test_verify_scopes_health_but_checks_all_config_ownership(self):
         with tempfile.TemporaryDirectory() as root:

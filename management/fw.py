@@ -30,6 +30,7 @@ class Driver(CoreDriver):
     binary_name = 'realm'
     subdirectory = SPEC.name
     base_version = '2.9.6'
+    dual_stack = False
 
     def complete(self, item, existing):
         return item

@@ -101,6 +101,26 @@ def wait_listening(port, attempts=30):
                 raise
 
 
+def occupied(port, ipv6):
+    for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+        with socket.socket(socket.AF_INET, kind) as sock:
+            try:
+                sock.bind(('0.0.0.0', port))
+            except OSError:
+                return True
+        if not ipv6:
+            continue
+        try:
+            with socket.socket(socket.AF_INET6, kind) as sock:
+                sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                sock.bind(('::', port))
+        except OSError as error:
+            # A host without IPv6 has nothing listening there.
+            if error.errno == errno.EADDRINUSE:
+                return True
+    return False
+
+
 def atomic(path, content, mode=0o600):
     path = pathlib.Path(path)
     if path.is_symlink():
@@ -132,6 +152,8 @@ class CoreDriver:
     # Whether the release URL must answer without a redirect.
     exact_url = False
     version_arg = '--version'
+    # Whether instances listen on IPv6 as well as IPv4.
+    dual_stack = True
 
     units = pathlib.Path('/etc/systemd/system')
     _snapshot_core = None
@@ -645,12 +667,8 @@ class CoreDriver:
         if not owned:
             if any(p.exists() or p.is_symlink() for p in paths):
                 raise Rejected('发现非本后台管理的配置或服务，拒绝接管')
-            for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
-                with socket.socket(socket.AF_INET, kind) as sock:
-                    try:
-                        sock.bind(('0.0.0.0', port))
-                    except OSError as exc:
-                        raise Rejected('监听端口被占用', 'port_in_use') from exc
+            if occupied(port, self.dual_stack):
+                raise Rejected('监听端口被占用', 'port_in_use')
         files = []
         for p in paths:
             if p.is_symlink():

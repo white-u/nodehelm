@@ -208,6 +208,18 @@ class NodeLifecycleTests(unittest.TestCase):
                 exchange.assert_called_once()
                 self.assertEqual(read(self.root / 'connection-confirmed.json'), confirmation)
 
+    def test_failed_recovery_waits_before_the_next_poll(self):
+        write(self.root / 'binding.json', self.binding)
+        task = {'request': {'id': 'a' * 32}, 'expires': 0}
+        for status, polls in (('succeeded', 2), ('recovery_failed', 1)):
+            with self.subTest(status=status):
+                with self.agent_runtime(), patch.object(agent, 'exchange', side_effect=[{'task': task}, {}]) as exchange, \
+                        patch.object(agent, 'execute_module_task', return_value={'id': 'a' * 32, 'status': status}), \
+                        patch.object(agent.time, 'sleep', side_effect=KeyboardInterrupt):
+                    with self.assertRaises(KeyboardInterrupt):
+                        agent.run_action('run')
+                self.assertEqual(exchange.call_count, polls)
+
     def test_unlink_preserves_active_lifecycle_and_identity(self):
         for status in lifecycle.ACTIVE:
             with self.subTest(status=status):
