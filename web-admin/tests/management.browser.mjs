@@ -57,6 +57,8 @@ try {
   await statusFilter('未接入').click()
   await unboundCard.getByRole('button',{name:'接入管理',exact:true}).click()
   await enrollmentPanel.getByRole('button',{name:'安装并接入此节点',exact:true}).click();await enrollmentPanel.locator('pre').waitFor()
+  // A command waiting to be run keeps its panel, and the watch for the report, across lists.
+  await statusFilter('已接入').click();await page.waitForTimeout(300);assert.equal(await enrollmentPanel.locator('pre').count(),1);await statusFilter('未接入').click()
   const enrollment=await api(`/api/management/${id}/enrollment`,{})
   const credential='c'.repeat(64)
   await api('/api/management-agent/v1/enroll',{enrollment:enrollment.enrollment,credential,boot_id:''})
@@ -313,6 +315,7 @@ try {
   await instances.locator('[aria-live="polite"]').filter({hasText:'23:00–24:00'}).waitFor()
   await page.setViewportSize({width:1280,height:900})
   await instances.getByRole('button',{name:'返回近 7 天',exact:true}).click()
+  const trafficRead=page.waitForResponse(response=>new URL(response.url()).pathname.endsWith('/traffic'));await refresh();assert((await trafficRead).ok())
 
   // A new instance with PM: the hub queues the rule once the instance succeeds, and writes stay locked in between.
   await select('snell');const progress=page.getByTestId('chain-progress')
@@ -330,6 +333,7 @@ try {
   let response=posted();await accept();await response;task=(await poll()).task
   assert.equal(task.request.module,undefined);assert.equal(task.request.payload.port,40001);assert.equal(task.request.then,undefined,'the node never sees the follow-up')
   await progress.filter({hasText:'1/2 创建实例'}).waitFor();assert(await add.isDisabled(),'writes stay locked between the two steps')
+  await refresh();await page.getByText('配置已刷新',{exact:true}).waitFor();assert(await progress.filter({hasText:'1/2 创建实例'}).isVisible(),'a refresh keeps a running step')
   addSnell(snellRow(40001));task=(await poll({id:task.request.id,status:'succeeded',message:'fixture applied'})).task
   assert.equal(task.request.module,'pm');assert.equal(task.request.intent,'create');assert.equal(task.request.revision,snapshot.modules.pm.revision)
   assert.deepEqual(task.request.payload,{port:40001,name:'40001',quota_gb:100,quota_mode:'in_out',reset_day:0,expiry_date:'',egress_mbps:0,ip_limit:{max_ips:3,cooldown_min:30,whitelist:['203.0.113.0/24'],block:true}})
@@ -352,6 +356,14 @@ try {
   task=await submit(editor.getByRole('button',{name:'保存并应用',exact:true}));addSnell(snellRow(40003))
   task=(await poll({id:task.request.id,status:'succeeded',message:'fixture applied'})).task;assert.equal(task.request.module,'pm')
   await poll({id:task.request.id,status:'rejected',message:'流量统计状态需要核实'});await progress.filter({hasText:/^应用流量统计规则未成功：请求被拒绝[^。]*。可在实例行点击“添加流量统计”继续，已保留填写的参数。$/}).waitFor()
+  // 刷新全部 leaves a result nobody has seen; a failed read leaves it too; a successful refresh clears it.
+  await page.getByTestId(`node-module-${id}-snell`).click();await detail.waitFor({state:'detached'})
+  const allRead=page.waitForResponse(response=>new URL(response.url()).pathname==='/api/management/nodes');await page.getByRole('button',{name:'刷新全部',exact:true}).click();await allRead
+  await select('snell');await progress.filter({hasText:'应用流量统计规则未成功'}).waitFor()
+  const statusRoute=`**/api/management/${id}`,failRead=route=>route.request().method()==='GET'?route.abort():route.continue()
+  await page.route(statusRoute,failRead);await refresh();await page.getByRole('alert').filter({hasText:'配置读取失败'}).first().waitFor()
+  assert(await progress.filter({hasText:'应用流量统计规则未成功'}).isVisible(),'a failed read keeps the result');await page.unroute(statusRoute,failRead)
+  await refresh();await progress.waitFor({state:'detached'})
   await instances.getByTestId('instance-40003').getByRole('button',{name:'添加流量统计',exact:true}).click()
   await pmEditor.getByText('新增流量统计规则',{exact:false}).waitFor();assert.equal(await pmEditor.getByLabel('配额（GiB，0 关闭）',{exact:true}).inputValue(),'7')
   await pmEditor.getByRole('button',{name:'取消',exact:true}).click();await accept('放弃修改');await pmEditor.waitFor({state:'detached'})
@@ -383,6 +395,13 @@ try {
   await filterButton('未接入').click();await page.getByTestId(`node-card-${third.id}`).waitFor();assert.equal(await page.getByTestId(`node-card-${id}`).count(),0)
   await filterButton('全部').click();await page.getByTestId(`node-card-${id}`).waitFor();await page.getByTestId(`node-card-${third.id}`).waitFor()
   await filterButton('已接入').click();await page.getByTestId(`node-card-${third.id}`).waitFor({state:'detached'})
+  // A list that leaves the open card out closes it, asking first about a draft; 全部 keeps it.
+  await select('snell');await filterButton('全部').click();await instances.waitFor();await add.click();await editor.getByLabel('名称（可选）',{exact:true}).fill('筛选草稿')
+  await filterButton('未接入').click();await accept('取消操作');assert.equal(await filterButton('全部').getAttribute('aria-pressed'),'true')
+  assert.equal(await editor.getByLabel('名称（可选）',{exact:true}).inputValue(),'筛选草稿')
+  await filterButton('未接入').click();await accept();await page.getByTestId(`node-card-${id}`).waitFor({state:'detached'});await page.getByTestId(`node-card-${third.id}`).waitFor()
+  assert.equal(await instances.count(),0);await filterButton('已接入').click();await page.getByTestId(`node-card-${id}`).waitFor();assert.equal(await instances.count(),0,'the card stays closed on return')
+  await page.getByTestId(`node-manage-${id}`).click();await nodePanel.waitFor();await filterButton('未接入').click();await nodePanel.waitFor({state:'detached'});await filterButton('已接入').click()
   await select('snell');await instances.getByTestId('instance-12345').waitFor();await page.getByTestId(`node-manage-${second.id}`).click()
   assert.equal(await detail.getAttribute('data-node-id'),String(id));assert.equal(await nodePanel.getByTestId('node-maintenance').getAttribute('data-node-id'),String(second.id))
   await nodePanel.locator('summary').filter({hasText:'紧急撤销授权'}).click();await nodePanel.getByRole('button',{name:'撤销管理绑定',exact:true}).click()

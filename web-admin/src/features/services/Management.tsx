@@ -5,11 +5,13 @@ import { Input } from "@/components/ui/input"
 import { RefreshCw, Search } from "lucide-react"
 import { ManagementDetail, NodeManagement } from "./ServiceDetail"
 import { useServiceConfirmation } from "./ServiceInteractions"
-import { type UncertainRequest, type FollowUp, type Module, type PmDraft, type Status, type NodeStatus, names, modules, moduleView, lifecycleActive, lifecycleLabels, defaultHost, readManagement, feedbackSeconds, requestObserved } from "./model"
+import { type ManualRefresh, type UncertainRequest, type FollowUp, type Module, type PmDraft, type Status, type NodeStatus, names, modules, moduleView, lifecycleActive, lifecycleLabels, defaultHost, readManagement, feedbackSeconds, requestObserved } from "./model"
 
 function scrollToNode(id: number) {
   document.getElementById(`node-row-${id}`)?.scrollIntoView({ behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth", block: "start" })
 }
+
+const noRefresh: ManualRefresh = { count: 0 }
 
 export function Management({ nodes, registerLeaveGuard }: { nodes: Node[]; registerLeaveGuard: (guard: () => Promise<boolean>) => () => void }) {
   const { discard, confirmation } = useServiceConfirmation()
@@ -74,6 +76,13 @@ export function Management({ nodes, registerLeaveGuard }: { nodes: Node[]; regis
   const chains = useRef(new Map<number, { operation: string; next?: FollowUp; final?: FollowUp }>())
   // What the page shows of a chain; "1/2" or "2/2" while it runs, which keeps writes locked.
   const [progress, setProgress] = useState<Record<number, { text: string; status: string; action?: string }>>({})
+  // Manual refreshes by node: each successful one clears the results already shown.
+  const [refreshes, setRefreshes] = useState<Record<number, ManualRefresh>>({})
+  const latestStatus = useRef(new Map<number, Status>())
+  const manualReads = useRef(new Map<number, { before?: Status; clearProgress: boolean }>())
+  // Set while the node management panel waits for its enrollment command to be run.
+  const enrolling = useRef(false)
+  const setEnrolling = useCallback((waiting: boolean) => { enrolling.current = waiting }, [])
   // PM drafts whose step did not go through, by "node:port", for "添加流量统计".
   const keptDrafts = useRef(new Map<string, PmDraft>())
   const [pmOpening, setPmOpening] = useState<{ node: number; port: number; draft?: PmDraft; seq: number } | null>(null)
@@ -165,12 +174,13 @@ export function Management({ nodes, registerLeaveGuard }: { nodes: Node[]; regis
     }
   }, [])
   /** Starts a read of the node's status; the returned sequence identifies it in `settle`. */
-  const begin = useCallback((id: number, force: boolean, manual: boolean) => {
+  const begin = useCallback((id: number, force: boolean, manual: boolean, clearProgress = manual) => {
     if (manual) {
       // A refresh restarts the watch but keeps a running chain's operation.
       const operation = chains.current.get(id)?.operation
       stopWatching(id); stopped.current.delete(id)
       if (operation) watches.current.set(id, { deadline: Date.now() + 120_000, operation })
+      manualReads.current.set(id, { before: latestStatus.current.get(id), clearProgress: clearProgress && !operation })
     }
     const sequence = (sequences.current.get(id) ?? 0) + 1
     sequences.current.set(id, sequence)
@@ -188,9 +198,20 @@ export function Management({ nodes, registerLeaveGuard }: { nodes: Node[]; regis
       return
     }
     const status = outcome
+    const manualRead = manual ? manualReads.current.get(id) : undefined
+    if (manualRead) {
+      setRefreshes(previous => ({ ...previous, [id]: { count: (previous[id]?.count ?? 0) + 1, before: manualRead.before } }))
+      if (manualRead.clearProgress && !chains.current.has(id)) setProgress(previous => {
+        const { [id]: _, ...rest } = previous
+        return rest
+      })
+    }
+    latestStatus.current.set(id, status)
     const uncertain = uncertainRequests.current.get(id)
     if (uncertain && requestObserved(status, uncertain)) uncertainRequests.current.delete(id)
-    setRecords(previous => ({ ...previous, [id]: { status, loading: false, updatedAt: Date.now(), refreshed: manual, uncertain: uncertainRequests.current.get(id), retrying: retrying.current.has(id) } }))
+    const updatedAt = Date.now()
+    setRecords(previous => ({ ...previous, [id]: { status, loading: false, updatedAt, refreshed: manual, uncertain: uncertainRequests.current.get(id), retrying: retrying.current.has(id) } }))
+    if (manual) setTimeout(() => setRecords(previous => previous[id]?.updatedAt === updatedAt ? { ...previous, [id]: { ...previous[id], refreshed: false } } : previous), feedbackSeconds * 1000)
     const active = status.operations?.some(operation => ["queued", "delivered"].includes(operation.status))
     const blocked = status.snapshot?.blocked || Object.values(status.snapshot?.modules ?? {}).some(view => view.blocked)
     const watch = watches.current.get(id)
@@ -224,10 +245,11 @@ export function Management({ nodes, registerLeaveGuard }: { nodes: Node[]; regis
   }, [begin, settle])
   useLayoutEffect(() => { refreshRef.current = refreshNode }, [refreshNode])
   // Every node in one request; a node the hub could not read carries its own error.
-  const refreshAll = useCallback(async (manual = false) => {
+  // `current` is the node on screen: another node's result stays until it has been seen.
+  const refreshAll = useCallback(async (manual = false, current = 0) => {
     const queue = ids ? ids.split(",").map(Number) : []
     if (!queue.length) return
-    const started = queue.map(id => [id, begin(id, manual, manual)] as const)
+    const started = queue.map(id => [id, begin(id, manual, manual, id === current)] as const)
     const request = (async () => {
       try {
         const all = await readManagement<Record<string, Status & { error?: string }>>("/management/nodes")
@@ -272,9 +294,10 @@ export function Management({ nodes, registerLeaveGuard }: { nodes: Node[]; regis
     return true
   }
   async function collapse() {
-    if (!await discard(dirty)) return
+    if (!await discard(dirty)) return false
     onDirtyChange(false); setPmOpening(null)
     setOpen(false)
+    return true
   }
   // After the commit, so the row is placed after any row above it has collapsed.
   useEffect(() => {
@@ -298,12 +321,19 @@ export function Management({ nodes, registerLeaveGuard }: { nodes: Node[]; regis
   const filter = chosenFilter ?? (nodes.length && loaded && !bound ? "all" : "bound")
   const unbound = nodes.filter(n => records[n.id]?.status && !records[n.id]?.status?.bound).length
   // Nodes not read yet, or unreadable, are listed under 全部 only.
-  const matches = (n: Node) => filter === "all" || (filter === "bound") === !!records[n.id]?.status?.bound && !!records[n.id]?.status
+  const matches = (n: Node, value = filter) => value === "all" || (value === "bound") === !!records[n.id]?.status?.bound && !!records[n.id]?.status
   const shown = nodes.filter(n => (open && n.id === node) || n.id === managedNode || (matches(n) && [n.name, n.group, ...(n.addresses ?? []).map(item => item.address), n.hostname].some(value => value?.toLocaleLowerCase().includes(query))))
   const online = nodes.filter(n => records[n.id]?.status?.online && !records[n.id]?.error).length
   const record = records[node]
   const managementTarget = nodes.find(n => n.id === managedNode)
   const expanded = managedNode || (open ? node : 0)
+  // Searching keeps an open card in place; choosing a list it isn't in closes it.
+  async function chooseFilter(value: typeof filter) {
+    const selectedTarget = nodes.find(n => n.id === node)
+    if (open && selectedTarget && !matches(selectedTarget, value) && !await collapse()) return
+    if (managementTarget && !enrolling.current && !matches(managementTarget, value)) setManagedNode(0)
+    setFilter(value)
+  }
   async function openPm(port: number) {
     if (!await select(node, "pm")) return
     const key = `${node}:${port}`
@@ -324,7 +354,7 @@ export function Management({ nodes, registerLeaveGuard }: { nodes: Node[]; regis
     void refreshNode(id)
   }
 
-  const nodeManagement = managementTarget && <NodeManagement key={managementTarget.id} node={managementTarget} record={records[managementTarget.id]} notice={notices[managementTarget.id]} enabled={enabled} settingsError={settingsError} onSubmitted={operation => submitted(managementTarget.id, operation)} onUncertain={request => rememberUncertain(managementTarget.id, request)} onClose={() => setManagedNode(0)} onEnrolled={enrolled} restoreFocus={() => {
+  const nodeManagement = managementTarget && <NodeManagement key={managementTarget.id} node={managementTarget} record={records[managementTarget.id]} notice={notices[managementTarget.id]} enabled={enabled} settingsError={settingsError} onSubmitted={operation => submitted(managementTarget.id, operation)} onUncertain={request => rememberUncertain(managementTarget.id, request)} refresh={refreshes[managementTarget.id] ?? noRefresh} onEnrolling={setEnrolling} onClose={() => setManagedNode(0)} onEnrolled={enrolled} restoreFocus={() => {
       if (nodeManagementTrigger.current?.isConnected) nodeManagementTrigger.current.focus()
       else {
         const trigger = document.getElementById(`node-manage-${managementTarget.id}`)
@@ -381,13 +411,13 @@ export function Management({ nodes, registerLeaveGuard }: { nodes: Node[]; regis
     }
   }
   const moduleDetail = <div ref={detail} hidden={!!managementTarget || !record?.status?.bound} id="service-detail" tabIndex={-1} aria-label={`${nodes.find(n => n.id === node)?.name ?? "节点"} · ${names[module]}配置`} className="border-t bg-muted/30 p-3 focus:outline-none" data-testid="node-detail" data-node-id={node}>
-      <ManagementDetail key={`${node}/${module}`} node={node} module={module} selectedName={nodes.find(n => n.id === node)?.name ?? ""} record={record} defaultAddress={defaultHost(nodes.find(n => n.id === node))} notice={notices[node]} progress={progress[node]?.text} progressStatus={progress[node]?.status} progressAction={progress[node]?.action} alerts={alerts} onSubmitted={(operation, next) => submitted(node, operation, next)} onUncertain={request => rememberUncertain(node, request)} onOpenPm={port => { void openPm(port) }} pmOpening={pmOpening?.node === node && module === "pm" ? pmOpening : undefined} onDirtyChange={onDirtyChange} onNodeManagement={trigger => openNodeManagement(node, trigger)} enabled={enabled} settingsError={settingsError} reload={async (manual = false) => { await Promise.all([refreshSettings(), node ? refreshNode(node, true, manual) : Promise.resolve()]) }} />
+      <ManagementDetail key={`${node}/${module}`} node={node} module={module} selectedName={nodes.find(n => n.id === node)?.name ?? ""} record={record} refresh={refreshes[node] ?? noRefresh} defaultAddress={defaultHost(nodes.find(n => n.id === node))} notice={notices[node]} progress={progress[node]?.text} progressStatus={progress[node]?.status} progressAction={progress[node]?.action} alerts={alerts} onSubmitted={(operation, next) => submitted(node, operation, next)} onUncertain={request => rememberUncertain(node, request)} onOpenPm={port => { void openPm(port) }} pmOpening={pmOpening?.node === node && module === "pm" ? pmOpening : undefined} onDirtyChange={onDirtyChange} onNodeManagement={trigger => openNodeManagement(node, trigger)} enabled={enabled} settingsError={settingsError} reload={async (manual = false) => { await Promise.all([refreshSettings(), node ? refreshNode(node, true, manual) : Promise.resolve()]) }} />
     </div>
 
   return <section className="space-y-5">
     <div className="flex flex-wrap items-start justify-between gap-4">
       <div><h1 className="text-xl font-semibold tracking-tight">节点服务管理</h1><p className="mt-2 text-sm text-muted-foreground">选择节点中的模块，在下方查看和管理配置。</p></div>
-      <Button className="min-h-11" variant="outline" onClick={() => { void refreshSettings(); void refreshAll(true) }} disabled={nodes.length > 0 && nodes.every(n => records[n.id]?.loading)}><RefreshCw aria-hidden="true" />刷新全部</Button>
+      <Button className="min-h-11" variant="outline" onClick={() => { void refreshSettings(); void refreshAll(true, open ? node : 0) }} disabled={nodes.length > 0 && nodes.every(n => records[n.id]?.loading)}><RefreshCw aria-hidden="true" />刷新全部</Button>
     </div>
     {enabled === false && <div className="flex flex-wrap items-center gap-3 rounded border p-3"><p className="text-sm">服务管理尚未启用，现有监控不受影响。</p><Button variant="outline" disabled={enabling} onClick={async () => {
       if (enablingRequest.current) return
@@ -403,7 +433,7 @@ export function Management({ nodes, registerLeaveGuard }: { nodes: Node[]; regis
         <div><h2 className="text-sm font-medium">我的节点 <span className="ml-1 text-muted-foreground">{nodes.length}</span></h2><p className="mt-1 text-xs text-muted-foreground">{online} 台上次读取在线</p></div>
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
           <div role="group" aria-label="按接入状态筛选" className="flex h-11 w-full rounded-md bg-muted p-1 text-sm sm:w-auto">
-            {([["bound", "已接入", bound], ["unbound", "未接入", unbound], ["all", "全部", nodes.length]] as const).map(([value, label, count]) => <button key={value} type="button" aria-pressed={filter === value} onClick={() => setFilter(value)} className={`flex-1 whitespace-nowrap rounded px-3 transition-colors motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-ring ${filter === value ? "bg-background font-medium shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>{label} <span className="text-muted-foreground">{count}</span></button>)}
+            {([["bound", "已接入", bound], ["unbound", "未接入", unbound], ["all", "全部", nodes.length]] as const).map(([value, label, count]) => <button key={value} type="button" aria-pressed={filter === value} onClick={() => { void chooseFilter(value) }} className={`flex-1 whitespace-nowrap rounded px-3 transition-colors motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-ring ${filter === value ? "bg-background font-medium shadow-sm" : "text-muted-foreground hover:text-foreground"}`}>{label} <span className="text-muted-foreground">{count}</span></button>)}
           </div>
           <div className="relative w-full sm:w-64"><Search aria-hidden="true" className="pointer-events-none absolute left-3 top-3.5 size-4 text-muted-foreground" /><Input aria-label="搜索服务器" placeholder="搜索节点、分组或 IP" className="h-11 pl-9" value={search} onChange={e => setSearch(e.target.value)} /></div>
         </div>

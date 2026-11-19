@@ -19,6 +19,9 @@ export type Lifecycle = { id: string; scope: Module | "all"; status: string; und
 export const lifecycleActive = (job?: Lifecycle) => !!job && !["succeeded", "cancelled", "failed", "revoked"].includes(job.status)
 export const lifecycleLabels: Record<string, string> = { running: "正在卸载", paused: "卸载已暂停", interrupted: "节点离线，结果未确认", cleaning: "正在清理管理组件", finalizing: "正在确认清理结果", succeeded: "卸载已确认完成", revoked: "恢复备份后原卸载授权已失效" }
 export type Status = { lifecycle?: Lifecycle; compatible?: boolean; abandonable?: boolean; component_current?: boolean; bound: boolean; online?: boolean; last_seen?: number; snapshot?: RootSnapshot; operations?: { id: string; status: string; message: string; created: number; module?: string; action?: string; after?: string }[] }
+/** A manual read that succeeded, with the status shown when it started: what was
+ *  finished by then has been seen and goes; what finished since is shown first. */
+export type ManualRefresh = { count: number; before?: Status }
 export const names: Record<Module, string> = { snell: "Snell", sb: "singbox", fw: "realm 转发", pm: "端口流量统计" }
 export const runtimeLabels: Record<string, string> = { active: "运行中", inactive: "已停止", failed: "服务失败", activating: "启动中", deactivating: "停止中", unknown: "运行状态未知" }
 export const runtimeDots: Record<string, string> = { active: "bg-emerald-500", activating: "bg-amber-500", deactivating: "bg-amber-500", failed: "bg-destructive" }

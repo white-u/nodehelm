@@ -134,6 +134,8 @@ try {
   assert(await panel.getByText('已绑定', { exact: true }).isVisible())
   await refresh(panel)
   await panel.getByText('配置已刷新', { exact: true }).waitFor()
+  await panel.getByText(/撤销.*(?:未确认|待确认|仍绑定|仍有管理绑定)/).waitFor({ state: 'detached' })
+  await panel.getByText('配置已刷新', { exact: true }).waitFor({ state: 'detached', timeout: 9000 })
   assert.equal(deletePosts, 1)
 
   // The same missing response after a committed revocation is recovered without another DELETE.
@@ -267,15 +269,29 @@ try {
   const history = detail.getByTestId('operation-history')
   await history.locator('summary').click()
   for (const port of [23456, 23457]) await history.getByText(new RegExp(`端口 ${port}`)).waitFor()
+  // A manual refresh clears finished results from the rows; the history keeps them.
+  await refresh(detail)
+  await detail.getByTestId('instance-23457').getByText(/目标 TCP 可达/).waitFor({ state: 'detached' })
+  for (const port of [23456, 23457]) await history.getByText(new RegExp(`端口 ${port}`)).waitFor()
   // A fresh snapshot with a different destination invalidates only that row's previous result.
+  const changed = detail.getByTestId('instance-23456')
+  const unchanged = detail.getByTestId('instance-23457')
+  let posted = responseFor(operations, 'POST')
+  await button(changed, '测试目标 TCP').click()
+  assert((await posted).ok())
+  const first = (await poll()).task
+  await poll({ id: first.request.id, status: 'checked', message: 'fixture check result' })
+  await changed.getByText(/目标 TCP 可达/).waitFor()
+  posted = responseFor(operations, 'POST')
+  await button(unchanged, '测试目标 TCP').click()
+  assert((await posted).ok())
   snapshot.modules.fw.resources[0].target_host = '203.0.113.12'
   snapshot.modules.fw.revision = 'e'.repeat(64)
-  await poll()
-  await refresh(detail)
-  const changed = detail.getByTestId('instance-23456')
+  const second = (await poll()).task
   await changed.getByText(/203\.0\.113\.12:443/).waitFor()
   assert.equal(await changed.getByText(/目标 TCP 可达/).count(), 0)
-  assert(await detail.getByTestId('instance-23457').getByText(/目标 TCP 可达/).isVisible())
+  await poll({ id: second.request.id, status: 'checked', message: 'fixture check result' })
+  await unchanged.getByText(/目标 TCP 可达/).waitFor()
 
   // A module uninstall clears an agreed-to-discard draft only once the original task is observed.
   const moduleToken = (await api(nodePath(fresh.id) + '/enrollment', {})).enrollment

@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input"
 import { Plus, RefreshCw } from "lucide-react"
 import { PmFields, PmPanel } from "./PortPolicies"
 import { InlinePanel, useServiceConfirmation } from "./ServiceInteractions"
-import { type Module, type ApplyIntent, type Resource, type CoreAction, type Snapshot, type Status, type NodeStatus, type UncertainRequest, type FollowUp, type PmDraft, type PmPolicy, names, modules, moduleView, lifecycleActive, lifecycleLabels, runtimeLabels, runtimeDots, actionLabels, labels, sniChoices, quote, newResource, editable, instancePayload, pmBlocked, pmDraft, newPmDraft, pmPayload, pmSummary, serviceFeedbackClass, feedbackSeconds, requestObserved } from "./model"
+import { type ManualRefresh, type Module, type ApplyIntent, type Resource, type CoreAction, type Snapshot, type Status, type NodeStatus, type UncertainRequest, type FollowUp, type PmDraft, type PmPolicy, names, modules, moduleView, lifecycleActive, lifecycleLabels, runtimeLabels, runtimeDots, actionLabels, labels, sniChoices, quote, newResource, editable, instancePayload, pmBlocked, pmDraft, newPmDraft, pmPayload, pmSummary, serviceFeedbackClass, feedbackSeconds, requestObserved } from "./model"
 
 // An uncertain transport outcome must preserve the draft and track the original request.
 class UnconfirmedOperation extends Error {}
@@ -13,8 +13,8 @@ function uncertainRequest(error: unknown) {
   return (error instanceof ApiError && (error.status === 0 || error.status >= 500 || (error.status >= 200 && error.status < 300))) || (error as Error).name === "AbortError"
 }
 
-export function ManagementDetail({ node, module, selectedName, record, defaultAddress, notice, progress = "", progressStatus = "pending", progressAction, alerts = true, onSubmitted, onUncertain, onOpenPm, pmOpening, onDirtyChange, onNodeManagement, enabled, settingsError, reload }: {
-  node: number; module: Module; selectedName: string; record?: NodeStatus; defaultAddress: string; notice?: string
+export function ManagementDetail({ node, module, selectedName, record, refresh, defaultAddress, notice, progress = "", progressStatus = "pending", progressAction, alerts = true, onSubmitted, onUncertain, onOpenPm, pmOpening, onDirtyChange, onNodeManagement, enabled, settingsError, reload }: {
+  node: number; module: Module; selectedName: string; record?: NodeStatus; refresh: ManualRefresh; defaultAddress: string; notice?: string
   /** A two-step change's progress; "1/2" or "2/2" while it runs. */
   progress?: string
   progressStatus?: string
@@ -63,6 +63,16 @@ export function ManagementDetail({ node, module, selectedName, record, defaultAd
   const view = moduleView(status, module)
   const submittedRecord = status?.operations?.find(operation => operation.id === submittedOperation)
   const submittedResult = submittedRecord && !["queued", "delivered"].includes(submittedRecord.status) ? submittedRecord : undefined
+  // A manual refresh shows the node as it is now: finished results go, unconfirmed work stays.
+  const [seenRefresh, setSeenRefresh] = useState(refresh.count)
+  if (refresh.count !== seenRefresh) {
+    setSeenRefresh(refresh.count)
+    setError(""); setConfigError("")
+    const { before } = refresh
+    const finished = (id: string) => before?.operations?.some(operation => operation.id === id && !["queued", "delivered"].includes(operation.status))
+    if (!submittedOperation || finished(submittedOperation) || (before?.lifecycle?.id === submittedOperation && !lifecycleActive(before.lifecycle))) { setMessage(""); setSubmittedOperation("") }
+    setChecks(previous => Object.fromEntries(Object.entries(previous).filter(([, check]) => check.id && !check.error && !finished(check.id))))
+  }
   // A confirmed success clears itself; failures stay until the next action.
   useEffect(() => {
     if (submittedResult?.status !== "succeeded") return
@@ -257,7 +267,7 @@ export function ManagementDetail({ node, module, selectedName, record, defaultAd
       {status?.bound && status.snapshot && !view && <p className="text-sm text-muted-foreground">此管理组件尚未支持 {names[module]}，请升级组件。</p>}
       {status?.bound && view && !view.installed && <div className="flex flex-wrap items-center justify-between gap-4 rounded-lg bg-muted/40 p-4"><div><h3 className="text-sm font-medium">{module === "pm" ? "尚未启用" : "尚未安装"}</h3><p className="mt-1 text-xs text-muted-foreground">{module === "pm" ? "启用后可配置端口计量、配额和到期策略。" : `安装后即可新增${module === "fw" ? "转发规则" : "实例"}。`}</p></div><Button className="min-h-11" disabled={!writable} onClick={() => { void run(install) }}>{module === "pm" ? "启用流量统计" : `安装 ${names[module]}`}</Button></div>}
       {status?.bound && view?.installed && <>
-        {module === "pm" ? <PmPanel key={`${node}/${status.lifecycle?.id ?? ""}/${pmOpening?.seq ?? ""}`} node={selectedName} nodeId={node} live={Boolean(status.online && !fetchError)} snapshot={status.snapshot} view={view} writable={Boolean(writable)} busy={busy} feedback={feedback} refreshing={Boolean(record?.loading)} onDirtyChange={reportPmDirty} run={run} submit={(action, payload, revision, intent, tracked) => submit(action, payload, revision, intent, "pm", undefined, tracked)} operations={status.operations} uncertain={record?.uncertain?.id} retrying={record?.retrying} opening={pmOpening} alerts={alerts} /> : <div className="space-y-3">
+        {module === "pm" ? <PmPanel refreshes={refresh.count} key={`${node}/${status.lifecycle?.id ?? ""}/${pmOpening?.seq ?? ""}`} node={selectedName} nodeId={node} live={Boolean(status.online && !fetchError)} snapshot={status.snapshot} view={view} writable={Boolean(writable)} busy={busy} feedback={feedback} refreshing={Boolean(record?.loading)} onDirtyChange={reportPmDirty} run={run} submit={(action, payload, revision, intent, tracked) => submit(action, payload, revision, intent, "pm", undefined, tracked)} operations={status.operations} uncertain={record?.uncertain?.id} retrying={record?.retrying} opening={pmOpening} alerts={alerts} /> : <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3"><span className="text-xs text-muted-foreground">{module === "fw" ? "转发规则" : "实例"} · {view.resources.length}</span><Button className="min-h-11" disabled={!writable} aria-expanded={!!form && !editing} onClick={event => { void edit(undefined, event.currentTarget) }}><Plus aria-hidden="true" />{`新增${module === "fw" ? "转发规则" : "实例"}`}</Button></div>
           {form && (!editing || !view.resources.some(item => item.port === form.port)) && formPanel}
           {view.resources.map(item => <div key={item.port} data-testid={`instance-${item.port}`} className="space-y-3 rounded-lg border bg-background p-3">
@@ -338,7 +348,7 @@ function OperationHistory({ status }: { status?: Status }) {
   </details>
 }
 
-export function NodeManagement({ node: target, record, notice, enabled, settingsError, onSubmitted, onUncertain, onClose, onEnrolled, restoreFocus, reload, read }: { node: Node; record?: NodeStatus; notice?: string; enabled: boolean | null; settingsError: string; onSubmitted: (operation: string) => void; onUncertain: (request: UncertainRequest) => void; onClose: () => void; onEnrolled: (id: number) => void; restoreFocus: () => void; reload: (manual?: boolean) => Promise<void>; read: (id: number) => Promise<void> }) {
+export function NodeManagement({ node: target, record, refresh, onEnrolling, notice, enabled, settingsError, onSubmitted, onUncertain, onClose, onEnrolled, restoreFocus, reload, read }: { node: Node; record?: NodeStatus; refresh: ManualRefresh; onEnrolling: (waiting: boolean) => void; notice?: string; enabled: boolean | null; settingsError: string; onSubmitted: (operation: string) => void; onUncertain: (request: UncertainRequest) => void; onClose: () => void; onEnrolled: (id: number) => void; restoreFocus: () => void; reload: (manual?: boolean) => Promise<void>; read: (id: number) => Promise<void> }) {
   const { confirm, confirmation, confirmationFor } = useServiceConfirmation()
   const node = target.id
   const selectedName = target.name
@@ -353,6 +363,13 @@ export function NodeManagement({ node: target, record, notice, enabled, settings
   const [submittedLifecycle, setSubmittedLifecycle] = useState("")
   const [bindingCheck, setBindingCheck] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [seenRefresh, setSeenRefresh] = useState(refresh.count)
+  if (refresh.count !== seenRefresh) {
+    setSeenRefresh(refresh.count)
+    setError("")
+    const { before } = refresh
+    if (!bindingCheck && (!submittedLifecycle || (before?.lifecycle?.id === submittedLifecycle && !lifecycleActive(before.lifecycle)))) { setMessage(""); setSubmittedLifecycle("") }
+  }
   const running = useRef(false)
   const mounted = useRef(true)
   useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
@@ -389,6 +406,12 @@ export function NodeManagement({ node: target, record, notice, enabled, settings
   }
   // While the command is shown, the binding it makes is picked up without a manual refresh.
   const reported = !!status?.bound && !!status.online && !!status.snapshot
+  // Closing now would lose the command and stop watching for the node to report.
+  const waiting = !!command && !expired && !reported
+  useEffect(() => {
+    onEnrolling(waiting)
+    return () => onEnrolling(false)
+  }, [waiting, onEnrolling])
   useEffect(() => {
     if (!command || reported || expired) return
     const timer = setInterval(() => { if (Date.now() < deadline) void read(node); else { setExpired(true); clearInterval(timer) } }, 5000)

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react"
 import { bytes } from "@/lib/format"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -6,7 +6,8 @@ import { Plus } from "lucide-react"
 import { InlinePanel, useServiceConfirmation } from "./ServiceInteractions"
 import { type ApplyIntent, type PmDraft, type PmPolicy, type PmUsage, type RootSnapshot, type Snapshot, type Status, pmAlerts, pmTrafficBars, type PmTrafficHour, type PmTrafficBar, gib, pmDraft, newPmDraft, pmPayload, pmSummary, pmAlarmChange, pmWarnChange, ipThresholdMax, ipThresholds, readManagement } from "./model"
 
-export function PmPanel({ node, nodeId, snapshot, view, operations, uncertain, retrying, live, writable, busy, feedback, refreshing, onDirtyChange, run, submit, opening, alerts = true }: {
+export function PmPanel({ refreshes, node, nodeId, snapshot, view, operations, uncertain, retrying, live, writable, busy, feedback, refreshing, onDirtyChange, run, submit, opening, alerts = true }: {
+  refreshes: number
   node: string
   nodeId: number
   alerts?: boolean
@@ -55,6 +56,8 @@ export function PmPanel({ node, nodeId, snapshot, view, operations, uncertain, r
   const [ruleDetails, setRuleDetails] = useState<Record<number, boolean>>({})
   const [initialForm, setInitialForm] = useState(start.form && !opening?.draft ? JSON.stringify(start.form) : "")
   const [draftNotice, setDraftNotice] = useState(start.notice)
+  const [seenRefresh, setSeenRefresh] = useState(refreshes)
+  if (refreshes !== seenRefresh) { setSeenRefresh(refreshes); setDraftNotice("") }
   const [pending, setPending] = useState<{ id: string; uncertain?: boolean } | null>(null)
   const formTrigger = useRef<HTMLElement | null>(null)
   const dirty = form !== null && JSON.stringify(form) !== initialForm
@@ -191,7 +194,7 @@ export function PmPanel({ node, nodeId, snapshot, view, operations, uncertain, r
                     {rule.ip_limit && <><dt className="text-muted-foreground">IP 告警</dt><dd>{ipThresholds(rule.ip_limit)}</dd></>}
                     {usage && <><dt className="text-muted-foreground">更新时间</dt><dd>{new Date(usage.sampled_at * 1000).toLocaleString()}</dd>{usage.period_start && <><dt className="text-muted-foreground">账期起始</dt><dd>{usage.period_start} UTC</dd></>}</>}
                   </dl>
-                <PortTraffic key={`${nodeId}:${rule.port}`} node={nodeId} port={rule.port} />
+                <PortTraffic key={`${nodeId}:${rule.port}`} node={nodeId} port={rule.port} refreshes={refreshes} />
               </div>
               {editing && form?.port === rule.port && editor}
             </div>
@@ -253,7 +256,7 @@ function OnlineIps({ usage, live }: { usage: PmUsage; live: boolean }) {
 }
 
 /** Lazy, bounded history: seven UTC days and a complete 24-hour drill-down. */
-function PortTraffic({ node, port }: { node: number; port: number }) {
+function PortTraffic({ node, port, refreshes }: { node: number; port: number; refreshes: number }) {
   const [hours, setHours] = useState<PmTrafficHour[] | null>(null)
   const [error, setError] = useState("")
   const [loading, setLoading] = useState(false)
@@ -261,7 +264,7 @@ function PortTraffic({ node, port }: { node: number; port: number }) {
   const [now, setNow] = useState(() => Date.now() / 1000)
   const [open, setOpen] = useState(false)
   const request = useRef(false)
-  async function load() {
+  const load = useCallback(async () => {
     if (request.current) return
     request.current = true; setLoading(true); setError("")
     try {
@@ -269,7 +272,17 @@ function PortTraffic({ node, port }: { node: number; port: number }) {
       setHours(data.hours); setNow(Date.now() / 1000)
     } catch (e) { setError((e as Error).message) }
     finally { request.current = false; setLoading(false) }
-  }
+  }, [node, port])
+  // A manual refresh reads the open chart again; a closed one reads when next opened.
+  const seenRefresh = useRef(refreshes)
+  useEffect(() => {
+    if (refreshes === seenRefresh.current) return
+    seenRefresh.current = refreshes
+    queueMicrotask(() => {
+      if (open) void load()
+      else { setHours(null); setError("") }
+    })
+  }, [refreshes, open, load])
   const days = pmTrafficBars(hours ?? [], now)
   const chosen = days.find(item => item.key === day)
   const items = chosen ? pmTrafficBars(hours ?? [], now, chosen.key) : days
