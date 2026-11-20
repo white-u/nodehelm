@@ -681,6 +681,10 @@ pub async fn poll(State(app): State<Shared>, headers: HeaderMap, Json(input): Js
                     Some("target_h2") => "Reality 目标未协商 HTTP/2",
                     Some("target_tls") => "Reality 目标 TLS 1.3 验证失败，请检查目标与网络",
                     Some("invalid_config") => "singbox 核心配置校验失败",
+                    Some("cert_missing") => "未找到证书，请放置 /home/ssl/fullchain.pem 与 privkey.pem",
+                    Some("cert_invalid") => "证书或私钥无效，或二者不匹配，请检查 /home/ssl/",
+                    Some("cert_expired") => "证书已过期，请续期后重试",
+                    Some("cert_domain") => "证书不包含所填域名，请核对证书域名",
                     Some("target_unreachable") => "目标 TCP 连接失败，请检查目标服务与网络",
                     _ => "",
                 };

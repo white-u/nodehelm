@@ -169,7 +169,7 @@ class CoreDriver:
     def config(self, item):
         raise NotImplementedError
 
-    def service(self, port):
+    def service(self, item):
         raise NotImplementedError
 
     @staticmethod
@@ -575,7 +575,7 @@ class CoreDriver:
     def configs_match(self, state):
         for r in state['resources']:
             config, unit = self.files(r['port'])
-            if config.is_symlink() or unit.is_symlink() or config.read_text() != self.config(r) or unit.read_text() != self.service(r['port']):
+            if config.is_symlink() or unit.is_symlink() or config.read_text() != self.config(r) or unit.read_text() != self.service(r):
                 return False
         units = self.unit_metadata(r['port'] for r in state['resources'])
         return all(self.unit_matches(port, info, True) for port, info in units.items())
@@ -602,7 +602,7 @@ class CoreDriver:
             if config.is_symlink() or unit.is_symlink():
                 raise Rejected('实例配置或服务文件不能是符号链接', 'config_changed')
             before = (config.read_bytes(), unit.read_bytes())
-            after = (self.config(item).encode(), self.service(port).encode())
+            after = (self.config(item).encode(), self.service(item).encode())
             if before == after:
                 continue
             self.check_config(item)
@@ -677,7 +677,7 @@ class CoreDriver:
         # Detect terminal edits, rather than replacing an unknown file.
         if owned:
             current = next(r for r in before['resources'] if r['port'] == port)
-            if files != [self.config(current), self.service(port)]:
+            if files != [self.config(current), self.service(current)]:
                 raise Rejected('配置已被外部修改，拒绝覆盖；请先核实本机配置', 'config_changed')
         return {'kind': 'resource', 'port': port, 'files': files,
                 'running': self.running(port), 'enabled': self.enabled(port)}
@@ -695,7 +695,7 @@ class CoreDriver:
         else:
             item = next(r for r in after['resources'] if r['port'] == port)
             atomic(config, self.config(item).encode())
-            atomic(unit, self.service(port).encode(), 0o644)
+            atomic(unit, self.service(item).encode(), 0o644)
             command('systemctl', 'daemon-reload')
             if not self.unit_matches(port, self.unit_metadata([port])[port], True):
                 raise Rejected('系统加载了同名服务或额外配置，拒绝启动', 'config_changed')

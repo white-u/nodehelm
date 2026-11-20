@@ -85,29 +85,36 @@ fn sb(value: &Value, snapshot: bool) -> Result<()> {
                 refuse!("SS2022 密钥须为 16 字节 Base64，留空生成或保留");
             }
         }
-        "reality" => {
+        protocol @ ("reality" | "tls") => {
+            let reality = protocol == "reality";
             let sni = string(value, "sni");
             if !host(sni) || !sni.contains('.') || sni.parse::<std::net::IpAddr>().is_ok() || !psk.is_empty()
             {
-                refuse!("Reality 目标域名无效");
+                if reality {
+                    refuse!("Reality 目标域名无效");
+                }
+                refuse!("证书域名无效");
             }
-            if snapshot {
+            if !snapshot {
+                return Ok(());
+            }
+            let uuid = string(value, "uuid");
+            if uuid.len() != 36
+                || uuid.bytes().enumerate().any(|(i, c)| {
+                    if [8, 13, 18, 23].contains(&i) {
+                        c != b'-'
+                    } else {
+                        !c.is_ascii_hexdigit()
+                    }
+                })
+            {
+                refuse!("VLESS UUID 格式错误");
+            }
+            if reality {
                 for key in ["private_key", "public_key"] {
                     if URL_SAFE_NO_PAD.decode(string(value, key)).ok().is_none_or(|v| v.len() != 32) {
                         refuse!("Reality 密钥格式错误");
                     }
-                }
-                let uuid = string(value, "uuid");
-                if uuid.len() != 36
-                    || uuid.bytes().enumerate().any(|(i, c)| {
-                        if [8, 13, 18, 23].contains(&i) {
-                            c != b'-'
-                        } else {
-                            !c.is_ascii_hexdigit()
-                        }
-                    })
-                {
-                    refuse!("Reality UUID 格式错误");
                 }
                 let sid = string(value, "short_id");
                 if sid.len() != 8 || !sid.bytes().all(|c| c.is_ascii_hexdigit()) {
@@ -115,7 +122,7 @@ fn sb(value: &Value, snapshot: bool) -> Result<()> {
                 }
             }
         }
-        _ => refuse!("singbox 仅支持 Reality 或 SS2022"),
+        _ => refuse!("singbox 仅支持 Reality、VLESS TLS 或 SS2022"),
     }
     Ok(())
 }
@@ -375,6 +382,13 @@ pub fn share_links(state: &ModuleSnapshot) -> Result<String> {
                     uri_component(string(resource, "psk"))
                 );
             }
+            if resource["protocol"] == "tls" {
+                return format!(
+                    "vless://{}@{host}:{port}?encryption=none&security=tls&sni={}&fp=chrome&type=tcp&flow=xtls-rprx-vision#{name}",
+                    string(resource, "uuid"),
+                    uri_component(string(resource, "sni")),
+                );
+            }
             format!(
                 "vless://{}@{host}:{port}?encryption=none&security=reality&sni={}&fp=chrome&pbk={}&sid={}&type=tcp&flow=xtls-rprx-vision#{name}",
                 string(resource, "uuid"),
@@ -475,6 +489,22 @@ mod tests {
         assert!(message.contains("100.128.0.1 - (查询失败)"), "the shared range ends at 100.127");
     }
     #[test]
+    fn sb_tls_needs_a_domain_and_only_a_uuid() {
+        let mut v = json!({"name":"TLS","port":443,"host":"203.0.113.5","public_port":443,
+                           "protocol":"tls","sni":"tls.example.com","psk":""});
+        assert!(resource("sb", &v, false).is_ok());
+        assert!(resource("sb", &v, true).is_err(), "a confirmed TLS instance has a UUID");
+        v["uuid"] = json!("22222222-2222-4222-8222-222222222222");
+        assert!(resource("sb", &v, true).is_ok(), "TLS has no Reality keys");
+        for sni in ["", "203.0.113.5", "localhost", "a/b.example.com"] {
+            v["sni"] = json!(sni);
+            assert!(resource("sb", &v, false).is_err(), "{sni}");
+        }
+        v["sni"] = json!("tls.example.com");
+        v["psk"] = json!(STANDARD.encode([1; 16]));
+        assert!(resource("sb", &v, false).is_err());
+    }
+    #[test]
     fn share_links_encode_names_keys_and_ipv6_and_never_export_private_keys() {
         let private = URL_SAFE_NO_PAD.encode([2; 32]);
         let mut state: ModuleSnapshot = serde_json::from_value(json!({
@@ -484,13 +514,16 @@ mod tests {
                  "uuid":"11111111-1111-4111-8111-111111111111","public_key":URL_SAFE_NO_PAD.encode([1;32]),
                  "private_key":private,"short_id":"1234abcd"},
                 {"name":"SS 入口","port":20000,"host":"example.org","public_port":30000,
-                 "protocol":"ss2022","sni":"","psk":STANDARD.encode([251;16])}
+                 "protocol":"ss2022","sni":"","psk":STANDARD.encode([251;16])},
+                {"name":"TLS","port":8443,"host":"203.0.113.5","public_port":8443,
+                 "protocol":"tls","sni":"tls.example.com","psk":"",
+                 "uuid":"22222222-2222-4222-8222-222222222222"}
             ]
         }))
         .unwrap();
         let text = share_links(&state).unwrap();
         let links: Vec<_> = text.lines().collect();
-        assert_eq!(links.len(), 2);
+        assert_eq!(links.len(), 3);
         assert!(links[0].starts_with("vless://11111111-1111-4111-8111-111111111111@[2001:db8::1]:8443?"));
         let url = reqwest::Url::parse(links[0]).unwrap();
         let query: BTreeMap<_, _> = url.query_pairs().collect();
@@ -503,6 +536,11 @@ mod tests {
         assert!(links[1].starts_with("ss://2022-blake3-aes-128-gcm:"));
         assert!(links[1].contains("%2B") && links[1].contains("%2F") && links[1].contains("%3D"));
         assert!(links[1].ends_with("@example.org:30000#SS%20%E5%85%A5%E5%8F%A3"));
+        assert_eq!(
+            links[2],
+            "vless://22222222-2222-4222-8222-222222222222@203.0.113.5:8443?encryption=none&security=tls\
+             &sni=tls.example.com&fp=chrome&type=tcp&flow=xtls-rprx-vision#TLS"
+        );
         state.blocked = true;
         assert!(share_links(&state).is_err());
         state.blocked = false;

@@ -80,7 +80,8 @@ class Driver(CoreDriver):
                 f"{listen_line(item['port'])}psk = {item['psk']}\n"
                 f"ipv6 = true\ntfo = true\nmode = {item['mode']}\ndns-ip-preference = default\n")
 
-    def service(self, port):
+    def service(self, item):
+        port = item['port']
         capabilities = 'AmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\n' if port < 1024 else ''
         return f'''[Unit]
 Description=Node Manager Snell {port}

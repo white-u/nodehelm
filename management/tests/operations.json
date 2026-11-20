@@ -172,6 +172,50 @@
    "name": "东京 A",
    "host": "node.example.com",
    "public_port": 8443,
+   "protocol": "tls",
+   "sni": "node.example.com",
+   "psk": ""
+  },
+  "valid": true
+ },
+ {
+  "module": "sb",
+  "action": "apply",
+  "payload": {
+   "port": 443,
+   "name": "东京 A",
+   "host": "node.example.com",
+   "public_port": 8443,
+   "protocol": "tls",
+   "sni": "node.example.com",
+   "psk": "AQEBAQEBAQEBAQEBAQEBAQ=="
+  },
+  "valid": false,
+  "note": "TLS takes no PSK"
+ },
+ {
+  "module": "sb",
+  "action": "apply",
+  "payload": {
+   "port": 443,
+   "name": "东京 A",
+   "host": "node.example.com",
+   "public_port": 8443,
+   "protocol": "tls",
+   "sni": "203.0.113.5",
+   "psk": ""
+  },
+  "valid": false,
+  "note": "the certificate domain is a hostname"
+ },
+ {
+  "module": "sb",
+  "action": "apply",
+  "payload": {
+   "port": 443,
+   "name": "东京 A",
+   "host": "node.example.com",
+   "public_port": 8443,
    "protocol": "reality",
    "sni": "203.0.113.9",
    "psk": ""

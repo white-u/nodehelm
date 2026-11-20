@@ -1,16 +1,29 @@
-"""SB (sing-box): Reality and SS2022 fields, instance config and service template."""
+"""SB (sing-box): Reality, VLESS TLS and SS2022 fields, instance config and service template."""
 import base64
+import hashlib
 import ipaddress
 import json
+import pathlib
 import secrets
 import socket
 import ssl
+import sys
 import tempfile
+import time
 import uuid
 from controller import Controller
 from core_driver import CoreDriver, binary_hash, command
 from protocol import Rejected, Spec, address, fields, name, port
 from storage import private_directory
+
+# VLESS TLS instances share /home/ssl/fullchain.pem and privkey.pem; systemd hands
+# copies to each sandboxed instance, which restarts when the originals change.
+CERTIFICATES = pathlib.Path('/home/ssl')
+CREDENTIALS = pathlib.Path('/run/credentials')
+
+
+def certificate_files():
+    return CERTIFICATES / 'fullchain.pem', CERTIFICATES / 'privkey.pem'
 
 
 def resource(value):
@@ -18,8 +31,8 @@ def resource(value):
     listen = port(value.get('port'))
     label = name(value.get('name', ''))
     protocol = value.get('protocol', 'reality')
-    if protocol not in ('reality', 'ss2022'):
-        raise Rejected('SB 仅支持 Reality 和 SS2022')
+    if protocol not in ('reality', 'tls', 'ss2022'):
+        raise Rejected('SB 仅支持 Reality、VLESS TLS 和 SS2022')
     public_port = port(value.get('public_port', listen), '访问端口须为 1–65535')
     psk = value.get('psk', '')
     if not isinstance(psk, str): raise Rejected('密钥格式错误')
@@ -29,10 +42,10 @@ def resource(value):
                 raise ValueError()
         except ValueError: raise Rejected('SS2022 密钥须为 16 字节的标准 Base64；留空生成或保留') from None
     sni = value.get('sni', '')
-    if protocol == 'reality':
+    if protocol in ('reality', 'tls'):
         sni = address(sni)
         if '.' not in sni or ':' in sni or sni.replace('.', '').isdigit():
-            raise Rejected('Reality 目标须为完整域名')
+            raise Rejected('Reality 目标须为完整域名' if protocol == 'reality' else '证书域名须为完整域名')
     else: sni = ''
     return dict(port=listen, name=label, host=address(value.get('host')), public_port=public_port, protocol=protocol, sni=sni, psk=psk)
 
@@ -49,11 +62,18 @@ class Driver(CoreDriver):
     base_version = '1.14.4'
     version_arg = 'version'
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Per port, the certificate digests last refused, so each renewal is reported once.
+        self.skipped = {}
+
     def complete(self, item, existing):
         if existing and item['protocol'] != existing['protocol']:
             raise Rejected('不能原地切换协议，请新建实例后删除旧实例')
         if item['protocol'] == 'ss2022':
             item['psk'] = item['psk'] or (existing['psk'] if existing else base64.b64encode(secrets.token_bytes(16)).decode())
+        elif item['protocol'] == 'tls':
+            item['uuid'] = existing['uuid'] if existing else str(uuid.uuid4())
         else:
             if existing:
                 for key in ('uuid', 'private_key', 'public_key', 'short_id'): item[key] = existing[key]
@@ -70,10 +90,16 @@ class Driver(CoreDriver):
                 item.update(uuid=str(uuid.uuid4()), private_key=private, public_key=public, short_id=secrets.token_hex(4))
         return item
 
-    def config(self, item):
+    def config(self, item, certificate=None):
+        """`certificate` replaces the credential copies with other paths, for `sing-box check`."""
         inbound = {'listen':'::', 'listen_port':item['port']}
         if item['protocol'] == 'ss2022':
             inbound.update(type='shadowsocks', method='2022-blake3-aes-128-gcm', password=item['psk'])
+        elif item['protocol'] == 'tls':
+            loaded = CREDENTIALS / self.unit(item['port'])
+            cert, key = certificate or (loaded / 'cert', loaded / 'key')
+            inbound.update(type='vless', users=[{'uuid':item['uuid'],'flow':'xtls-rprx-vision'}], tls={
+                'enabled':True, 'server_name':item['sni'], 'certificate_path':str(cert), 'key_path':str(key)})
         else:
             inbound.update(type='vless', users=[{'uuid':item['uuid'],'flow':'xtls-rprx-vision'}], tls={
                 'enabled':True, 'server_name':item['sni'], 'reality':{'enabled':True,
@@ -82,8 +108,12 @@ class Driver(CoreDriver):
             'inbounds':[inbound], 'outbounds':[{'type':'direct','tag':'direct'}],
             'route':{'default_domain_resolver':'local','rules':[{'ip_is_private':True,'action':'reject'}]}}, sort_keys=True) + '\n'
 
-    def service(self, port):
+    def service(self, item):
+        port = item['port']
         cap = 'AmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\n' if port < 1024 else 'CapabilityBoundingSet=\n'
+        if item['protocol'] == 'tls':
+            cert, key = certificate_files()
+            cap += f'LoadCredential=cert:{cert}\nLoadCredential=key:{key}\n'
         return f'''[Unit]
 Description=Node Manager {self.module} {port}
 After=network-online.target
@@ -111,14 +141,21 @@ WantedBy=multi-user.target
         previous = next((r for r in before['resources'] if r['port'] == item['port']), None)
         if item['protocol'] == 'reality' and (not previous or previous['sni'] != item['sni']):
             self.check_reality(item['sni'])
+        if item['protocol'] == 'tls': self.check_certificate(item['sni'])
         self.check_config(item)
         return backup
 
-    def check_config(self, item):
+    def check_config(self, item, executable=None):
+        # The check reads the certificate originals: credential copies exist only while running.
+        tls = item['protocol'] == 'tls'
         with tempfile.NamedTemporaryFile(dir=self.configs, suffix='.json') as candidate:
-            candidate.write(self.config(item).encode()); candidate.flush()
-            result = command(str(self.binary), 'check', '-c', candidate.name, check=False)
-            if result.returncode: raise Rejected('SB 配置未通过核心校验，原实例未修改', 'invalid_config')
+            candidate.write(self.config(item, certificate_files() if tls else None).encode()); candidate.flush()
+            result = command(str(executable or self.binary), 'check', '-c', candidate.name, check=False)
+        if result.returncode and tls and executable is None:
+            raise Rejected('证书与私钥不匹配或格式无效，原实例未修改', 'cert_invalid')
+        if result.returncode:
+            raise Rejected('SB 配置未通过核心校验，原实例未修改' if executable is None
+                           else 'SB 实例配置未通过所选核心校验', 'invalid_config')
 
     @staticmethod
     def check_reality(host):
@@ -138,11 +175,59 @@ WantedBy=multi-user.target
                     if tls.selected_alpn_protocol() != 'h2': raise Rejected('Reality 目标不支持 HTTP/2', 'target_h2')
         except OSError: raise Rejected('Reality 目标 TLS 1.3 验证失败，请更换目标或检查网络', 'target_tls') from None
 
+    @staticmethod
+    def check_certificate(domain):
+        cert, key = certificate_files()
+        for path in (cert, key):
+            if not path.is_file():
+                raise Rejected(f'未找到证书文件 {path}', 'cert_missing')
+        # A private CPython helper, kept everywhere since 3.x; the core check still
+        # covers the pair when an interpreter lacks it.
+        decode = getattr(getattr(ssl, '_ssl', None), '_test_decode_cert', None)
+        if decode is None: return
+        try:
+            info = decode(str(cert))
+            expired = ssl.cert_time_to_seconds(info['notAfter']) <= time.time()
+        except (ssl.SSLError, OSError, KeyError, ValueError):
+            raise Rejected(f'证书 {cert} 不是有效的 PEM 证书', 'cert_invalid') from None
+        if expired: raise Rejected(f'证书 {cert} 已过期', 'cert_expired')
+        names = [v.lower() for k, v in info.get('subjectAltName', ()) if k == 'DNS']
+        if not any(n == domain or (n.startswith('*.') and n[2:] == domain.split('.', 1)[1]) for n in names):
+            raise Rejected(f'证书 {cert} 不包含域名 {domain}', 'cert_domain')
+
+    def upkeep(self, state):
+        """Restart running TLS instances whose certificate files differ from the copies they loaded."""
+        running = [r for r in state['resources'] if r['protocol'] == 'tls' and self.running(r['port'])]
+        # Hashing the core is only worth it when there is something to restart.
+        if not running or not self.consistent(state): return
+        for item in running:
+            port = item['port']
+            loaded = CREDENTIALS / self.unit(port)
+            source = None
+            try:
+                source = [file_digest(path) for path in certificate_files()]
+                if source == [file_digest(loaded / 'cert'), file_digest(loaded / 'key')] or self.skipped.get(port) == source:
+                    continue
+                self.check_certificate(item['sni'])
+                self.check_config(item)
+            except (OSError, Rejected) as error:
+                # Keep serving with the loaded certificate; a renewal may still be writing.
+                if port not in self.skipped or self.skipped[port] != source:
+                    print(f'SB {port} 证书已变化但未通过校验，继续使用已加载的证书：{error}', file=sys.stderr, flush=True)
+                self.skipped[port] = source
+                continue
+            self.skipped.pop(port, None)
+            command('systemctl', 'restart', self.unit(port))
+            print(f'SB {port} 证书已更新，实例已重启', file=sys.stderr, flush=True)
+
     def check_core_candidate(self, state, executable):
         super().check_core_candidate(state, executable)
         for item in state['resources']:
-            if command(str(executable), 'check', '-c', str(self.files(item['port'])[0]), check=False).returncode:
-                raise Rejected('SB 实例配置未通过所选核心校验', 'invalid_config')
+            self.check_config(item, executable)
+
+
+def file_digest(path):
+    return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
 
 
 def controller(root):

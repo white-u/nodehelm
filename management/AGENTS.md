@@ -10,7 +10,7 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| [agent.py](agent.py) | 轮询、快照组合、模块任务分派及跨模块端口规则（流量统计跟随业务端口）、回执确认、本地状态／恢复／解绑／换绑／本机卸载入口 |
+| [agent.py](agent.py) | 轮询、每分钟驱动定时检查（`upkeep`）、快照组合、模块任务分派及跨模块端口规则（流量统计跟随业务端口）、回执确认、本地状态／恢复／解绑／换绑／本机卸载入口 |
 | [install.py](install.py) | 安装登记（上报本机 boot ID 供后台核对机器）、首次上报确认、组件升级（失败回退）、恢复和组件移除 |
 | [lifecycle.py](lifecycle.py) | 持久卸载计划、步骤推进、模块回执确认和独立清理执行器；本机卸载复用同一计划，不向后台上报 |
 | [menu.py](menu.py) | 节点本机菜单 `sudo nodehelm`：升级、日志与运行状态、换绑、卸载，运行时先完成中断的操作；命令随组件安装和清理 |
@@ -29,7 +29,7 @@
 | 模块 | 文件 | 内容 |
 | --- | --- | --- |
 | Snell | [snell.py](snell.py) | Snell 6 字段、双栈监听配置与启动时的 IPv4 回退 |
-| singbox（`sb`）：Reality／SS2022 | [sb.py](sb.py) | 字段、sing-box 配置、密钥生成、Reality 目标与配置校验 |
+| singbox（`sb`）：Reality／VLESS TLS／SS2022 | [sb.py](sb.py) | 字段、sing-box 配置、密钥生成、Reality 目标、`/home/ssl` 证书与配置校验、证书续期后重启 |
 | realm 转发（`fw`） | [fw.py](fw.py) | 字段、Realm 配置、自环检查与目标连通检查 |
 | 端口流量统计（`pm`） | [pm.py](pm.py) | 字段、计量、配额、重置、到期策略、限速、在线 IP 统计、告警与阻断、定时维护及 `PMController` |
 

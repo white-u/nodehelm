@@ -38,7 +38,8 @@ class Driver(CoreDriver):
     def config(self, item):
         return f'[network]\nuse_udp = true\n\n[[endpoints]]\nlisten = "0.0.0.0:{item["port"]}"\nremote = "{item["target_host"]}:{item["target_port"]}"\n'
 
-    def service(self, port):
+    def service(self, item):
+        port = item['port']
         cap = 'AmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\n' if port < 1024 else 'CapabilityBoundingSet=\n'
         return f'''[Unit]
 Description=Node Manager {self.module} {port}

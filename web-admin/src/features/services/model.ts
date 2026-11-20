@@ -57,7 +57,7 @@ export function editable(module: Module, item: Resource): Resource {
 
 export function instancePayload(module: Module, draft: Resource): Resource {
   if (module !== "snell" && module !== "sb") return { ...draft }
-  return { ...draft, name: draft.name.trim() || String(draft.port), ...(module === "sb" ? { sni: draft.protocol === "reality" ? draft.sni?.trim() ?? "" : "" } : {}) }
+  return { ...draft, name: draft.name.trim() || String(draft.port), ...(module === "sb" ? { sni: draft.protocol === "reality" || draft.protocol === "tls" ? draft.sni?.trim() ?? "" : "" } : {}) }
 }
 
 export async function readManagement<T>(path: string): Promise<T> {

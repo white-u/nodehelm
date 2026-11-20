@@ -48,6 +48,18 @@ class Controller:
             else:
                 self.driver.refresh(state, rollback=rollback)
 
+    def upkeep(self):
+        """Periodic driver upkeep on confirmed state. Skipped while an operation
+        holds the writer lock or awaits recovery; the next round retries."""
+        with (self.root / 'write.lock').open('a') as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return
+            state = read(self.state, {'installed': False, 'resources': []})
+            if not self.journal.exists():
+                self.driver.upkeep(state)
+
     def execute(self, raw, *, local=False):
         # Only this module is accepted: a request for another one is refused here.
         req = request(raw, {self.module: self.spec})

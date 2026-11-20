@@ -124,6 +124,50 @@ def main():
         print('PASS SB SS2022: real sing-box client TCP request, CRUD, secret retention, rollback',flush=True)
         p.terminate();p.wait(timeout=10);processes.remove(p)
         execute(c,'delete',{'port':port})
+        # VLESS TLS: a root-only key under /home reaches the ProtectHome sandbox
+        # through LoadCredential, and a renewed certificate restarts the instance.
+        certs=pathlib.Path('/home')/('node-manager-acceptance-'+tag);sb.CERTIFICATES=certs
+        domain='tls.acceptance.test';cert_dir=certs
+        def issue(directory):
+            directory.mkdir(parents=True,exist_ok=True)
+            subprocess.run(['openssl','req','-x509','-newkey','ec','-pkeyopt','ec_paramgen_curve:P-256','-nodes','-days','30',
+                            '-keyout',str(directory/'privkey.pem'),'-out',str(directory/'fullchain.pem'),
+                            '-subj','/CN='+domain,'-addext','subjectAltName=DNS:'+domain],check=True,capture_output=True)
+            (directory/'privkey.pem').chmod(0o600)
+        def refused(item,code):
+            try:execute(c,'apply',item)
+            except Rejected as error:
+                if error.code!=code:raise
+            else:raise RuntimeError('expected '+code)
+        port=free_port();item=dict(name='TLS',port=port,host='127.0.0.1',public_port=port,protocol='tls',sni=domain,psk='')
+        try:
+            refused(item,'cert_missing')
+            issue(cert_dir);issue(certs/'other');shutil.copy(certs/'other'/'privkey.pem',cert_dir/'privkey.pem')
+            refused(item,'cert_invalid')
+            issue(cert_dir)
+            actual=crud(c,d,item)
+            mixed=free_port();client.write_text(json.dumps({'log':{'level':'error'},'inbounds':[{'type':'mixed','listen':'127.0.0.1','listen_port':mixed}], 'outbounds':[{'type':'vless','server':'127.0.0.1','server_port':port,'uuid':actual['uuid'],'flow':'xtls-rprx-vision','tls':{'enabled':True,'server_name':domain,'certificate_path':str(cert_dir/'fullchain.pem')}}]}))
+            def request():
+                p=subprocess.Popen([str(d.binary),'run','-c',str(client)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);processes.append(p);wait_client(p,mixed)
+                result=subprocess.run(['curl','--proxy',f'socks5h://127.0.0.1:{mixed}','--max-time','25','-fsS','https://example.com'],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+                p.terminate();p.wait(timeout=10);processes.remove(p)
+                if result.returncode:
+                    print(command('journalctl','-u',d.unit(port),'-n','12','--no-pager',check=False).stdout.decode(),flush=True)
+                    raise RuntimeError('VLESS TLS client failed: '+result.stderr.decode()[-500:])
+                assert b'Example Domain' in result.stdout
+            request()
+            loaded=sb.CREDENTIALS/d.unit(port)/'cert'
+            assert loaded.read_bytes()==(cert_dir/'fullchain.pem').read_bytes()
+            confirmed=json.loads((c.root/'state.json').read_text())
+            pid=lambda:command('systemctl','show','--property=MainPID','--value',d.unit(port)).stdout.strip()
+            started=pid();d.upkeep(confirmed);assert pid()==started,'unchanged certificate restarted the instance'
+            issue(cert_dir);c.upkeep();assert pid()!=started
+            assert loaded.read_bytes()==(cert_dir/'fullchain.pem').read_bytes(),'renewed certificate not loaded'
+            d.verify_listener(port);request()
+            execute(c,'delete',{'port':port})
+        finally:
+            shutil.rmtree(certs,ignore_errors=True)
+        print('PASS SB VLESS TLS: certificate checks, root-only key via LoadCredential, real Vision client, renewal restart, CRUD, rollback',flush=True)
         # External TLS target may be unavailable. Try the same presets as the script.
         chosen=None
         for target in ('addons.mozilla.org','www.microsoft.com','www.amazon.com','swdist.apple.com','updates.cdn-apple.com'):

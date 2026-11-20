@@ -126,7 +126,7 @@ class CoreLifecycleTests(unittest.TestCase):
                 resources.append(item)
                 config, unit = self.driver.files(port)
                 atomic(config, self.driver.config(item).encode())
-                atomic(unit, self.driver.service(port).encode(), 0o644)
+                atomic(unit, self.driver.service(item).encode(), 0o644)
             self.systemd.active.add(self.driver.unit(12345))
         core = {'version': '6.0.0', 'sha256': self.driver.asset('6.0.0')['sha256'], 'previous_version': None}
         state = {'installed': True, 'resources': resources, 'core': core}

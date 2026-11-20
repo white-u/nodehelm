@@ -42,8 +42,21 @@ class Tests(unittest.TestCase):
         self.assertEqual(resource({**self.item(), 'port':443})['port'], 443)
         for port in (0, 65536, True):
             with self.assertRaises(Rejected): resource({**self.item(), 'port':port})
-        self.assertIn('AmbientCapabilities=CAP_NET_BIND_SERVICE', RealDriver().service(443))
-        self.assertNotIn('AmbientCapabilities', RealDriver().service(10086))
+        self.assertIn('AmbientCapabilities=CAP_NET_BIND_SERVICE', RealDriver().service({'port': 443}))
+        self.assertNotIn('AmbientCapabilities', RealDriver().service({'port': 10086}))
+    def test_upkeep_waits_for_writers_and_unrecovered_operations(self):
+        import fcntl
+        from unittest.mock import Mock
+        self.install(); self.driver.upkeep = Mock()
+        with (self.c.root / 'write.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            self.c.upkeep()
+        write(self.c.journal, {'id': 'a' * 32})
+        self.c.upkeep()
+        self.driver.upkeep.assert_not_called()
+        self.c.journal.unlink()
+        self.c.upkeep()
+        self.driver.upkeep.assert_called_once_with(read(self.c.state))
     def test_replay_never_reexecutes(self):
         r = self.req()
         first = self.c.execute(r)

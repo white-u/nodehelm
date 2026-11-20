@@ -4,7 +4,9 @@ import errno
 import hashlib
 import json
 import pathlib
+import shutil
 import socket
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -166,6 +168,78 @@ class ModuleTests(unittest.TestCase):
             self.assertEqual(d.prepare('apply', before, after, item), {})
             command.assert_not_called()
 
+    def test_tls_keeps_uuid_and_hands_certificates_to_the_sandbox(self):
+        d=sb.Driver(); item={'protocol':'tls','port':443,'sni':'node.example.com','psk':''}
+        first=d.complete(dict(item),None)
+        self.assertEqual(d.complete(dict(item),first)['uuid'],first['uuid'])
+        inbound,=json.loads(d.config(first))['inbounds']
+        self.assertEqual(inbound['users'],[{'uuid':first['uuid'],'flow':'xtls-rprx-vision'}])
+        self.assertEqual(inbound['tls']['server_name'],'node.example.com')
+        self.assertEqual(inbound['tls']['certificate_path'],'/run/credentials/node-manager-sb-443.service/cert')
+        self.assertNotIn('reality',inbound['tls'])
+        unit=d.service(first)
+        self.assertIn('LoadCredential=cert:/home/ssl/fullchain.pem\n',unit)
+        self.assertIn('LoadCredential=key:/home/ssl/privkey.pem\n',unit)
+        self.assertIn('ProtectHome=yes',unit)
+        self.assertNotIn('LoadCredential=cert',d.service({'protocol':'ss2022','port':443}))
+        for sni in ('', '203.0.113.5', 'localhost', '../etc', 'a/b.example.com'):
+            with self.assertRaises(Rejected):sb.resource({**item,'name':'TLS','host':'203.0.113.5','sni':sni})
+        self.assertEqual(sb.resource({**item,'name':'TLS','host':'203.0.113.5','sni':'Node.Example.com'})['sni'],'node.example.com')
+
+    @unittest.skipUnless(shutil.which('openssl'), 'openssl creates the test certificates')
+    def test_certificate_problems_have_their_own_codes(self):
+        def issue(directory, names):
+            directory.mkdir(parents=True, exist_ok=True)
+            subprocess.run(['openssl','req','-x509','-newkey','ec','-pkeyopt','ec_paramgen_curve:P-256','-nodes',
+                            '-keyout',str(directory/'privkey.pem'),'-out',str(directory/'fullchain.pem'),'-days','30',
+                            '-subj','/CN='+names[0],'-addext','subjectAltName='+','.join('DNS:'+n for n in names)],
+                           check=True,capture_output=True)
+        with tempfile.TemporaryDirectory() as root, patch.object(sb,'CERTIFICATES',pathlib.Path(root)):
+            root=pathlib.Path(root)
+            def code(domain):
+                try: sb.Driver.check_certificate(domain)
+                except Rejected as error: return error.code
+            self.assertEqual(code('a.example.com'),'cert_missing')
+            issue(root,['a.example.com'])
+            self.assertIsNone(code('a.example.com'))
+            self.assertEqual(code('b.example.com'),'cert_domain')
+            with patch('sb.time.time',return_value=4102444800):
+                self.assertEqual(code('a.example.com'),'cert_expired')
+            issue(root,['*.example.com'])
+            self.assertIsNone(code('c.example.com'))
+            self.assertEqual(code('x.c.example.com'),'cert_domain','a wildcard covers one label')
+            (root/'fullchain.pem').write_text('junk')
+            self.assertEqual(code('a.example.com'),'cert_invalid')
+
+    def test_tls_restarts_only_on_a_valid_changed_certificate(self):
+        with tempfile.TemporaryDirectory() as root:
+            root=pathlib.Path(root)
+            source=root/'ssl'; loaded=root/'run'/'node-manager-sb-443.service'
+            source.mkdir(parents=True); loaded.mkdir(parents=True)
+            for name,copy in (('fullchain.pem','cert'),('privkey.pem','key')):
+                (source/name).write_text(name); (loaded/copy).write_text(name)
+            d=sb.Driver(); d.running=Mock(return_value=True); d.consistent=Mock(return_value=True)
+            d.check_certificate=Mock(); d.check_config=Mock()
+            state={'resources':[{'protocol':'tls','port':443,'sni':'node.example.com'},
+                                {'protocol':'ss2022','port':444}]}
+            with patch.object(sb,'CERTIFICATES',root/'ssl'), patch.object(sb,'CREDENTIALS',root/'run'), \
+                    patch('sb.command') as command, patch('sys.stderr'):
+                d.upkeep(state)
+                command.assert_not_called()
+                (source/'fullchain.pem').write_text('renewed')
+                d.check_config.side_effect=Rejected('bad pair','cert_invalid')
+                d.upkeep(state); d.upkeep(state)
+                command.assert_not_called()
+                self.assertEqual(d.check_config.call_count,1,'a refused renewal is checked once')
+                (source/'privkey.pem').write_text('renewed')
+                d.check_config.side_effect=None
+                d.upkeep(state)
+                command.assert_called_once_with('systemctl','restart','node-manager-sb-443.service')
+                d.consistent.return_value=False; (source/'privkey.pem').write_text('again')
+                d.upkeep(state); command.assert_called_once()
+                d.consistent.reset_mock(); d.running.return_value=False
+                d.upkeep(state); d.consistent.assert_not_called()
+
     def test_reality_dns_failure_is_actionable(self):
         import socket
         with patch('sb.socket.getaddrinfo', side_effect=socket.gaierror('sensitive text')):
@@ -230,7 +304,7 @@ class ModuleTests(unittest.TestCase):
             for item in state['resources']:
                 config, unit = d.files(item['port'])
                 atomic(config, d.config(item).encode())
-                atomic(unit, d.service(item['port']).encode())
+                atomic(unit, d.service(item).encode())
             d.unit_metadata = Mock(side_effect=metadata)
             d.running = Mock(side_effect=lambda port: port == active)
             with patch('core_driver.socket.create_connection') as connect, patch('core_driver.time.sleep'):

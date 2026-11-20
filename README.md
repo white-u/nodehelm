@@ -18,7 +18,7 @@
 
 **服务管理（可选，按节点接入）**
 
-- Snell、singbox（Reality／SS2022）、realm 转发（TCP/UDP）的实例新增、修改和删除
+- Snell、singbox（Reality／VLESS TLS Vision／SS2022）、realm 转发（TCP/UDP）的实例新增、修改和删除
 - 可信核心的安装、升级、回退与卸载，下载地址和摘要由组件内的清单固定
 - Snell 的 Surge 配置与 singbox 的 vless／ss 分享链接，按实例查看和复制
 - 端口流量统计：受管业务端口的用量、配额、按月重置、到期、出站限速、流量阈值提醒，在线 IP 统计、告警与阻断，近 7 天流量走势

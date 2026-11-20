@@ -10,6 +10,7 @@ import json
 import os
 import pathlib
 import ssl
+import subprocess
 import sys
 import time
 import urllib.error
@@ -471,8 +472,19 @@ def run_action(action, args=None):
     from lifecycle import Lifecycle
     lifecycle = Lifecycle(controllers, execute_module_task, snapshot, binding, ROOT)
     # Never automatically erase an unresolved journal on boot.
+    upkept = 0
     while True:
         executed = False
+        if time.monotonic() - upkept >= 60 and not lifecycle.active():
+            upkept = time.monotonic()
+            # Driver upkeep, such as restarting SB TLS instances on a renewed certificate.
+            for name, current in controllers.items():
+                if not hasattr(current.driver, 'upkeep'): continue
+                try:
+                    current.upkeep()
+                # Outside the poll's own handler: nothing here may stop the poller.
+                except (OSError, Rejected, subprocess.TimeoutExpired, KeyError, ValueError) as error:
+                    print(f'{name} 定时检查失败：{error}', file=sys.stderr, flush=True)
         try:
             receipt_path = ROOT / 'pending-result.json'
             pending = read(receipt_path)

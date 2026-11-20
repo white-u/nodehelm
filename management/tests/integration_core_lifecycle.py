@@ -75,7 +75,7 @@ def build(root, module):
     driver.unit = lambda port: f'{root.name}-{module}-{port}.service'
     driver.unit_pattern = lambda: f'{root.name}-{module}-*.service'
     service, pid = driver.service, os.getpid()
-    driver.service = lambda port: service_namespace(service(port), pid)
+    driver.service = lambda item: service_namespace(service(item), pid)
     return Controller(state, driver, SPECS[module]), driver
 
 
