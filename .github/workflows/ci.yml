@@ -77,16 +77,14 @@ jobs:
       # The panel's flows against this hub, each on a throwaway database. The
       # tests load Playwright through PLAYWRIGHT_PACKAGE, outside the panel's
       # own dependencies.
-      # The browser download has stalled once for ten minutes; a bounded attempt
-      # repeated beats waiting out the job timeout.
+      # They drive the runner's preinstalled Google Chrome: Playwright's browser
+      # CDN has stalled and reset connections often enough to block releases.
       - run: |
           mkdir "$RUNNER_TEMP/playwright" && cd "$RUNNER_TEMP/playwright"
           npm init -y >/dev/null && npm i --no-audit --no-fund playwright@1.65.0
-          for attempt in 1 2 3; do
-            timeout 180 npx playwright install --with-deps chromium && exit 0
-            echo "::warning::playwright install attempt $attempt failed"
-          done
-          exit 1
+          CHROME=$(command -v google-chrome) || { echo "::error::the runner has no google-chrome"; exit 1; }
+          "$CHROME" --version
+          echo "CHROME_BINARY=$CHROME" >> "$GITHUB_ENV"
       - run: for t in management management-ux management-recovery management-lifecycle admin; do node "web-admin/tests/$t.browser.mjs" target/debug/monitor-hub; done
         env:
           PLAYWRIGHT_PACKAGE: ${{ runner.temp }}/playwright/package.json
